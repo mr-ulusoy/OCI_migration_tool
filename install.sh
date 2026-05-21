@@ -501,8 +501,9 @@ ensure_job_log_dir() {
 install_job_logrotate_config() {
   log "Installing job log rotation"
 
-  local logrotate_file temp_file
+  local logrotate_file candidate_file temp_file
   logrotate_file="/etc/logrotate.d/$SERVICE_PREFIX-job-logs"
+  candidate_file="/etc/logrotate.d/.$SERVICE_PREFIX-job-logs.tmp"
   temp_file="$(mktemp)"
   {
     printf '%s/*.log {\n' "$JOB_LOG_DIR"
@@ -519,9 +520,13 @@ install_job_logrotate_config() {
     printf '}\n'
   } > "$temp_file"
 
-  "${SUDO[@]}" logrotate -d "$temp_file" >/dev/null
-  "${SUDO[@]}" install -o root -g root -m 644 "$temp_file" "$logrotate_file"
+  "${SUDO[@]}" install -o root -g root -m 644 "$temp_file" "$candidate_file"
   rm -f "$temp_file"
+  if ! "${SUDO[@]}" logrotate -d "$candidate_file" >/dev/null; then
+    "${SUDO[@]}" rm -f "$candidate_file"
+    fail "Generated logrotate configuration did not validate."
+  fi
+  "${SUDO[@]}" mv "$candidate_file" "$logrotate_file"
 }
 
 install_local_share_helper() {
