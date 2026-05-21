@@ -801,15 +801,20 @@ export default function App() {
   };
 
   const filteredVms = vms.filter(vm => {
+    const query = searchTerm.trim().toLowerCase();
+    if (!query) return true;
+
+    const includeOcid = query.startsWith('ocid') || query.length >= 16;
     const searchText = [
       vm.name,
-      vm.id,
       vm.os,
       vm.shape,
       vm.public_ip,
       vm.private_ip,
+      vm.state,
+      includeOcid ? vm.id : '',
     ].filter(Boolean).join(' ').toLowerCase();
-    return searchText.includes(searchTerm.toLowerCase());
+    return searchText.includes(query);
   });
 
   const getStatusColor = (status) => {
