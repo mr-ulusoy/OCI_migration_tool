@@ -5,19 +5,36 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-SSH_HOST="${SSH_HOST:-ubuntu@207.127.90.146}"
-SSH_KEY="${SSH_KEY:-/Users/mr-ulusoy/Documents/ssh1/cloudssh}"
-REMOTE_DIR="${REMOTE_DIR:-/home/ubuntu/oci-migrator}"
-PUBLIC_HOST="${PUBLIC_HOST:-${SSH_HOST#*@}}"
+SSH_HOST="${SSH_HOST:-}"
+SSH_KEY="${SSH_KEY:-}"
+REMOTE_DIR="${REMOTE_DIR:-/opt/oci-migrator}"
+PUBLIC_HOST="${PUBLIC_HOST:-}"
 API_PORT="${API_PORT:-8000}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+SERVICE_PREFIX="${SERVICE_PREFIX:-migrator}"
+CELERY_CONCURRENCY="${CELERY_CONCURRENCY:-2}"
 INSTALL_FRONTEND_SERVICE="${INSTALL_FRONTEND_SERVICE:-1}"
 OPEN_FIREWALL="${OPEN_FIREWALL:-0}"
 STOP_LEGACY_PROCESSES="${STOP_LEGACY_PROCESSES:-0}"
+PRINT_TOKEN="${PRINT_TOKEN:-0}"
 
 case "$REMOTE_DIR" in
   *" "*) echo "REMOTE_DIR cannot contain spaces: $REMOTE_DIR" >&2; exit 1 ;;
 esac
+
+if [ -z "$SSH_HOST" ] || [ -z "$SSH_KEY" ]; then
+  cat >&2 <<EOF
+SSH_HOST and SSH_KEY are required.
+
+Example:
+  SSH_HOST=ubuntu@1.2.3.4 SSH_KEY=/path/to/key PUBLIC_HOST=1.2.3.4 ./scripts/deploy.sh
+EOF
+  exit 1
+fi
+
+if [ -z "$PUBLIC_HOST" ]; then
+  PUBLIC_HOST="${SSH_HOST#*@}"
+fi
 
 quote() {
   printf '%q' "$1"
@@ -64,12 +81,21 @@ remote_cmd="cd $(quote "$REMOTE_DIR") && chmod +x install.sh && "
 remote_cmd+="PUBLIC_HOST=$(quote "$PUBLIC_HOST") "
 remote_cmd+="API_PORT=$(quote "$API_PORT") "
 remote_cmd+="FRONTEND_PORT=$(quote "$FRONTEND_PORT") "
+remote_cmd+="SERVICE_PREFIX=$(quote "$SERVICE_PREFIX") "
+remote_cmd+="CELERY_CONCURRENCY=$(quote "$CELERY_CONCURRENCY") "
 remote_cmd+="INSTALL_FRONTEND_SERVICE=$(quote "$INSTALL_FRONTEND_SERVICE") "
 remote_cmd+="OPEN_FIREWALL=$(quote "$OPEN_FIREWALL") "
 remote_cmd+="STOP_LEGACY_PROCESSES=$(quote "$STOP_LEGACY_PROCESSES") "
+remote_cmd+="PRINT_TOKEN=$(quote "$PRINT_TOKEN") "
 
 if [ -n "${OCI_MIGRATOR_API_TOKEN:-}" ]; then
   remote_cmd+="OCI_MIGRATOR_API_TOKEN=$(quote "$OCI_MIGRATOR_API_TOKEN") "
+fi
+if [ -n "${OCI_MIGRATOR_ENV_FILE:-}" ]; then
+  remote_cmd+="OCI_MIGRATOR_ENV_FILE=$(quote "$OCI_MIGRATOR_ENV_FILE") "
+fi
+if [ -n "${RUN_USER:-}" ]; then
+  remote_cmd+="RUN_USER=$(quote "$RUN_USER") "
 fi
 
 remote_cmd+="./install.sh"

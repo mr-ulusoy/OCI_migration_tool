@@ -17,4 +17,6 @@ frontend/.env
 frontend/.env.*
 !frontend/.env.example
 
+dist-packages/
+
 .DS_Store

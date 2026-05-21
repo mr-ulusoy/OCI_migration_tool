@@ -1,47 +1,81 @@
 # OCI Migrator Pro
 
-Full-stack admin tool for OCI migration and data sync:
+Admin tool for OCI migration and cloud data sync.
 
 - React/Vite frontend
 - FastAPI backend
 - Celery worker with Redis
-- rclone-based sync/copy jobs
-- OCI SDK-based VM and Object Storage operations
+- rclone sync/copy jobs
+- OCI SDK VM and Object Storage operations
 
-## Requirements
+## Quick Install
 
-- Ubuntu 20.04, 22.04, or 24.04
-- sudo access on the target server
-- OCI API credentials with the required tenancy/compartment permissions
-- Network access to install apt, Node.js, Python, npm, and rclone dependencies
-
-## Local Project Copy
-
-This copy was pulled from the server with `venv/` and `frontend/node_modules/` excluded. Those are recreated by the installer.
-
-## Install On A Server
-
-From the project directory on the target server:
+On an Ubuntu server:
 
 ```bash
-chmod +x install.sh
-PUBLIC_HOST=<server-ip-or-dns> ./install.sh
+curl -fsSL https://raw.githubusercontent.com/mr-ulusoy/OCI_migration_tool/main/scripts/bootstrap.sh -o bootstrap.sh
+chmod +x bootstrap.sh
+./bootstrap.sh --public-host <server-ip-or-dns>
 ```
 
-The installer is idempotent. It can be rerun after code changes and will keep the existing `~/.oci-migrator.env` file.
-Backend dependencies are installed from `backend/requirements.lock` when present, using the versions captured from the current server.
+Open:
 
-Useful installer options:
+```text
+http://<server-ip-or-dns>:5173
+```
+
+The installer creates `~/.oci-migrator.env`. Use the token from that file in the browser:
+
+```js
+localStorage.setItem('OCI_MIGRATOR_API_TOKEN', '<token>');
+```
+
+## Common Commands
 
 ```bash
-PUBLIC_HOST=207.127.90.146 ./install.sh
-API_PORT=8001 FRONTEND_PORT=5174 ./install.sh
-OPEN_FIREWALL=1 ./install.sh
-STOP_LEGACY_PROCESSES=1 ./install.sh
-INSTALL_FRONTEND_SERVICE=0 ./install.sh
+make doctor
+make status
+make restart
+make logs-api
+make logs-worker
+make package
 ```
 
-What it creates:
+## Manual Install
+
+```bash
+git clone https://github.com/mr-ulusoy/OCI_migration_tool.git
+cd OCI_migration_tool
+./install.sh --public-host <server-ip-or-dns>
+```
+
+## Deploy From A Workstation
+
+Deploy requires an SSH host and key:
+
+```bash
+SSH_HOST=ubuntu@1.2.3.4 \
+SSH_KEY=/path/to/key \
+PUBLIC_HOST=migrator.example.com \
+./scripts/deploy.sh
+```
+
+## Multiple Installations
+
+Use a unique install directory, service prefix, ports, and env file:
+
+```bash
+./scripts/bootstrap.sh \
+  --install-dir /opt/oci-migrator-dev \
+  --public-host dev.example.com \
+  -- \
+  --service-prefix migrator-dev \
+  --api-port 8100 \
+  --frontend-port 5174 \
+  --env-file ~/.oci-migrator-dev.env
+```
+
+## What Gets Installed
 
 - `migrator-api.service`
 - `migrator-worker.service`
@@ -51,71 +85,16 @@ What it creates:
 - `venv/`
 - `frontend/dist/`
 
-## Deploy From This Machine
+Backend dependencies use `backend/requirements.lock` when present.
 
-The deploy script defaults to the current server and SSH key:
+## Documentation
 
-```bash
-chmod +x scripts/deploy.sh
-./scripts/deploy.sh
-```
-
-Defaults:
-
-```bash
-SSH_HOST=ubuntu@207.127.90.146
-SSH_KEY=/Users/mr-ulusoy/Documents/ssh1/cloudssh
-REMOTE_DIR=/home/ubuntu/oci-migrator
-PUBLIC_HOST=207.127.90.146
-```
-
-Override when needed:
-
-```bash
-SSH_HOST=ubuntu@1.2.3.4 PUBLIC_HOST=migrator.example.com ./scripts/deploy.sh
-```
-
-If the old server has a manual `uvicorn` process occupying port `8000`, run:
-
-```bash
-STOP_LEGACY_PROCESSES=1 ./scripts/deploy.sh
-```
-
-## API Token
-
-The backend requires `X-API-Token`. The installer creates or preserves:
-
-```bash
-~/.oci-migrator.env
-```
-
-To use the frontend without baking the token into the static build, open the browser console and set:
-
-```js
-localStorage.setItem('OCI_MIGRATOR_API_TOKEN', '<token-from-env-file>');
-```
-
-## Operations
-
-```bash
-sudo systemctl status migrator-api migrator-worker migrator-frontend migrator-scheduler.timer
-journalctl -u migrator-api -f
-journalctl -u migrator-worker -f
-journalctl -u migrator-frontend -f
-```
-
-Frontend:
-
-```text
-http://<server-ip-or-dns>:5173
-```
-
-Backend:
-
-```text
-http://<server-ip-or-dns>:8000
-```
+- [Installation](docs/INSTALL.md)
+- [Operations](docs/OPERATIONS.md)
+- [Development](docs/DEVELOPMENT.md)
+- [Recommendations](docs/RECOMMENDATIONS.md)
+- [GitHub Actions CI template](docs/ci/github-actions.yml)
 
 ## Security Note
 
-This is an admin tool. Run it behind VPN, a private network, or a reverse proxy with authentication. Do not expose port `8000` publicly without additional protection.
+This is an admin tool. Run it behind VPN, a private network, or a reverse proxy with HTTPS and authentication. Avoid exposing port `8000` publicly.
