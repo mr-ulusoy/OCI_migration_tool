@@ -1551,11 +1551,60 @@ export default function App() {
                         {activeSourceProfile ? (searchTerm.trim() ? `${filteredVms.length}/${vms.length} VMs` : `${vms.length} VMs`) : 'No source selected'}
                       </span>
                     </div>
-                  </div>
-                </div>
+	                  </div>
+	                </div>
 
-                {activeSourceProfile ? (
-                  loading ? ( <div className="flex justify-center p-20"><Loader2 className="animate-spin text-gray-400" size={40} /></div>
+	                {selectedVms.length > 0 && (
+	                  <div className="bg-white p-4 rounded-md border border-gray-200 shadow-sm text-left">
+	                    <div className="grid grid-cols-1 xl:grid-cols-[minmax(220px,1fr)_minmax(220px,1fr)_220px] gap-4 items-end">
+	                      <div>
+	                        <div className="flex items-center justify-between mb-1">
+	                          <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Dest Profile</label>
+	                          <span className="text-[10px] font-bold text-[#9c3029] uppercase">{selectedVms.length} selected</span>
+	                        </div>
+	                        <select value={vmMigrationConfig.destProfile} onChange={e => {
+	                          const profile = e.target.value;
+	                          setVmMigrationConfig({...vmMigrationConfig, destProfile: profile, destBucket: ''});
+	                          if (profile) {
+	                            api.get(`/list-buckets/${profile}`).then(res => setDestBuckets(res.data));
+	                          } else {
+	                            setDestBuckets([]);
+	                          }
+	                        }} className="w-full bg-white border border-gray-200 p-2.5 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
+	                          <option value="">Select Target...</option>
+	                          {profiles.map(p => <option key={p} value={p}>{p}</option>)}
+	                        </select>
+	                      </div>
+	                      <div>
+	                        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Storage Bucket</label>
+	                        <select value={vmMigrationConfig.destBucket} onChange={e => setVmMigrationConfig({...vmMigrationConfig, destBucket: e.target.value})} className="w-full bg-white border border-gray-200 p-2.5 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" disabled={!vmMigrationConfig.destProfile || !destBuckets.length}>
+	                          <option value="">Select Bucket...</option>
+	                          {destBuckets.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+	                        </select>
+	                      </div>
+	                      <button onClick={async () => {
+	                        if (!vmMigrationConfig.destProfile || !vmMigrationConfig.destBucket) {
+	                          setNotice({ type: 'error', title: 'Missing migration target', message: 'Select destination profile and bucket.' });
+	                          return;
+	                        }
+	                        try {
+	                          const res = await api.post(`/start-bulk-migration`, {
+	                            vm_ids: selectedVms, source_profile: activeSourceProfile, dest_profile: vmMigrationConfig.destProfile, bucket_name: vmMigrationConfig.destBucket
+	                          });
+	                          const newTasks = {}; res.data.tasks.forEach(t => { newTasks[t.task_id] = { vm_id: t.vm_id, status: 'PENDING', details: 'Starting...' }; });
+	                          setVmTasks(prev => ({ ...prev, ...newTasks })); setSelectedVms([]);
+	                          fetchJobRuns();
+	                          showSuccess('VM migration queued.');
+	                        } catch (err) { showError('Failed to start VM migration', err); }
+	                      }} className="w-full bg-[#9c3029] text-white px-4 py-2.5 rounded-md font-semibold text-sm flex items-center justify-center gap-2 hover:bg-[#a63d2e] transition-colors shadow-sm">
+	                        Execute Migration <ArrowRight size={16} />
+	                      </button>
+	                    </div>
+	                  </div>
+	                )}
+	
+	                {activeSourceProfile ? (
+	                  loading ? ( <div className="flex justify-center p-20"><Loader2 className="animate-spin text-gray-400" size={40} /></div>
                   ) : (
                     <div className="bg-white border border-gray-200 rounded-md shadow-sm overflow-hidden">
                       <div className="hidden xl:grid grid-cols-[minmax(360px,1.7fr)_minmax(330px,1.35fr)_minmax(110px,0.55fr)_minmax(180px,0.8fr)] gap-4 px-4 py-3 bg-gray-50 border-b border-gray-100 text-[10px] uppercase font-bold tracking-wider text-gray-400">
@@ -1704,47 +1753,6 @@ export default function App() {
           )}
         </div>
 
-        {/* Bulk Migration Drawer */}
-        {selectedVms.length > 0 && view === 'explorer' && (
-          <div className="absolute bottom-0 left-0 w-full bg-white border-t border-gray-200 p-4 flex flex-col items-center shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-50 animate-in slide-in-from-bottom-full text-left">
-             <div className="w-full max-w-5xl flex justify-between items-center gap-6">
-                <div className="flex-1">
-                   <label className="text-[11px] font-bold text-gray-500 uppercase mb-1 block">Dest Profile</label>
-                   <select value={vmMigrationConfig.destProfile} onChange={e => {
-                      setVmMigrationConfig({...vmMigrationConfig, destProfile: e.target.value});
-                      api.get(`/list-buckets/${e.target.value}`).then(res => setDestBuckets(res.data));
-                   }} className="w-full bg-white border border-gray-200 p-2.5 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
-                      <option value="">Select Target...</option>
-                      {profiles.map(p => <option key={p} value={p}>{p}</option>)}
-                   </select>
-                </div>
-                <div className="flex-1">
-                   <label className="text-[11px] font-bold text-gray-500 uppercase mb-1 block">Storage Bucket</label>
-                   <select value={vmMigrationConfig.destBucket} onChange={e => setVmMigrationConfig({...vmMigrationConfig, destBucket: e.target.value})} className="w-full bg-white border border-gray-200 p-2.5 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
-                      <option value="">Select Bucket...</option>
-                      {destBuckets.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
-                   </select>
-                </div>
-                <div className="pt-5">
-                  <button onClick={async () => {
-                    if (!vmMigrationConfig.destProfile || !vmMigrationConfig.destBucket) {
-                      setNotice({ type: 'error', title: 'Missing migration target', message: 'Select destination profile and bucket.' });
-                      return;
-                    }
-                    try {
-                      const res = await api.post(`/start-bulk-migration`, {
-                        vm_ids: selectedVms, source_profile: activeSourceProfile, dest_profile: vmMigrationConfig.destProfile, bucket_name: vmMigrationConfig.destBucket
-                      });
-                      const newTasks = {}; res.data.tasks.forEach(t => { newTasks[t.task_id] = { vm_id: t.vm_id, status: 'PENDING', details: 'Starting...' }; });
-                      setVmTasks(prev => ({ ...prev, ...newTasks })); setSelectedVms([]); 
-                      fetchJobRuns();
-                      showSuccess('VM migration queued.');
-                    } catch (err) { showError('Failed to start VM migration', err); }
-                  }} className="bg-[#9c3029] text-white px-6 py-2.5 rounded-md font-semibold text-sm flex items-center gap-2 hover:bg-[#a63d2e] transition-colors shadow-sm">Execute Migration <ArrowRight size={16} /></button>
-                </div>
-             </div>
-          </div>
-        )}
       </main>
     </div>
   );
