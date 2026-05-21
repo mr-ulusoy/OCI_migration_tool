@@ -33,6 +33,12 @@ You can also set it non-interactively:
 ./bootstrap.sh --public-host <server-ip-or-dns> --admin-password '<strong-password>'
 ```
 
+The installer configures server time sync with `systemd-timesyncd`, `Europe/Stockholm`, and the Swedish NTP pool by default. Override it when needed:
+
+```bash
+./bootstrap.sh --public-host <server-ip-or-dns> --timezone Europe/Stockholm --ntp-servers "0.se.pool.ntp.org 1.se.pool.ntp.org"
+```
+
 ## Common Commands
 
 ```bash
@@ -97,6 +103,7 @@ The built frontend is served by the backend, so each install only needs one app/
 - `/var/log/oci-migrator/jobs/`
 - `/etc/logrotate.d/migrator-job-logs`
 - `/usr/local/sbin/oci-migrator-job-log`
+- `/etc/systemd/timesyncd.conf.d/oci-migrator.conf`
 
 The backend service also serves the built frontend from `frontend/dist`. Backend dependencies use `backend/requirements.lock` when present.
 

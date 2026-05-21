@@ -206,6 +206,8 @@ start_upgrade() {
     --job-log-helper "${JOB_LOG_HELPER:-/usr/local/sbin/oci-migrator-job-log}"
     --local-share-helper "${LOCAL_SHARE_HELPER:-/usr/local/sbin/oci-migrator-local-share}"
     --upgrade-helper "$UPGRADE_HELPER"
+    --timezone "${SERVER_TIMEZONE:-Europe/Stockholm}"
+    --ntp-servers "${NTP_SERVERS:-0.se.pool.ntp.org 1.se.pool.ntp.org 2.se.pool.ntp.org 3.se.pool.ntp.org}"
     --celery-concurrency "${CELERY_CONCURRENCY:-2}"
   )
   if [ -n "${PUBLIC_HOST:-}" ]; then

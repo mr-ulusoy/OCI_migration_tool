@@ -24,6 +24,18 @@ make doctor
 curl http://127.0.0.1:8000/health
 ```
 
+The `/health` response also reports server timezone and NTP synchronization. The default install sets `Europe/Stockholm` and writes the NTP pool to:
+
+```text
+/etc/systemd/timesyncd.conf.d/oci-migrator.conf
+```
+
+Change it by rerunning:
+
+```bash
+./install.sh --timezone Europe/Stockholm --ntp-servers "0.se.pool.ntp.org 1.se.pool.ntp.org"
+```
+
 The doctor checks:
 
 - system dependencies
@@ -32,6 +44,7 @@ The doctor checks:
 - listening ports
 - public `/health` endpoint
 - authenticated backend response
+- server timezone and NTP synchronization
 
 ## Job History
 
@@ -108,6 +121,7 @@ The SMB password is not stored in the app config. Samba stores its own password 
 /usr/local/sbin/oci-migrator-job-log
 /usr/local/sbin/oci-migrator-local-share
 /etc/oci-migrator/local-share.conf
+/etc/systemd/timesyncd.conf.d/oci-migrator.conf
 ```
 
 ## Admin Password

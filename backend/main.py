@@ -349,6 +349,11 @@ UPGRADE_STATUS_FILE = Path(
     os.getenv("OCI_MIGRATOR_UPGRADE_STATUS_FILE", "/var/lib/oci-migrator/upgrade/status.json")
 ).resolve()
 UPGRADE_LOG_FILE = Path(os.getenv("OCI_MIGRATOR_UPGRADE_LOG_FILE", "/var/log/oci-migrator/upgrade.log")).resolve()
+EXPECTED_TIMEZONE = os.getenv("OCI_MIGRATOR_TIMEZONE", "Europe/Stockholm")
+NTP_SERVERS = os.getenv(
+    "OCI_MIGRATOR_NTP_SERVERS",
+    "0.se.pool.ntp.org 1.se.pool.ntp.org 2.se.pool.ntp.org 3.se.pool.ntp.org",
+).replace(",", " ")
 try:
     LOCAL_SHARE_TIMEOUT_SECONDS = int(os.getenv("OCI_MIGRATOR_LOCAL_SHARE_TIMEOUT_SECONDS", "300"))
 except ValueError:
@@ -721,6 +726,23 @@ def health_check_item(state: str, message: str) -> dict:
     return {"status": state, "message": message}
 
 
+def timedatectl_value(property_name: str) -> str:
+    timedatectl_path = shutil.which("timedatectl")
+    if not timedatectl_path:
+        return ""
+
+    try:
+        result = subprocess.run(
+            [timedatectl_path, "show", "-p", property_name, "--value"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
 def read_runtime_env() -> dict[str, str]:
     return _read_env_file(ENV_FILE_PATH) if os.path.exists(ENV_FILE_PATH) else {}
 
@@ -1079,6 +1101,9 @@ async def health():
     frontend_build_exists = (FRONTEND_DIST_DIR / "index.html").is_file()
     job_log_dir_exists = JOB_LOG_DIR.is_dir()
     upgrade_helper_exists = UPGRADE_HELPER.is_file()
+    configured_timezone = timedatectl_value("Timezone")
+    ntp_synchronized = timedatectl_value("NTPSynchronized")
+    ntp_service_active = timedatectl_value("NTP")
 
     checks = {
         "admin_password": health_check_item(
@@ -1113,6 +1138,18 @@ async def health():
             "ok" if upgrade_helper_exists else "warn",
             f"Upgrade helper is installed: {UPGRADE_HELPER}" if upgrade_helper_exists else f"Upgrade helper is not installed: {UPGRADE_HELPER}",
         ),
+        "timezone": health_check_item(
+            "ok" if configured_timezone == EXPECTED_TIMEZONE else "warn",
+            f"Server timezone is {configured_timezone}." if configured_timezone == EXPECTED_TIMEZONE else f"Expected timezone {EXPECTED_TIMEZONE}, current timezone {configured_timezone or 'unknown'}.",
+        ),
+        "time_sync": health_check_item(
+            "ok" if ntp_synchronized == "yes" else "warn",
+            "NTP is synchronized." if ntp_synchronized == "yes" else f"NTP is not synchronized yet. Configured servers: {NTP_SERVERS}",
+        ),
+        "ntp_service": health_check_item(
+            "ok" if ntp_service_active == "yes" else "warn",
+            "NTP service is enabled." if ntp_service_active == "yes" else "NTP service is not enabled according to timedatectl.",
+        ),
     }
 
     try:
@@ -1135,6 +1172,8 @@ async def health():
         "status": overall_status,
         "service": "oci-migrator",
         "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "server_time_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "timezone": configured_timezone or EXPECTED_TIMEZONE,
         "checks": checks,
     }
 

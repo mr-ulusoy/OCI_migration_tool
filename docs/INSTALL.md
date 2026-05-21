@@ -21,6 +21,7 @@ This will:
 - create `~/.oci-migrator.env`
 - store a hashed admin password
 - install a root-owned helper for optional SMB sharing from the UI
+- configure server timezone/NTP for reliable schedules and timestamps
 
 ## Manual Install
 
@@ -42,12 +43,16 @@ cd OCI_migration_tool
 ./install.sh --job-log-dir /var/log/oci-migrator/jobs
 ./install.sh --job-log-max-size 10M
 ./install.sh --job-log-retention-days 14
+./install.sh --timezone Europe/Stockholm
+./install.sh --ntp-servers "0.se.pool.ntp.org 1.se.pool.ntp.org"
 ./install.sh --local-share-helper /usr/local/sbin/oci-migrator-local-share
 ./install.sh --stop-legacy-processes
 ```
 
 `--job-log-max-size` controls the `maxsize` value written to logrotate. The default is `10M`.
 `--job-log-retention-days` controls how many daily rotated logs are kept. The default is `14`.
+`--timezone` defaults to `Europe/Stockholm`, so Swedish daylight saving time is handled by the OS.
+`--ntp-servers` defaults to the Swedish NTP pool and is written to `systemd-timesyncd`.
 
 ## Optional SMB Sharing
 

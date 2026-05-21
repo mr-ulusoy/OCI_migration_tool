@@ -11,6 +11,8 @@ ADMIN_USERNAME="${OCI_MIGRATOR_ADMIN_USERNAME:-}"
 ADMIN_PASSWORD="${OCI_MIGRATOR_ADMIN_PASSWORD:-}"
 ADMIN_PASSWORD_FILE="${OCI_MIGRATOR_ADMIN_PASSWORD_FILE:-}"
 PROMPT_ADMIN_PASSWORD="${PROMPT_ADMIN_PASSWORD:-0}"
+SERVER_TIMEZONE="${OCI_MIGRATOR_TIMEZONE:-}"
+NTP_SERVERS="${OCI_MIGRATOR_NTP_SERVERS:-}"
 INSTALL_ARGS=()
 
 if [ "$(id -u)" -eq 0 ]; then
@@ -38,6 +40,8 @@ Options:
   --admin-password PASSWORD   Set or reset the admin password.
   --admin-password-file PATH  Read admin password from a file.
   --prompt-admin-password     Prompt for admin password without storing it in shell history.
+  --timezone ZONE             Server timezone passed to install.sh.
+  --ntp-servers "LIST"        Space/comma separated NTP servers passed to install.sh.
   -h, --help                  Show this help.
 
 Examples:
@@ -84,6 +88,14 @@ while [ "$#" -gt 0 ]; do
     --prompt-admin-password)
       PROMPT_ADMIN_PASSWORD=1
       shift
+      ;;
+    --timezone)
+      SERVER_TIMEZONE="$2"
+      shift 2
+      ;;
+    --ntp-servers)
+      NTP_SERVERS="$2"
+      shift 2
       ;;
     --)
       shift
@@ -157,6 +169,12 @@ if [ -n "$ADMIN_PASSWORD_FILE" ]; then
 fi
 if [ "$PROMPT_ADMIN_PASSWORD" = "1" ]; then
   cmd+=(--prompt-admin-password)
+fi
+if [ -n "$SERVER_TIMEZONE" ]; then
+  cmd+=(--timezone "$SERVER_TIMEZONE")
+fi
+if [ -n "$NTP_SERVERS" ]; then
+  cmd+=(--ntp-servers "$NTP_SERVERS")
 fi
 cmd+=("${INSTALL_ARGS[@]}")
 

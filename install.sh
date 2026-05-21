@@ -18,9 +18,13 @@ UPGRADE_CONFIG="${OCI_MIGRATOR_UPGRADE_CONFIG:-/etc/oci-migrator/upgrade.conf}"
 UPGRADE_STATE_DIR="${OCI_MIGRATOR_UPGRADE_STATE_DIR:-/var/lib/oci-migrator/upgrade}"
 UPGRADE_STATUS_FILE="${OCI_MIGRATOR_UPGRADE_STATUS_FILE:-$UPGRADE_STATE_DIR/status.json}"
 UPGRADE_LOG_FILE="${OCI_MIGRATOR_UPGRADE_LOG_FILE:-/var/log/oci-migrator/upgrade.log}"
+SERVER_TIMEZONE="${OCI_MIGRATOR_TIMEZONE:-Europe/Stockholm}"
+NTP_SERVERS="${OCI_MIGRATOR_NTP_SERVERS:-0.se.pool.ntp.org 1.se.pool.ntp.org 2.se.pool.ntp.org 3.se.pool.ntp.org}"
 JOB_LOG_DIR_PROVIDED=0
 JOB_LOG_MAX_SIZE_PROVIDED=0
 JOB_LOG_RETENTION_DAYS_PROVIDED=0
+TIMEZONE_PROVIDED=0
+NTP_SERVERS_PROVIDED=0
 if [ -n "${OCI_MIGRATOR_JOB_LOG_DIR:-}" ]; then
   JOB_LOG_DIR_PROVIDED=1
 fi
@@ -29,6 +33,12 @@ if [ -n "${OCI_MIGRATOR_JOB_LOG_MAX_SIZE:-}" ]; then
 fi
 if [ -n "${OCI_MIGRATOR_JOB_LOG_RETENTION_DAYS:-}" ]; then
   JOB_LOG_RETENTION_DAYS_PROVIDED=1
+fi
+if [ -n "${OCI_MIGRATOR_TIMEZONE:-}" ]; then
+  TIMEZONE_PROVIDED=1
+fi
+if [ -n "${OCI_MIGRATOR_NTP_SERVERS:-}" ]; then
+  NTP_SERVERS_PROVIDED=1
 fi
 CELERY_CONCURRENCY="${CELERY_CONCURRENCY:-2}"
 OPEN_FIREWALL="${OPEN_FIREWALL:-0}"
@@ -87,6 +97,8 @@ Options:
   --job-log-helper PATH       Root helper used by the UI for job log rotation. Default: $JOB_LOG_HELPER
   --local-share-helper PATH   Root helper used by the UI for optional SMB shares. Default: $LOCAL_SHARE_HELPER
   --upgrade-helper PATH       Root helper used by the UI for controlled upgrades. Default: $UPGRADE_HELPER
+  --timezone ZONE             Server timezone for schedules/logs. Default: $SERVER_TIMEZONE
+  --ntp-servers "LIST"        Space/comma separated NTP servers. Default: $NTP_SERVERS
   --celery-concurrency N      Celery worker concurrency. Default: $CELERY_CONCURRENCY
   --open-firewall             Open local firewall ports with ufw/iptables when possible.
   --stop-legacy-processes     Stop old manual uvicorn/vite processes from this project path.
@@ -102,6 +114,7 @@ Environment variables with the same names are also supported:
   OCI_MIGRATOR_JOB_LOG_DIR, OCI_MIGRATOR_JOB_LOG_MAX_SIZE,
   OCI_MIGRATOR_JOB_LOG_RETENTION_DAYS, OCI_MIGRATOR_JOB_LOG_HELPER,
   OCI_MIGRATOR_LOCAL_SHARE_HELPER, OCI_MIGRATOR_UPGRADE_HELPER,
+  OCI_MIGRATOR_TIMEZONE, OCI_MIGRATOR_NTP_SERVERS,
   OCI_MIGRATOR_ENV_FILE, OPEN_FIREWALL, STOP_LEGACY_PROCESSES,
   CELERY_CONCURRENCY, PRINT_TOKEN,
   OCI_MIGRATOR_ADMIN_USERNAME, OCI_MIGRATOR_ADMIN_PASSWORD,
@@ -165,6 +178,16 @@ parse_args() {
         ;;
       --upgrade-helper)
         UPGRADE_HELPER="$2"
+        shift 2
+        ;;
+      --timezone)
+        SERVER_TIMEZONE="$2"
+        TIMEZONE_PROVIDED=1
+        shift 2
+        ;;
+      --ntp-servers)
+        NTP_SERVERS="$2"
+        NTP_SERVERS_PROVIDED=1
         shift 2
         ;;
       --celery-concurrency)
@@ -257,6 +280,30 @@ validate_job_log_settings() {
       fail "--job-log-helper must be an absolute path."
       ;;
   esac
+}
+
+normalize_ntp_servers() {
+  NTP_SERVERS="$(printf '%s' "$NTP_SERVERS" | tr ',' ' ' | awk '{$1=$1; print}')"
+}
+
+validate_time_settings() {
+  if ! [[ "$SERVER_TIMEZONE" =~ ^[A-Za-z0-9_+.-]+(/[A-Za-z0-9_+.-]+)*$ ]]; then
+    fail "--timezone must be a valid IANA timezone, for example Europe/Stockholm."
+  fi
+
+  if [ ! -f "/usr/share/zoneinfo/$SERVER_TIMEZONE" ]; then
+    fail "Timezone data not found for $SERVER_TIMEZONE."
+  fi
+
+  normalize_ntp_servers
+  [ -n "$NTP_SERVERS" ] || fail "--ntp-servers must contain at least one server."
+
+  local server
+  for server in $NTP_SERVERS; do
+    if ! [[ "$server" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]*$ ]]; then
+      fail "Invalid NTP server: $server"
+    fi
+  done
 }
 
 run_as_user() {
@@ -402,7 +449,35 @@ install_system_dependencies() {
     python3-venv \
     redis-server \
     sudo \
+    systemd-timesyncd \
+    tzdata \
     unzip
+}
+
+configure_time_sync() {
+  log "Configuring server time sync"
+
+  local timesyncd_dir="/etc/systemd/timesyncd.conf.d"
+  local timesyncd_conf="$timesyncd_dir/oci-migrator.conf"
+  local temp_file
+  temp_file="$(mktemp)"
+  {
+    printf '[Time]\n'
+    printf 'NTP=%s\n' "$NTP_SERVERS"
+    printf 'FallbackNTP=0.pool.ntp.org 1.pool.ntp.org 2.pool.ntp.org 3.pool.ntp.org\n'
+  } > "$temp_file"
+
+  "${SUDO[@]}" install -d -o root -g root -m 755 "$timesyncd_dir"
+  "${SUDO[@]}" install -o root -g root -m 644 "$temp_file" "$timesyncd_conf"
+  rm -f "$temp_file"
+
+  if command -v timedatectl >/dev/null 2>&1; then
+    "${SUDO[@]}" timedatectl set-timezone "$SERVER_TIMEZONE" || log "Warning: unable to set timezone with timedatectl."
+    "${SUDO[@]}" timedatectl set-ntp true || log "Warning: unable to enable NTP with timedatectl."
+  fi
+
+  "${SUDO[@]}" systemctl enable --now systemd-timesyncd.service >/dev/null 2>&1 || log "Warning: unable to enable systemd-timesyncd."
+  "${SUDO[@]}" systemctl restart systemd-timesyncd.service >/dev/null 2>&1 || log "Warning: unable to restart systemd-timesyncd."
 }
 
 install_node() {
@@ -476,6 +551,8 @@ ensure_env_file() {
       printf 'OCI_MIGRATOR_UPGRADE_HELPER=%s\n' "$UPGRADE_HELPER"
       printf 'OCI_MIGRATOR_UPGRADE_STATUS_FILE=%s\n' "$UPGRADE_STATUS_FILE"
       printf 'OCI_MIGRATOR_UPGRADE_LOG_FILE=%s\n' "$UPGRADE_LOG_FILE"
+      printf 'OCI_MIGRATOR_TIMEZONE=%s\n' "$SERVER_TIMEZONE"
+      printf 'OCI_MIGRATOR_NTP_SERVERS=%s\n' "${NTP_SERVERS// /,}"
     } > "$temp_file"
 
     "${SUDO[@]}" install -o "$RUN_USER" -g "$RUN_USER" -m 600 "$temp_file" "$ENV_FILE"
@@ -500,9 +577,17 @@ ensure_env_file() {
     grep -q '^OCI_MIGRATOR_UPGRADE_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_HELPER=%s\n' "$UPGRADE_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UPGRADE_STATUS_FILE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_STATUS_FILE=%s\n' "$UPGRADE_STATUS_FILE" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UPGRADE_LOG_FILE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_LOG_FILE=%s\n' "$UPGRADE_LOG_FILE" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_TIMEZONE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_TIMEZONE=%s\n' "$SERVER_TIMEZONE" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_NTP_SERVERS=' "$ENV_FILE" || printf 'OCI_MIGRATOR_NTP_SERVERS=%s\n' "${NTP_SERVERS// /,}" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
 
     if [ "$ADMIN_USERNAME_PROVIDED" = "1" ] || ! grep -q '^OCI_MIGRATOR_ADMIN_USERNAME=' "$ENV_FILE"; then
       set_env_value "OCI_MIGRATOR_ADMIN_USERNAME" "$ADMIN_USERNAME"
+    fi
+    if [ "$TIMEZONE_PROVIDED" = "1" ]; then
+      set_env_value "OCI_MIGRATOR_TIMEZONE" "$SERVER_TIMEZONE"
+    fi
+    if [ "$NTP_SERVERS_PROVIDED" = "1" ]; then
+      set_env_value "OCI_MIGRATOR_NTP_SERVERS" "${NTP_SERVERS// /,}"
     fi
     if [ "$JOB_LOG_DIR_PROVIDED" = "1" ]; then
       set_env_value "OCI_MIGRATOR_JOB_LOG_DIR" "$JOB_LOG_DIR"
@@ -529,6 +614,21 @@ ensure_env_file() {
   configured_admin_username="$(grep '^OCI_MIGRATOR_ADMIN_USERNAME=' "$ENV_FILE" | tail -1 | cut -d= -f2- || true)"
   if [ -n "$configured_admin_username" ]; then
     ADMIN_USERNAME="$configured_admin_username"
+  fi
+}
+
+load_time_settings_from_env() {
+  [ -f "$ENV_FILE" ] || return 0
+
+  local configured_timezone configured_ntp_servers
+  configured_timezone="$(grep '^OCI_MIGRATOR_TIMEZONE=' "$ENV_FILE" | tail -1 | cut -d= -f2- || true)"
+  configured_ntp_servers="$(grep '^OCI_MIGRATOR_NTP_SERVERS=' "$ENV_FILE" | tail -1 | cut -d= -f2- || true)"
+
+  if [ "$TIMEZONE_PROVIDED" = "0" ] && [ -n "$configured_timezone" ]; then
+    SERVER_TIMEZONE="$configured_timezone"
+  fi
+  if [ "$NTP_SERVERS_PROVIDED" = "0" ] && [ -n "$configured_ntp_servers" ]; then
+    NTP_SERVERS="$configured_ntp_servers"
   fi
 }
 
@@ -708,6 +808,8 @@ install_upgrade_helper() {
     printf 'UPGRADE_STATE_DIR=%q\n' "$UPGRADE_STATE_DIR"
     printf 'UPGRADE_STATUS_FILE=%q\n' "$UPGRADE_STATUS_FILE"
     printf 'UPGRADE_LOG_FILE=%q\n' "$UPGRADE_LOG_FILE"
+    printf 'SERVER_TIMEZONE=%q\n' "$SERVER_TIMEZONE"
+    printf 'NTP_SERVERS=%q\n' "$NTP_SERVERS"
     printf 'CELERY_CONCURRENCY=%q\n' "$CELERY_CONCURRENCY"
     printf 'OPEN_FIREWALL=%q\n' "$OPEN_FIREWALL"
   } > "$helper_config"
@@ -910,6 +1012,7 @@ print_summary() {
   printf 'App:      http://%s:%s\n' "${PUBLIC_HOST:-localhost}" "$API_PORT"
   printf 'API:      http://%s:%s\n' "${PUBLIC_HOST:-localhost}" "$API_PORT"
   printf 'Env file: %s\n' "$ENV_FILE"
+  printf 'Time:     timezone %s, NTP %s\n' "$SERVER_TIMEZONE" "$NTP_SERVERS"
   printf 'Job logs: %s (logrotate maxsize %s, retention %s days)\n' "$JOB_LOG_DIR" "$JOB_LOG_MAX_SIZE" "$JOB_LOG_RETENTION_DAYS"
   printf 'Admin username: %s\n' "$ADMIN_USERNAME"
   if [ -n "$GENERATED_ADMIN_PASSWORD" ]; then
@@ -939,10 +1042,14 @@ main() {
   load_admin_password_input
   install_node
   install_rclone
+  validate_time_settings
   validate_job_log_settings
   ensure_env_file
+  load_time_settings_from_env
   load_job_log_settings_from_env
+  validate_time_settings
   validate_job_log_settings
+  configure_time_sync
   ensure_local_data_root
   ensure_job_log_dir
   install_job_logrotate_config
