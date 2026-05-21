@@ -886,12 +886,6 @@ export default function App() {
         <header className="h-16 flex items-center justify-between px-10 bg-white sticky top-0 z-20 shadow-sm border-b border-gray-100">
           <div className="text-xs font-semibold text-gray-500">Signed in as <span className="text-gray-800">{authState.username}</span></div>
           <div className="flex items-center gap-3">
-            {view === 'explorer' && (
-              <div className="relative">
-                <Search className="absolute left-3 top-2 text-gray-400" size={16} />
-                <input className="bg-white border border-gray-200 rounded-md py-1.5 pl-9 pr-4 w-64 text-sm text-gray-800 focus:outline-none focus:border-[#9c3029] focus:ring-1 focus:ring-[#9c3029]" placeholder="Search VMs..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
-              </div>
-            )}
             <button onClick={fetchHealth} className={`px-2.5 py-2 border rounded-md text-xs font-semibold flex items-center gap-2 ${!health?.status ? 'border-gray-200 text-gray-600 bg-white' : health.status === 'ok' ? 'border-green-200 text-green-700 bg-green-50' : health.status === 'warn' ? 'border-amber-200 text-amber-700 bg-amber-50' : 'border-red-200 text-red-700 bg-red-50'}`} title="Refresh health status">
               <HeartPulse size={15} />
               {health?.status || 'health'}
@@ -1500,84 +1494,115 @@ export default function App() {
           {/* VIEW: VM EXPLORER */}
           {view === 'explorer' && (
              <div className="space-y-6 animate-in slide-in-from-right-4 max-w-7xl mx-auto">
-                <div className="bg-white p-4 rounded-md border border-gray-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
-                  <div className="flex items-center gap-3 min-w-0">
-                    <Database size={20} className="text-[#9c3029] shrink-0" />
+                <div className="bg-white p-4 rounded-md border border-gray-200 shadow-sm">
+                  <div className="grid grid-cols-1 lg:grid-cols-[minmax(220px,320px)_minmax(240px,420px)_1fr] gap-4 items-end">
                     <div className="min-w-0">
-                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider block mb-1">Source</label>
+                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 flex items-center gap-2">
+                        <Database size={14} className="text-[#9c3029]" />
+                        Source
+                      </label>
                       <select value={activeSourceProfile} onChange={e => fetchVms(e.target.value)} className="w-64 max-w-full bg-white border border-gray-200 rounded-md py-2 px-3 text-sm font-semibold text-gray-800 focus:outline-none focus:border-[#9c3029]">
                         <option value="">Select OCI profile...</option>
                         {profiles.map(p => <option key={p} value={p}>{p}</option>)}
                       </select>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => fetchVms(activeSourceProfile)} disabled={!activeSourceProfile || loading} className="px-3 py-2 bg-white border border-gray-200 text-gray-600 rounded-md hover:text-[#9c3029] hover:bg-gray-50 disabled:opacity-50 flex items-center gap-2 text-xs font-semibold">
-                      {loading ? <Loader2 className="animate-spin" size={14} /> : <RefreshCw size={14} />}
-                      Refresh
-                    </button>
-                    <span className="text-xs font-semibold text-gray-500 bg-gray-100 px-3 py-1 rounded-full">{activeSourceProfile ? `${vms.length} VMs` : 'No source selected'}</span>
+                    <div className="min-w-0">
+                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider block mb-1">Filter</label>
+                      <div className="relative">
+                        <Search className="absolute left-3 top-2.5 text-gray-400" size={15} />
+                        <input
+                          className="w-full bg-white border border-gray-200 rounded-md py-2 pl-9 pr-3 text-sm text-gray-800 focus:outline-none focus:border-[#9c3029] focus:ring-1 focus:ring-[#9c3029] disabled:bg-gray-50 disabled:text-gray-400"
+                          placeholder="Search name, OS, shape, IP..."
+                          value={searchTerm}
+                          onChange={e => setSearchTerm(e.target.value)}
+                          disabled={!activeSourceProfile}
+                        />
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 justify-start lg:justify-end">
+                      <button onClick={() => fetchVms(activeSourceProfile)} disabled={!activeSourceProfile || loading} className="px-3 py-2 bg-white border border-gray-200 text-gray-600 rounded-md hover:text-[#9c3029] hover:bg-gray-50 disabled:opacity-50 flex items-center gap-2 text-xs font-semibold">
+                        {loading ? <Loader2 className="animate-spin" size={14} /> : <RefreshCw size={14} />}
+                        Refresh
+                      </button>
+                      <span className="text-xs font-semibold text-gray-500 bg-gray-100 px-3 py-1 rounded-full">
+                        {activeSourceProfile ? (searchTerm.trim() ? `${filteredVms.length}/${vms.length} VMs` : `${vms.length} VMs`) : 'No source selected'}
+                      </span>
+                    </div>
                   </div>
                 </div>
 
                 {activeSourceProfile ? (
                   loading ? ( <div className="flex justify-center p-20"><Loader2 className="animate-spin text-gray-400" size={40} /></div>
                   ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                      {filteredVms.map(vm => {
-                        const taskData = Object.values(vmTasks).find(t => t.vm_id === vm.id);
-                        const isMigrating = !!taskData && taskData.status !== 'SUCCESS' && taskData.status !== 'FAILURE';
-                        return (
-                          <div key={vm.id} onClick={() => { if (!isMigrating) setSelectedVms(prev => prev.includes(vm.id) ? prev.filter(i => i !== vm.id) : [...prev, vm.id]); }}
-                                className={`p-4 rounded-md border transition-all relative ${selectedVms.includes(vm.id) ? 'border-[#9c3029] bg-red-50' : 'border-gray-200 bg-white hover:shadow-md'} ${isMigrating ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'}`}>
-                              <div className="flex items-start gap-3">
-                                <Cloud className={`mt-1 shrink-0 ${selectedVms.includes(vm.id) ? 'text-[#9c3029]' : 'text-gray-400'}`} size={20}/>
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex items-start justify-between gap-2">
-                                    <h4 className="font-bold text-gray-800 truncate text-sm">{vm.name}</h4>
-                                    <span className="text-[9px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 font-bold uppercase shrink-0">{vm.state}</span>
-                                  </div>
+                    <div className="bg-white border border-gray-200 rounded-md shadow-sm overflow-hidden">
+                      <div className="hidden xl:grid grid-cols-[minmax(260px,1.7fr)_minmax(170px,1fr)_minmax(170px,1fr)_minmax(105px,0.65fr)_minmax(135px,0.8fr)_minmax(135px,0.8fr)_100px] gap-4 px-4 py-3 bg-gray-50 border-b border-gray-100 text-[10px] uppercase font-bold tracking-wider text-gray-400">
+                        <div>VM</div>
+                        <div>OS</div>
+                        <div>Shape</div>
+                        <div>OCPU/RAM</div>
+                        <div>Private IP</div>
+                        <div>Public IP</div>
+                        <div className="text-right">State</div>
+                      </div>
+                      <div className="divide-y divide-gray-100">
+                        {filteredVms.map(vm => {
+                          const taskData = Object.values(vmTasks).find(t => t.vm_id === vm.id);
+                          const isMigrating = !!taskData && taskData.status !== 'SUCCESS' && taskData.status !== 'FAILURE';
+                          const isSelected = selectedVms.includes(vm.id);
+                          const stateClass = vm.state === 'RUNNING'
+                            ? 'bg-green-50 text-green-700 border-green-200'
+                            : vm.state === 'STOPPED'
+                              ? 'bg-gray-100 text-gray-600 border-gray-200'
+                              : 'bg-amber-50 text-amber-700 border-amber-200';
+                          return (
+                            <div
+                              key={vm.id}
+                              onClick={() => { if (!isMigrating) setSelectedVms(prev => prev.includes(vm.id) ? prev.filter(i => i !== vm.id) : [...prev, vm.id]); }}
+                              className={`grid grid-cols-1 xl:grid-cols-[minmax(260px,1.7fr)_minmax(170px,1fr)_minmax(170px,1fr)_minmax(105px,0.65fr)_minmax(135px,0.8fr)_minmax(135px,0.8fr)_100px] gap-3 xl:gap-4 items-center p-4 transition-colors ${isSelected ? 'bg-red-50' : 'bg-white hover:bg-gray-50'} ${isMigrating ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'}`}
+                            >
+                              <div className="flex items-start gap-3 min-w-0">
+                                <Cloud className={`mt-0.5 shrink-0 ${isSelected ? 'text-[#9c3029]' : 'text-gray-400'}`} size={18}/>
+                                <div className="min-w-0">
+                                  <h4 className="font-bold text-gray-800 truncate text-sm">{vm.name}</h4>
                                   <p className="text-[10px] text-gray-500 font-mono mt-1 truncate">{vm.id}</p>
+                                  {taskData && (
+                                    <div className={`mt-2 text-[10px] uppercase font-bold tracking-wider truncate ${getStatusColor(taskData.status)}`}>
+                                      {isMigrating && <Loader2 size={12} className="inline animate-spin mr-1"/>}
+                                      {taskData.details}
+                                    </div>
+                                  )}
                                 </div>
                               </div>
-                              <div className="mt-4 grid grid-cols-2 gap-2 text-left">
-                                <div className="min-w-0">
-                                  <div className="text-[9px] uppercase font-bold text-gray-400">OS</div>
-                                  <div className="text-[11px] text-gray-700 truncate" title={vm.os || 'Unknown'}>{vm.os || 'Unknown'}</div>
-                                </div>
-                                <div className="min-w-0">
-                                  <div className="text-[9px] uppercase font-bold text-gray-400">Shape</div>
-                                  <div className="text-[11px] text-gray-700 truncate" title={vm.shape || 'Unknown'}>{vm.shape || 'Unknown'}</div>
-                                </div>
-                                <div>
-                                  <div className="text-[9px] uppercase font-bold text-gray-400">OCPU</div>
-                                  <div className="text-[11px] text-gray-700">{vm.ocpus ?? '-'}</div>
-                                </div>
-                                <div>
-                                  <div className="text-[9px] uppercase font-bold text-gray-400">RAM</div>
-                                  <div className="text-[11px] text-gray-700">{vm.memory_gb ? `${vm.memory_gb} GB` : '-'}</div>
-                                </div>
+                              <div className="min-w-0 text-left">
+                                <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">OS</div>
+                                <div className="text-xs text-gray-700 truncate" title={vm.os || 'Unknown'}>{vm.os || 'Unknown'}</div>
                               </div>
-                              <div className="mt-3 space-y-1 text-[10px] font-mono text-left">
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <span className="text-gray-400 uppercase font-bold shrink-0">Private</span>
-                                  <span className="text-gray-700 truncate" title={vm.private_ip || '-'}>{vm.private_ip || '-'}</span>
-                                </div>
-                                <div className="flex items-center gap-2 min-w-0">
-                                  <span className="text-gray-400 uppercase font-bold shrink-0">Public</span>
-                                  <span className="text-gray-700 truncate" title={vm.public_ip || '-'}>{vm.public_ip || '-'}</span>
-                                </div>
+                              <div className="min-w-0 text-left">
+                                <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Shape</div>
+                                <div className="text-xs text-gray-700 truncate" title={vm.shape || 'Unknown'}>{vm.shape || 'Unknown'}</div>
                               </div>
-                              {taskData && (
-                                <div className={`mt-4 pt-3 border-t border-gray-100 text-[10px] uppercase font-bold tracking-widest ${getStatusColor(taskData.status)}`}>
-                                  {isMigrating && <Loader2 size={12} className="inline animate-spin mr-1"/>}
-                                  {taskData.details}
-                                </div>
-                              )}
-                          </div>
-                        );
-                      })}
-                      {filteredVms.length === 0 && <div className="col-span-full text-center p-12 bg-white border border-gray-200 rounded-md text-gray-500 shadow-sm">No VMs match your search.</div>}
+                              <div className="text-left">
+                                <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">OCPU/RAM</div>
+                                <div className="text-xs text-gray-700">{vm.ocpus ?? '-'} / {vm.memory_gb ? `${vm.memory_gb} GB` : '-'}</div>
+                              </div>
+                              <div className="min-w-0 text-left font-mono">
+                                <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5 font-sans">Private IP</div>
+                                <div className="text-xs text-gray-700 truncate" title={vm.private_ip || '-'}>{vm.private_ip || '-'}</div>
+                              </div>
+                              <div className="min-w-0 text-left font-mono">
+                                <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5 font-sans">Public IP</div>
+                                <div className="text-xs text-gray-700 truncate" title={vm.public_ip || '-'}>{vm.public_ip || '-'}</div>
+                              </div>
+                              <div className="flex xl:justify-end">
+                                <span className={`text-[9px] px-2 py-0.5 rounded-full border font-bold uppercase ${stateClass}`}>
+                                  {vm.state || '-'}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {filteredVms.length === 0 && <div className="text-center p-12 text-gray-500">No VMs match your search.</div>}
+                      </div>
                     </div>
                   )
                 ) : (
