@@ -653,6 +653,13 @@ export default function App() {
       setNotice({ type: 'error', title: 'Missing job fields', message: 'Job name, source remote, and destination bucket are required.' });
       return;
     }
+    if (syncJob.schedule.frequency === 'monthly') {
+      const dayOfMonth = Number(syncJob.schedule.day_of_month);
+      if (!Number.isInteger(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31) {
+        setNotice({ type: 'error', title: 'Invalid schedule', message: 'Monthly day must be between 1 and 31.' });
+        return;
+      }
+    }
     setLoading(true);
     try {
       await api.post(`/save-job`, syncJob);
@@ -1250,9 +1257,13 @@ export default function App() {
                 {jobs.map(job => {
                   const latestRun = latestRunByJob[job.name];
                   const latestMessage = cleanJobMessage(latestRun?.error || latestRun?.details || '');
-                  const scheduleText = job.schedule?.frequency === 'none'
-                    ? 'manual'
-                    : `${job.schedule?.frequency || 'manual'} @ ${job.schedule?.time || '02:00'}`;
+                  const scheduleText = (() => {
+                    const schedule = job.schedule || {};
+                    if (schedule.frequency === 'none') return 'manual';
+                    if (schedule.frequency === 'weekly') return `weekly ${schedule.day_of_week || 'monday'} @ ${schedule.time || '02:00'}`;
+                    if (schedule.frequency === 'monthly') return `monthly day ${schedule.day_of_month || '1'} @ ${schedule.time || '02:00'}`;
+                    return `${schedule.frequency || 'manual'} @ ${schedule.time || '02:00'}`;
+                  })();
 
                   return (
                     <div key={job.name} className="flex flex-col gap-2">
@@ -1444,7 +1455,7 @@ export default function App() {
                   <div className="space-y-1">
                     <label className="text-[11px] uppercase font-bold text-gray-500">Frequency</label>
                     <select value={syncJob.schedule.frequency} onChange={e => setSyncJob({...syncJob, schedule: {...syncJob.schedule, frequency: e.target.value}})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
-                      <option value="none">Manual Only</option><option value="daily">Daily</option><option value="weekly">Weekly</option>
+                      <option value="none">Manual Only</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option>
                     </select>
                   </div>
                   <div className="space-y-1">
@@ -1457,6 +1468,19 @@ export default function App() {
                       <select value={syncJob.schedule.day_of_week} onChange={e => setSyncJob({...syncJob, schedule: {...syncJob.schedule, day_of_week: e.target.value}})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
                         <option value="monday">Monday</option><option value="sunday">Sunday</option>
                       </select>
+                    </div>
+                  )}
+                  {syncJob.schedule.frequency === 'monthly' && (
+                    <div className="space-y-1">
+                      <label className="text-[11px] uppercase font-bold text-gray-500">Day of Month</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="31"
+                        value={syncJob.schedule.day_of_month}
+                        onChange={e => setSyncJob({...syncJob, schedule: {...syncJob.schedule, day_of_month: e.target.value}})}
+                        className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                      />
                     </div>
                   )}
                 </div>
