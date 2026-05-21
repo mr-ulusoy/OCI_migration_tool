@@ -155,6 +155,7 @@ export default function App() {
 
   // Rclone / Data Sync State
   const [remotes, setRemotes] = useState([]);
+  const [remoteDetails, setRemoteDetails] = useState([]);
   const [jobs, setJobs] = useState([]);
   const [sourceBuckets, setSourceBuckets] = useState([]);
   const [destBuckets, setDestBuckets] = useState([]);
@@ -164,6 +165,14 @@ export default function App() {
     sync_mode: 'copy', transfers: 16, checkers: 32, buffer_size: '128M',
     schedule: { frequency: 'none', time: '02:00', day_of_week: 'monday', day_of_month: '1' }
   });
+  const visibleRemoteDetails = useMemo(() => {
+    const detailsByName = new Map(remoteDetails.map((remote) => [remote.name, remote]));
+    return remotes
+      .filter((remoteName) => !remoteName.endsWith('_rclone'))
+      .map((remoteName) => detailsByName.get(remoteName) || { name: remoteName, type: '' });
+  }, [remotes, remoteDetails]);
+  const localRemotes = visibleRemoteDetails.filter((remote) => remote.type === 'local');
+  const externalRemotes = visibleRemoteDetails.filter((remote) => remote.type !== 'local');
 
   // VM Migration Panel State
   const [vmMigrationConfig, setVmMigrationConfig] = useState({
@@ -307,7 +316,15 @@ export default function App() {
   }, [vmTasks, api]);
 
   const fetchProfiles = async () => { try { const res = await api.get(`/list-profiles`); setProfiles(res.data.profiles); } catch (err) { showError('Failed to load OCI profiles', err); } };
-  const fetchRemotes = async () => { try { const res = await api.get(`/list-remotes`); setRemotes(res.data.remotes); } catch (err) { showError('Failed to load rclone remotes', err); } };
+  const fetchRemotes = async () => {
+    try {
+      const res = await api.get(`/list-remotes`);
+      setRemotes(res.data.remotes || []);
+      setRemoteDetails(res.data.remote_details || []);
+    } catch (err) {
+      showError('Failed to load rclone remotes', err);
+    }
+  };
   const fetchJobs = async () => { try { const res = await api.get(`/list-jobs`); setJobs(res.data); } catch (err) { showError('Failed to load jobs', err); } };
 
   // --- OCI Profile (Saved Profiles) Management ---
@@ -929,14 +946,28 @@ export default function App() {
                         ))}
                         {profiles.length === 0 && <p className="text-gray-500 italic text-sm">No profiles found.</p>}
                         
-                        {/* Externa Remotes */}
-                        {remotes.filter(r => !r.endsWith('_rclone')).length > 0 && (
+                        {localRemotes.length > 0 && (
+                          <div className="pt-4 border-t border-gray-100 mt-4">
+                            <label className="text-[10px] font-bold text-gray-400 uppercase mb-2 block">Local Sources</label>
+                            {localRemotes.map(remote => (
+                               <div key={remote.name} className="p-3 bg-gray-50 border border-gray-200 rounded-md flex justify-between items-center mb-2">
+                                  <div className="min-w-0">
+                                    <span className="text-sm text-gray-600 font-medium">{remote.name}</span>
+                                    {remote.share_name && <div className="text-[10px] text-gray-400 truncate">SMB: {remote.share_name}</div>}
+                                  </div>
+                                  <button onClick={() => handleDeleteRemote(remote.name)} className="p-1.5 text-gray-400 hover:text-[#9c3029]"><Trash2 size={14}/></button>
+                               </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {externalRemotes.length > 0 && (
                           <div className="pt-4 border-t border-gray-100 mt-4">
                             <label className="text-[10px] font-bold text-gray-400 uppercase mb-2 block">External Remotes</label>
-                            {remotes.filter(r => !r.endsWith('_rclone')).map(r => (
-                               <div key={r} className="p-3 bg-gray-50 border border-gray-200 rounded-md flex justify-between items-center mb-2">
-                                  <span className="text-sm text-gray-600 font-medium">{r}</span>
-                                  <button onClick={() => handleDeleteRemote(r)} className="p-1.5 text-gray-400 hover:text-[#9c3029]"><Trash2 size={14}/></button>
+                            {externalRemotes.map(remote => (
+                               <div key={remote.name} className="p-3 bg-gray-50 border border-gray-200 rounded-md flex justify-between items-center mb-2">
+                                  <span className="text-sm text-gray-600 font-medium">{remote.name}</span>
+                                  <button onClick={() => handleDeleteRemote(remote.name)} className="p-1.5 text-gray-400 hover:text-[#9c3029]"><Trash2 size={14}/></button>
                                </div>
                             ))}
                           </div>

@@ -1128,10 +1128,23 @@ async def get_job_log(job_name: str):
 # --- 4. Rclone Remotes & Buckets ---
 @app.get("/list-remotes")
 async def list_remotes():
-    if not os.path.exists(RCLONE_CONF): return {"remotes": []}
+    if not os.path.exists(RCLONE_CONF):
+        return {"remotes": [], "remote_details": []}
     parser = configparser.ConfigParser()
     parser.read(RCLONE_CONF)
-    return {"remotes": parser.sections()}
+    remote_details = []
+    for section in parser.sections():
+        remote_details.append(
+            {
+                "name": section,
+                "type": parser.get(section, "type", fallback=""),
+                "local_mode": parser.get(section, "oci_migrator_local_mode", fallback=""),
+                "local_path": parser.get(section, "oci_migrator_local_path", fallback=""),
+                "share_name": parser.get(section, "oci_migrator_share_name", fallback=""),
+                "share_access": parser.get(section, "oci_migrator_share_access", fallback=""),
+            }
+        )
+    return {"remotes": parser.sections(), "remote_details": remote_details}
 
 @app.get("/list-remote-buckets/{remote_name}")
 async def list_remote_buckets(remote_name: str):
