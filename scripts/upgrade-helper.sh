@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+APP_NAME="${APP_NAME:-oci-migrator}"
+CONFIG_FILE="${OCI_MIGRATOR_UPGRADE_CONFIG:-/etc/oci-migrator/upgrade.conf}"
+
+fail() {
+  printf '[%s upgrade] ERROR: %s\n' "$APP_NAME" "$*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<EOF
+OCI Migrator upgrade helper
+
+Usage:
+  oci-migrator-upgrade start
+EOF
+}
+
+require_root() {
+  [ "$(id -u)" -eq 0 ] || fail "This helper must run as root."
+}
+
+load_config() {
+  [ -f "$CONFIG_FILE" ] || fail "Missing upgrade config: $CONFIG_FILE"
+  # shellcheck source=/etc/oci-migrator/upgrade.conf
+  . "$CONFIG_FILE"
+
+  : "${INSTALL_DIR:?Missing INSTALL_DIR}"
+  : "${RUN_USER:?Missing RUN_USER}"
+  : "${REPO_URL:?Missing REPO_URL}"
+  : "${BRANCH:?Missing BRANCH}"
+  : "${API_PORT:?Missing API_PORT}"
+  : "${SERVICE_PREFIX:?Missing SERVICE_PREFIX}"
+  : "${ENV_FILE:?Missing ENV_FILE}"
+  : "${UPGRADE_HELPER:?Missing UPGRADE_HELPER}"
+  : "${UPGRADE_STATE_DIR:?Missing UPGRADE_STATE_DIR}"
+  : "${UPGRADE_STATUS_FILE:?Missing UPGRADE_STATUS_FILE}"
+  : "${UPGRADE_LOG_FILE:?Missing UPGRADE_LOG_FILE}"
+}
+
+validate_config() {
+  [[ "$INSTALL_DIR" = /* ]] || fail "INSTALL_DIR must be absolute."
+  [[ "$ENV_FILE" = /* ]] || fail "ENV_FILE must be absolute."
+  [[ "$UPGRADE_HELPER" = /* ]] || fail "UPGRADE_HELPER must be absolute."
+  [[ "$UPGRADE_STATE_DIR" = /* ]] || fail "UPGRADE_STATE_DIR must be absolute."
+  [[ "$UPGRADE_STATUS_FILE" = /* ]] || fail "UPGRADE_STATUS_FILE must be absolute."
+  [[ "$UPGRADE_LOG_FILE" = /* ]] || fail "UPGRADE_LOG_FILE must be absolute."
+  [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "Invalid branch name."
+  id "$RUN_USER" >/dev/null 2>&1 || fail "Run user does not exist: $RUN_USER"
+  [ -d "$INSTALL_DIR/.git" ] || fail "Install directory is not a git checkout: $INSTALL_DIR"
+  [ -x "$INSTALL_DIR/install.sh" ] || fail "Missing install.sh in $INSTALL_DIR"
+}
+
+prepare_paths() {
+  install -d -o "$RUN_USER" -g "$RUN_USER" -m 750 "$UPGRADE_STATE_DIR"
+  install -d -o "$RUN_USER" -g "$RUN_USER" -m 750 "$(dirname "$UPGRADE_LOG_FILE")"
+  touch "$UPGRADE_LOG_FILE"
+  chown "$RUN_USER:$RUN_USER" "$UPGRADE_LOG_FILE"
+  chmod 640 "$UPGRADE_LOG_FILE"
+}
+
+now_utc() {
+  date -u +"%Y-%m-%dT%H:%M:%SZ"
+}
+
+write_status() {
+  local state="$1"
+  local message="$2"
+  local current_commit="${3:-}"
+  local target_commit="${4:-}"
+
+  STATUS_FILE="$UPGRADE_STATUS_FILE" \
+  STATE="$state" \
+  MESSAGE="$message" \
+  CURRENT_COMMIT="$current_commit" \
+  TARGET_COMMIT="$target_commit" \
+  LOG_FILE="$UPGRADE_LOG_FILE" \
+  python3 - <<'PY'
+import json
+import os
+import tempfile
+from datetime import datetime, timezone
+
+path = os.environ["STATUS_FILE"]
+state = os.environ["STATE"]
+now = datetime.now(timezone.utc).isoformat()
+
+data = {}
+try:
+    with open(path, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+
+if state == "running" and data.get("status") != "running":
+    data["started_at"] = now
+    data["finished_at"] = None
+if state in {"success", "failed"}:
+    data["finished_at"] = now
+
+data.update(
+    {
+        "status": state,
+        "message": os.environ["MESSAGE"],
+        "current_commit": os.environ.get("CURRENT_COMMIT", ""),
+        "target_commit": os.environ.get("TARGET_COMMIT", ""),
+        "updated_at": now,
+        "log_file": os.environ["LOG_FILE"],
+    }
+)
+
+os.makedirs(os.path.dirname(path), exist_ok=True)
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, path)
+finally:
+    if os.path.exists(tmp):
+        os.remove(tmp)
+PY
+  chown "$RUN_USER:$RUN_USER" "$UPGRADE_STATUS_FILE" 2>/dev/null || true
+}
+
+log() {
+  printf '[%s] %s\n' "$(now_utc)" "$*" | tee -a "$UPGRADE_LOG_FILE" >/dev/null
+}
+
+run_cmd() {
+  log "+ $*"
+  "$@" >>"$UPGRADE_LOG_FILE" 2>&1
+}
+
+run_as_user() {
+  run_cmd sudo -H -u "$RUN_USER" "$@"
+}
+
+git_value() {
+  sudo -H -u "$RUN_USER" git -C "$INSTALL_DIR" "$@" 2>/dev/null || true
+}
+
+finish_failed() {
+  local exit_code=$?
+  if [ "$exit_code" -ne 0 ]; then
+    log "Upgrade failed with exit code $exit_code."
+    write_status "failed" "Upgrade failed. Check the upgrade log." "$(git_value rev-parse HEAD)" "$(git_value rev-parse "origin/$BRANCH")"
+  fi
+  rm -rf "$UPGRADE_STATE_DIR/upgrade.lock"
+  exit "$exit_code"
+}
+
+start_upgrade() {
+  require_root
+  load_config
+  validate_config
+  prepare_paths
+
+  if ! mkdir "$UPGRADE_STATE_DIR/upgrade.lock" 2>/dev/null; then
+    write_status "running" "Upgrade is already running." "$(git_value rev-parse HEAD)" "$(git_value rev-parse "origin/$BRANCH")"
+    fail "Upgrade is already running."
+  fi
+  trap finish_failed EXIT
+
+  : > "$UPGRADE_LOG_FILE"
+  chown "$RUN_USER:$RUN_USER" "$UPGRADE_LOG_FILE"
+  chmod 640 "$UPGRADE_LOG_FILE"
+
+  local current_commit target_commit new_commit
+  current_commit="$(git_value rev-parse HEAD)"
+  write_status "running" "Checking GitHub for updates." "$current_commit" ""
+  log "Starting controlled upgrade for $INSTALL_DIR ($BRANCH)."
+
+  run_as_user git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL"
+  run_as_user git -C "$INSTALL_DIR" fetch origin "$BRANCH"
+  target_commit="$(git_value rev-parse "origin/$BRANCH")"
+
+  if [ -n "$current_commit" ] && [ "$current_commit" = "$target_commit" ]; then
+    log "Already up to date at $current_commit."
+    write_status "success" "Already up to date." "$current_commit" "$target_commit"
+    rm -rf "$UPGRADE_STATE_DIR/upgrade.lock"
+    trap - EXIT
+    exit 0
+  fi
+
+  write_status "running" "Downloading latest version." "$current_commit" "$target_commit"
+  run_as_user git -C "$INSTALL_DIR" checkout "$BRANCH"
+  run_as_user git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH"
+  new_commit="$(git_value rev-parse HEAD)"
+
+  write_status "running" "Installing latest version." "$new_commit" "$target_commit"
+  local install_cmd
+  install_cmd=(
+    ./install.sh
+    --run-user "$RUN_USER"
+    --service-prefix "$SERVICE_PREFIX"
+    --api-port "$API_PORT"
+    --env-file "$ENV_FILE"
+    --local-data-root "${LOCAL_DATA_ROOT:-/var/lib/oci-migrator/local}"
+    --job-log-dir "${JOB_LOG_DIR:-/var/log/oci-migrator/jobs}"
+    --job-log-max-size "${JOB_LOG_MAX_SIZE:-10M}"
+    --job-log-retention-days "${JOB_LOG_RETENTION_DAYS:-14}"
+    --job-log-helper "${JOB_LOG_HELPER:-/usr/local/sbin/oci-migrator-job-log}"
+    --local-share-helper "${LOCAL_SHARE_HELPER:-/usr/local/sbin/oci-migrator-local-share}"
+    --upgrade-helper "$UPGRADE_HELPER"
+    --celery-concurrency "${CELERY_CONCURRENCY:-2}"
+  )
+  if [ -n "${PUBLIC_HOST:-}" ]; then
+    install_cmd+=(--public-host "$PUBLIC_HOST")
+  fi
+  if [ "${OPEN_FIREWALL:-0}" = "1" ]; then
+    install_cmd+=(--open-firewall)
+  fi
+
+  cd "$INSTALL_DIR"
+  log "+ ${install_cmd[*]}"
+  "${install_cmd[@]}" >>"$UPGRADE_LOG_FILE" 2>&1
+
+  write_status "success" "Upgrade complete." "$new_commit" "$target_commit"
+  log "Upgrade complete at $new_commit."
+  rm -rf "$UPGRADE_STATE_DIR/upgrade.lock"
+  trap - EXIT
+}
+
+main() {
+  case "${1:-}" in
+    start)
+      start_upgrade
+      ;;
+    -h|--help)
+      usage
+      ;;
+    *)
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

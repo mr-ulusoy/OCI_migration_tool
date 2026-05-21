@@ -344,11 +344,17 @@ LOCAL_DATA_ROOT = Path(os.getenv("OCI_MIGRATOR_LOCAL_DATA_ROOT", "/var/lib/oci-m
 LOCAL_SHARE_HELPER = Path(os.getenv("OCI_MIGRATOR_LOCAL_SHARE_HELPER", "/usr/local/sbin/oci-migrator-local-share")).resolve()
 JOB_LOG_HELPER = Path(os.getenv("OCI_MIGRATOR_JOB_LOG_HELPER", "/usr/local/sbin/oci-migrator-job-log")).resolve()
 JOB_LOGROTATE_FILE = Path(os.getenv("OCI_MIGRATOR_JOB_LOGROTATE_FILE", "/etc/logrotate.d/migrator-job-logs"))
+UPGRADE_HELPER = Path(os.getenv("OCI_MIGRATOR_UPGRADE_HELPER", "/usr/local/sbin/oci-migrator-upgrade")).resolve()
+UPGRADE_STATUS_FILE = Path(
+    os.getenv("OCI_MIGRATOR_UPGRADE_STATUS_FILE", "/var/lib/oci-migrator/upgrade/status.json")
+).resolve()
+UPGRADE_LOG_FILE = Path(os.getenv("OCI_MIGRATOR_UPGRADE_LOG_FILE", "/var/log/oci-migrator/upgrade.log")).resolve()
 try:
     LOCAL_SHARE_TIMEOUT_SECONDS = int(os.getenv("OCI_MIGRATOR_LOCAL_SHARE_TIMEOUT_SECONDS", "300"))
 except ValueError:
     LOCAL_SHARE_TIMEOUT_SECONDS = 300
 JOB_LOG_SETTINGS_LOCK = Lock()
+UPGRADE_LOCK = Lock()
 
 # Säkerställ att mappar finns
 os.makedirs(os.path.dirname(RCLONE_CONF), exist_ok=True)
@@ -825,6 +831,120 @@ def apply_job_log_rotation_settings(max_size: str, retention_days: int) -> dict:
         )
 
 
+def mask_remote_url(value: str) -> str:
+    return re.sub(r"(https?://)([^/@]+)@", r"\1***@", value or "")
+
+
+def git_command(args: list[str], timeout: int = 10) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(PROJECT_ROOT), *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(truncate_text(result.stderr or result.stdout or f"git exited with code {result.returncode}"))
+        return result.stdout.strip()
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"git command timed out after {timeout}s") from exc
+
+
+def safe_git_command(args: list[str], timeout: int = 10) -> str:
+    try:
+        return git_command(args, timeout=timeout)
+    except Exception:
+        return ""
+
+
+def current_git_info() -> dict:
+    commit = safe_git_command(["rev-parse", "HEAD"])
+    branch = safe_git_command(["rev-parse", "--abbrev-ref", "HEAD"])
+    remote_url = safe_git_command(["config", "--get", "remote.origin.url"])
+    if branch == "HEAD":
+        branch = ""
+
+    return {
+        "branch": branch,
+        "current_commit": commit,
+        "current_short": commit[:7] if commit else "",
+        "remote_url": mask_remote_url(remote_url),
+    }
+
+
+def latest_git_info() -> dict:
+    info = current_git_info()
+    branch = info.get("branch") or "main"
+    try:
+        raw_output = git_command(["ls-remote", "origin", branch], timeout=20)
+        first_line = raw_output.splitlines()[0] if raw_output else ""
+        latest_commit = first_line.split()[0] if first_line else ""
+        if not latest_commit:
+            raise RuntimeError(f"No commit found for origin/{branch}.")
+    except Exception as exc:
+        raise_operation_error(
+            502,
+            "Check for updates",
+            exc,
+            "Confirm that the server has outbound GitHub access and that origin points to the project repository.",
+        )
+
+    return {
+        **info,
+        "branch": branch,
+        "latest_commit": latest_commit,
+        "latest_short": latest_commit[:7],
+        "up_to_date": bool(info.get("current_commit")) and info.get("current_commit") == latest_commit,
+    }
+
+
+def read_upgrade_status_file() -> dict:
+    default_status = {
+        "status": "idle",
+        "message": "No upgrade has run yet.",
+        "started_at": None,
+        "finished_at": None,
+        "updated_at": None,
+    }
+    try:
+        if not UPGRADE_STATUS_FILE.exists():
+            return default_status
+        with open(UPGRADE_STATUS_FILE, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        if not isinstance(payload, dict):
+            return default_status
+        return {**default_status, **payload}
+    except (OSError, json.JSONDecodeError):
+        return {**default_status, "status": "warn", "message": "Upgrade status file could not be read."}
+
+
+def upgrade_status_payload() -> dict:
+    payload = read_upgrade_status_file()
+    payload.update(current_git_info())
+    payload["helper_installed"] = UPGRADE_HELPER.is_file()
+    payload["log_file"] = str(UPGRADE_LOG_FILE)
+    return payload
+
+
+def upgrade_helper_command() -> list[str]:
+    if not UPGRADE_HELPER.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail="Upgrade helper is not installed. Rerun ./install.sh and try again.",
+        )
+
+    if os.geteuid() == 0:
+        return [str(UPGRADE_HELPER), "start"]
+
+    sudo_path = shutil.which("sudo")
+    if not sudo_path:
+        raise HTTPException(
+            status_code=503,
+            detail="sudo is required for controlled upgrades. Rerun ./install.sh and try again.",
+        )
+    return [sudo_path, "-n", str(UPGRADE_HELPER), "start"]
+
+
 def history_status_for_api(run: dict) -> str:
     status_map = {
         "queued": "PENDING",
@@ -958,6 +1078,7 @@ async def health():
     rclone_installed = bool(shutil.which("rclone"))
     frontend_build_exists = (FRONTEND_DIST_DIR / "index.html").is_file()
     job_log_dir_exists = JOB_LOG_DIR.is_dir()
+    upgrade_helper_exists = UPGRADE_HELPER.is_file()
 
     checks = {
         "admin_password": health_check_item(
@@ -987,6 +1108,10 @@ async def health():
         "job_log_dir": health_check_item(
             "ok" if job_log_dir_exists else "warn",
             f"Job log directory exists: {JOB_LOG_DIR}" if job_log_dir_exists else f"Job log directory does not exist yet: {JOB_LOG_DIR}",
+        ),
+        "upgrade_helper": health_check_item(
+            "ok" if upgrade_helper_exists else "warn",
+            f"Upgrade helper is installed: {UPGRADE_HELPER}" if upgrade_helper_exists else f"Upgrade helper is not installed: {UPGRADE_HELPER}",
         ),
     }
 
@@ -1040,6 +1165,65 @@ async def update_job_log_settings(settings: JobLogSettingsRequest):
         )
 
     return current_job_log_settings()
+
+
+@app.get("/upgrade/status")
+async def upgrade_status():
+    return upgrade_status_payload()
+
+
+@app.post("/upgrade/check")
+async def check_for_upgrade():
+    return latest_git_info()
+
+
+@app.post("/upgrade/start")
+async def start_upgrade():
+    with UPGRADE_LOCK:
+        current_status = read_upgrade_status_file()
+        if current_status.get("status") == "running":
+            raise HTTPException(status_code=409, detail="Upgrade is already running.")
+
+        command = upgrade_helper_command()
+        try:
+            UPGRADE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(UPGRADE_LOG_FILE, "ab") as log_handle:
+                subprocess.Popen(
+                    command,
+                    cwd=str(PROJECT_ROOT),
+                    stdout=log_handle,
+                    stderr=log_handle,
+                    start_new_session=True,
+                )
+        except Exception as exc:
+            raise_operation_error(
+                500,
+                "Start upgrade",
+                exc,
+                "Check that install.sh installed /usr/local/sbin/oci-migrator-upgrade and sudoers access for the service user.",
+            )
+
+    return {
+        **upgrade_status_payload(),
+        "status": "running",
+        "message": "Upgrade started. The service may restart during installation.",
+    }
+
+
+@app.get("/upgrade/log")
+async def upgrade_log(lines: int = Query(default=600, ge=20, le=2000)):
+    if not UPGRADE_LOG_FILE.exists():
+        return {
+            "log": "No upgrade log yet.",
+            "exists": False,
+            "log_file": str(UPGRADE_LOG_FILE),
+        }
+
+    return {
+        "log": tail_file(UPGRADE_LOG_FILE, max_lines=lines),
+        "exists": True,
+        "log_file": str(UPGRADE_LOG_FILE),
+    }
 
 
 @app.get("/job-history/{run_id}")
