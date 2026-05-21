@@ -7,16 +7,14 @@ make status
 make restart
 make logs-api
 make logs-worker
-make logs-frontend
 ```
 
 Equivalent direct commands:
 
 ```bash
-sudo systemctl status migrator-api migrator-worker migrator-frontend migrator-scheduler.timer
+sudo systemctl status migrator-api migrator-worker migrator-scheduler.timer
 journalctl -u migrator-api -f
 journalctl -u migrator-worker -f
-journalctl -u migrator-frontend -f
 ```
 
 ## Health Check

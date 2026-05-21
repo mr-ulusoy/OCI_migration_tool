@@ -21,7 +21,7 @@ chmod +x bootstrap.sh
 Open:
 
 ```text
-http://<server-ip-or-dns>:5173
+http://<server-ip-or-dns>:8000
 ```
 
 The installer stores a hashed admin password in `~/.oci-migrator.env`. If you do not pass or prompt for a password, the installer generates one and prints it once.
@@ -64,7 +64,8 @@ PUBLIC_HOST=migrator.example.com \
 
 ## Multiple Installations
 
-Use a unique install directory, service prefix, ports, and env file:
+Use a unique install directory, service prefix, app/API port, and env file.
+The built frontend is served by the backend, so each install only needs one app/API port.
 
 ```bash
 ./scripts/bootstrap.sh \
@@ -73,7 +74,6 @@ Use a unique install directory, service prefix, ports, and env file:
   -- \
   --service-prefix migrator-dev \
   --api-port 8100 \
-  --frontend-port 5174 \
   --env-file ~/.oci-migrator-dev.env
 ```
 
@@ -82,12 +82,11 @@ Use a unique install directory, service prefix, ports, and env file:
 - `migrator-api.service`
 - `migrator-worker.service`
 - `migrator-scheduler.timer`
-- `migrator-frontend.service`
 - `~/.oci-migrator.env`
 - `venv/`
 - `frontend/dist/`
 
-Backend dependencies use `backend/requirements.lock` when present.
+The backend service also serves the built frontend from `frontend/dist`. Backend dependencies use `backend/requirements.lock` when present.
 
 ## Documentation
 
@@ -99,4 +98,4 @@ Backend dependencies use `backend/requirements.lock` when present.
 
 ## Security Note
 
-This is an admin tool. Run it behind VPN, a private network, or a reverse proxy with HTTPS and authentication. Avoid exposing port `8000` publicly.
+This is an admin tool. Run it behind VPN or a private network when possible. If it ever becomes internet-facing, add HTTPS and restrict inbound access.

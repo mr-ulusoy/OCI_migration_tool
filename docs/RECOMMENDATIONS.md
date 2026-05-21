@@ -2,16 +2,16 @@
 
 These are the main things worth improving before treating OCI Migrator as a broadly shared production tool.
 
-## 1. Put It Behind HTTPS
+## 1. Add HTTPS If Inbound Access Is Needed
 
-The app currently runs as an admin tool on ports `5173` and `8000`. It has admin login, but for shared use it should still sit behind HTTPS, VPN, or a reverse proxy.
+The app now runs on a single app/API port, typically `8000`. It has admin login, but if it ever gets direct inbound access from user networks, add HTTPS or place it behind VPN/private access controls.
 
-Recommended next step:
+Options:
 
 - Caddy or Nginx reverse proxy
 - TLS certificate
-- Basic auth, SSO, or IP allowlist
-- expose only port `443`
+- IP allowlist or VPN
+- expose only `443` when internet-facing
 
 ## 2. Move Sessions To HttpOnly Cookies Later
 
@@ -23,14 +23,14 @@ Better options:
 - HttpOnly secure session cookies
 - per-user audit logging
 
-## 3. Replace Vite Preview For Production
+## 3. Frontend Serving
 
-`npm run preview` is convenient and works for internal deployments, but a static server or reverse proxy is cleaner for production.
+Done: production install no longer runs `npm run preview`. FastAPI serves the built `frontend/dist` files directly from the backend service.
 
-Better options:
+Future options if needed:
 
 - serve `frontend/dist` with Caddy/Nginx
-- proxy `/api` to FastAPI
+- proxy to FastAPI
 - keep FastAPI bound to `127.0.0.1`
 
 ## 4. Add Backups For Runtime Config

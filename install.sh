@@ -6,9 +6,7 @@ APP_NAME="${APP_NAME:-oci-migrator}"
 SERVICE_PREFIX="${SERVICE_PREFIX:-migrator}"
 API_HOST="${API_HOST:-0.0.0.0}"
 API_PORT="${API_PORT:-8000}"
-FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 CELERY_CONCURRENCY="${CELERY_CONCURRENCY:-2}"
-INSTALL_FRONTEND_SERVICE="${INSTALL_FRONTEND_SERVICE:-1}"
 OPEN_FIREWALL="${OPEN_FIREWALL:-0}"
 STOP_LEGACY_PROCESSES="${STOP_LEGACY_PROCESSES:-0}"
 PRINT_TOKEN="${PRINT_TOKEN:-0}"
@@ -53,16 +51,14 @@ Usage:
   ./install.sh [options]
 
 Options:
-  --public-host HOST          Public IP/DNS used by the frontend build and CORS allowlist.
+  --public-host HOST          Public IP/DNS used for CORS allowlist and printed URLs.
   --api-port PORT             Backend port. Default: $API_PORT
-  --frontend-port PORT        Frontend port. Default: $FRONTEND_PORT
   --service-prefix NAME       systemd service prefix. Default: $SERVICE_PREFIX
   --run-user USER             Linux user that runs services. Default: current sudo user.
   --env-file PATH             Runtime env file. Default: ~/.oci-migrator.env for the run user.
   --celery-concurrency N      Celery worker concurrency. Default: $CELERY_CONCURRENCY
   --open-firewall             Open local firewall ports with ufw/iptables when possible.
   --stop-legacy-processes     Stop old manual uvicorn/vite processes from this project path.
-  --no-frontend-service       Build frontend, but do not create/start migrator-frontend.service.
   --admin-username USERNAME   Admin login username. Default: $ADMIN_USERNAME
   --admin-password PASSWORD   Set or reset the admin password.
   --admin-password-file PATH  Read admin password from a file.
@@ -71,9 +67,9 @@ Options:
   -h, --help                  Show this help.
 
 Environment variables with the same names are also supported:
-  PUBLIC_HOST, API_PORT, FRONTEND_PORT, SERVICE_PREFIX, RUN_USER,
+  PUBLIC_HOST, API_PORT, SERVICE_PREFIX, RUN_USER,
   OCI_MIGRATOR_ENV_FILE, OPEN_FIREWALL, STOP_LEGACY_PROCESSES,
-  INSTALL_FRONTEND_SERVICE, CELERY_CONCURRENCY, PRINT_TOKEN,
+  CELERY_CONCURRENCY, PRINT_TOKEN,
   OCI_MIGRATOR_ADMIN_USERNAME, OCI_MIGRATOR_ADMIN_PASSWORD,
   OCI_MIGRATOR_ADMIN_PASSWORD_FILE, PROMPT_ADMIN_PASSWORD.
 EOF
@@ -91,7 +87,7 @@ parse_args() {
         shift 2
         ;;
       --frontend-port)
-        FRONTEND_PORT="$2"
+        # Deprecated no-op kept for backwards-compatible install commands.
         shift 2
         ;;
       --service-prefix)
@@ -119,7 +115,7 @@ parse_args() {
         shift
         ;;
       --no-frontend-service)
-        INSTALL_FRONTEND_SERVICE=0
+        # Kept for backwards-compatible install commands.
         shift
         ;;
       --admin-username)
@@ -346,7 +342,7 @@ ensure_env_file() {
   PUBLIC_HOST="${PUBLIC_HOST:-${detected_host:-localhost}}"
 
   local allowed_origins
-  allowed_origins="${OCI_MIGRATOR_ALLOWED_ORIGINS:-http://localhost:$FRONTEND_PORT,http://127.0.0.1:$FRONTEND_PORT,http://$PUBLIC_HOST:$FRONTEND_PORT}"
+  allowed_origins="${OCI_MIGRATOR_ALLOWED_ORIGINS:-http://localhost:$API_PORT,http://127.0.0.1:$API_PORT,http://$PUBLIC_HOST:$API_PORT}"
 
   if [ ! -f "$ENV_FILE" ]; then
     log "Creating $ENV_FILE"
@@ -422,12 +418,15 @@ install_backend() {
 }
 
 write_frontend_env() {
-  local api_base="http://${PUBLIC_HOST:-localhost}:$API_PORT"
   local temp_file
   temp_file="$(mktemp)"
   {
-    printf 'VITE_API_BASE=%s\n' "$api_base"
-    printf '# Keep VITE_API_TOKEN unset for normal installs. Set the token in browser localStorage instead.\n'
+    if [ -n "${VITE_API_BASE:-}" ]; then
+      printf 'VITE_API_BASE=%s\n' "$VITE_API_BASE"
+    else
+      printf '# VITE_API_BASE intentionally unset; production uses the same backend origin.\n'
+    fi
+    printf '# Keep VITE_API_TOKEN unset for normal installs. Admin login is used instead.\n'
   } > "$temp_file"
 
   "${SUDO[@]}" install -o "$RUN_USER" -g "$RUN_USER" -m 644 "$temp_file" "$FRONTEND_DIR/.env.production"
@@ -477,18 +476,13 @@ check_ports() {
     "${SUDO[@]}" ss -ltnp | grep ":$API_PORT" || true
     fail "Port $API_PORT is already in use. Stop that process, set API_PORT=another_port, or rerun with STOP_LEGACY_PROCESSES=1 if it is an old $APP_NAME process."
   fi
-
-  if [ "$INSTALL_FRONTEND_SERVICE" = "1" ] && port_is_in_use "$FRONTEND_PORT"; then
-    "${SUDO[@]}" ss -ltnp | grep ":$FRONTEND_PORT" || true
-    fail "Port $FRONTEND_PORT is already in use. Stop that process or set FRONTEND_PORT=another_port."
-  fi
 }
 
 write_systemd_units() {
   log "Writing systemd services"
 
-  local npm_bin
-  npm_bin="$(command -v npm)"
+  "${SUDO[@]}" systemctl disable --now "$SERVICE_PREFIX-frontend.service" 2>/dev/null || true
+  "${SUDO[@]}" rm -f "/etc/systemd/system/$SERVICE_PREFIX-frontend.service"
 
   "${SUDO[@]}" tee "/etc/systemd/system/$SERVICE_PREFIX-api.service" >/dev/null <<EOF
 [Unit]
@@ -502,6 +496,8 @@ User=$RUN_USER
 WorkingDirectory=$BACKEND_DIR
 EnvironmentFile=$ENV_FILE
 Environment=PYTHONUNBUFFERED=1
+Environment=OCI_MIGRATOR_ENV_FILE=$ENV_FILE
+Environment=OCI_MIGRATOR_FRONTEND_DIST_DIR=$FRONTEND_DIR/dist
 ExecStart=$VENV_DIR/bin/python -m uvicorn main:app --host $API_HOST --port $API_PORT
 Restart=always
 RestartSec=3
@@ -522,6 +518,7 @@ User=$RUN_USER
 WorkingDirectory=$BACKEND_DIR
 EnvironmentFile=$ENV_FILE
 Environment=PYTHONUNBUFFERED=1
+Environment=OCI_MIGRATOR_ENV_FILE=$ENV_FILE
 ExecStart=$VENV_DIR/bin/python -m celery -A worker.celery_app worker --loglevel=info --concurrency=$CELERY_CONCURRENCY
 Restart=always
 RestartSec=3
@@ -542,6 +539,7 @@ User=$RUN_USER
 WorkingDirectory=$BACKEND_DIR
 EnvironmentFile=$ENV_FILE
 Environment=PYTHONUNBUFFERED=1
+Environment=OCI_MIGRATOR_ENV_FILE=$ENV_FILE
 ExecStart=$VENV_DIR/bin/python $BACKEND_DIR/run_backups.py
 EOF
 
@@ -558,27 +556,6 @@ Unit=$SERVICE_PREFIX-scheduler.service
 [Install]
 WantedBy=timers.target
 EOF
-
-  if [ "$INSTALL_FRONTEND_SERVICE" = "1" ]; then
-    "${SUDO[@]}" tee "/etc/systemd/system/$SERVICE_PREFIX-frontend.service" >/dev/null <<EOF
-[Unit]
-Description=OCI Migrator frontend
-After=network-online.target $SERVICE_PREFIX-api.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=$RUN_USER
-WorkingDirectory=$FRONTEND_DIR
-Environment=NODE_ENV=production
-ExecStart=$npm_bin run preview -- --host 0.0.0.0 --port $FRONTEND_PORT
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  fi
 }
 
 start_services() {
@@ -588,10 +565,6 @@ start_services() {
   "${SUDO[@]}" systemctl enable --now "$SERVICE_PREFIX-api.service"
   "${SUDO[@]}" systemctl enable --now "$SERVICE_PREFIX-worker.service"
   "${SUDO[@]}" systemctl enable --now "$SERVICE_PREFIX-scheduler.timer"
-
-  if [ "$INSTALL_FRONTEND_SERVICE" = "1" ]; then
-    "${SUDO[@]}" systemctl enable --now "$SERVICE_PREFIX-frontend.service"
-  fi
 }
 
 open_firewall_ports() {
@@ -600,15 +573,11 @@ open_firewall_ports() {
   log "Opening local firewall ports"
   if command -v ufw >/dev/null 2>&1 && "${SUDO[@]}" ufw status | grep -q 'Status: active'; then
     "${SUDO[@]}" ufw allow "$API_PORT/tcp"
-    [ "$INSTALL_FRONTEND_SERVICE" = "1" ] && "${SUDO[@]}" ufw allow "$FRONTEND_PORT/tcp"
     return
   fi
 
   if command -v iptables >/dev/null 2>&1; then
     "${SUDO[@]}" iptables -C INPUT -p tcp --dport "$API_PORT" -j ACCEPT 2>/dev/null || "${SUDO[@]}" iptables -I INPUT 1 -p tcp --dport "$API_PORT" -j ACCEPT
-    if [ "$INSTALL_FRONTEND_SERVICE" = "1" ]; then
-      "${SUDO[@]}" iptables -C INPUT -p tcp --dport "$FRONTEND_PORT" -j ACCEPT 2>/dev/null || "${SUDO[@]}" iptables -I INPUT 1 -p tcp --dport "$FRONTEND_PORT" -j ACCEPT
-    fi
     command -v netfilter-persistent >/dev/null 2>&1 && "${SUDO[@]}" netfilter-persistent save || true
   fi
 }
@@ -616,10 +585,8 @@ open_firewall_ports() {
 print_summary() {
   printf '\n'
   printf 'Installation complete.\n'
-  printf 'Backend:  http://%s:%s\n' "${PUBLIC_HOST:-localhost}" "$API_PORT"
-  if [ "$INSTALL_FRONTEND_SERVICE" = "1" ]; then
-    printf 'Frontend: http://%s:%s\n' "${PUBLIC_HOST:-localhost}" "$FRONTEND_PORT"
-  fi
+  printf 'App:      http://%s:%s\n' "${PUBLIC_HOST:-localhost}" "$API_PORT"
+  printf 'API:      http://%s:%s\n' "${PUBLIC_HOST:-localhost}" "$API_PORT"
   printf 'Env file: %s\n' "$ENV_FILE"
   printf 'Admin username: %s\n' "$ADMIN_USERNAME"
   if [ -n "$GENERATED_ADMIN_PASSWORD" ]; then
@@ -637,7 +604,7 @@ print_summary() {
   fi
   printf '\n'
   printf 'Useful commands:\n'
-  printf '  sudo systemctl status %s-api %s-worker %s-frontend %s-scheduler.timer\n' "$SERVICE_PREFIX" "$SERVICE_PREFIX" "$SERVICE_PREFIX" "$SERVICE_PREFIX"
+  printf '  sudo systemctl status %s-api %s-worker %s-scheduler.timer\n' "$SERVICE_PREFIX" "$SERVICE_PREFIX" "$SERVICE_PREFIX"
   printf '  journalctl -u %s-api -f\n' "$SERVICE_PREFIX"
 }
 

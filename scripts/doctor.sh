@@ -4,7 +4,6 @@ set -euo pipefail
 
 SERVICE_PREFIX="${SERVICE_PREFIX:-migrator}"
 API_PORT="${API_PORT:-8000}"
-FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 API_HOST="${API_HOST:-127.0.0.1}"
 ENV_FILE="${OCI_MIGRATOR_ENV_FILE:-${HOME}/.oci-migrator.env}"
 
@@ -126,14 +125,8 @@ check_service redis-server.service
 check_service "$SERVICE_PREFIX-api.service"
 check_service "$SERVICE_PREFIX-worker.service"
 check_service "$SERVICE_PREFIX-scheduler.timer"
-if systemctl list-unit-files --no-legend "$SERVICE_PREFIX-frontend.service" 2>/dev/null | awk '{print $1}' | grep -Fxq "$SERVICE_PREFIX-frontend.service"; then
-  check_service "$SERVICE_PREFIX-frontend.service"
-fi
 
-check_port "$API_PORT" "Backend"
-if systemctl list-unit-files --no-legend "$SERVICE_PREFIX-frontend.service" 2>/dev/null | awk '{print $1}' | grep -Fxq "$SERVICE_PREFIX-frontend.service"; then
-  check_port "$FRONTEND_PORT" "Frontend"
-fi
+check_port "$API_PORT" "App/backend"
 
 if have_command curl && [ -f "$ENV_FILE" ]; then
   token="$(read_env_value OCI_MIGRATOR_API_TOKEN || true)"

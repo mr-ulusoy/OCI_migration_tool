@@ -43,7 +43,7 @@ Options:
 Examples:
   ./scripts/bootstrap.sh --public-host <server-ip-or-dns>
   ./scripts/bootstrap.sh --public-host <server-ip-or-dns> --prompt-admin-password
-  ./scripts/bootstrap.sh --install-dir /opt/oci-migrator-dev --public-host dev.example.com -- --service-prefix migrator-dev --api-port 8100 --frontend-port 5174 --env-file ~/.oci-migrator-dev.env
+  ./scripts/bootstrap.sh --install-dir /opt/oci-migrator-dev --public-host dev.example.com -- --service-prefix migrator-dev --api-port 8100 --env-file ~/.oci-migrator-dev.env
 EOF
 }
 

@@ -8,7 +8,6 @@ ACTION="${1:-status}"
 units=(
   "$SERVICE_PREFIX-api.service"
   "$SERVICE_PREFIX-worker.service"
-  "$SERVICE_PREFIX-frontend.service"
   "$SERVICE_PREFIX-scheduler.timer"
 )
 
@@ -29,7 +28,7 @@ normalize_unit() {
   case "${1:-}" in
     api) printf '%s-api.service\n' "$SERVICE_PREFIX" ;;
     worker) printf '%s-worker.service\n' "$SERVICE_PREFIX" ;;
-    frontend) printf '%s-frontend.service\n' "$SERVICE_PREFIX" ;;
+    frontend) printf '%s-api.service\n' "$SERVICE_PREFIX" ;;
     scheduler) printf '%s-scheduler.timer\n' "$SERVICE_PREFIX" ;;
     *.service|*.timer) printf '%s\n' "$1" ;;
     "") printf '%s-api.service\n' "$SERVICE_PREFIX" ;;

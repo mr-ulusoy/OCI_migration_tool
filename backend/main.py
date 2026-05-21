@@ -17,7 +17,8 @@ from threading import Lock
 import oci
 import uvicorn
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
 from worker import migrate_single_vm, rclone_sync_task
@@ -27,15 +28,11 @@ logging.basicConfig(level=os.getenv("OCI_MIGRATOR_LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
 
-def parse_allowed_origins() -> list[str]:
-    raw_origins = os.getenv(
-        "OCI_MIGRATOR_ALLOWED_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173",
-    )
-    return [origin.strip() for origin in raw_origins.split(",") if origin.strip()]
-
-
 ENV_FILE_PATH = os.path.expanduser(os.getenv("OCI_MIGRATOR_ENV_FILE", "~/.oci-migrator.env"))
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+FRONTEND_DIST_DIR = Path(
+    os.getenv("OCI_MIGRATOR_FRONTEND_DIST_DIR", str(PROJECT_ROOT / "frontend" / "dist"))
+).resolve()
 
 
 def _read_env_file(path: str) -> dict[str, str]:
@@ -60,7 +57,7 @@ def _read_env_file(path: str) -> dict[str, str]:
 
 _CONFIG_CACHE_LOCK = Lock()
 _CONFIG_CACHE: dict[str, object] = {
-    "mtime": None,
+    "mtime": "__not_loaded__",
     "api_token": "",
     "allowed_origins": None,
     "admin_username": "admin",
@@ -87,7 +84,7 @@ def get_runtime_config() -> dict[str, object]:
             raw_origins = (
                 file_env.get("OCI_MIGRATOR_ALLOWED_ORIGINS")
                 or os.getenv("OCI_MIGRATOR_ALLOWED_ORIGINS")
-                or "http://localhost:5173,http://127.0.0.1:5173"
+                or "http://localhost:8000,http://127.0.0.1:8000,http://localhost:5173,http://127.0.0.1:5173"
             )
             allowed_origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
 
@@ -263,11 +260,16 @@ def require_api_token(x_api_token: Optional[str] = Header(default=None, alias="X
 app = FastAPI(title="OCI Migration & Sync Engine")
 
 PUBLIC_PATHS = {
+    "/",
+    "/index.html",
     "/auth/login",
     "/docs",
+    "/favicon.ico",
     "/openapi.json",
     "/redoc",
+    "/vite.svg",
 }
+PUBLIC_PATH_PREFIXES = ("/assets/",)
 
 
 @app.middleware("http")
@@ -304,7 +306,13 @@ async def dynamic_cors_allowlist(request, call_next):
             }
             return JSONResponse(status_code=204, content=None, headers=headers)
 
-    if request.url.path not in PUBLIC_PATHS and not request_is_authenticated(request):
+    is_public_login = request.method == "POST" and request.url.path == "/auth/login"
+    is_public_static = request.method in {"GET", "HEAD"} and (
+        request.url.path in PUBLIC_PATHS
+        or any(request.url.path.startswith(prefix) for prefix in PUBLIC_PATH_PREFIXES)
+    )
+
+    if not (is_public_login or is_public_static) and not request_is_authenticated(request):
         return JSONResponse(
             status_code=401,
             content={"detail": "Invalid or missing admin session."},
@@ -889,6 +897,36 @@ async def get_migration_status(task_id: str):
         response["details"] = str(task_result.info)
         
     return response
+
+
+# --- 7. Frontend Static App ---
+if (FRONTEND_DIST_DIR / "assets").is_dir():
+    app.mount("/assets", StaticFiles(directory=str(FRONTEND_DIST_DIR / "assets")), name="frontend-assets")
+
+
+def frontend_file_response(relative_path: str = "index.html") -> FileResponse:
+    target = (FRONTEND_DIST_DIR / relative_path).resolve()
+    if FRONTEND_DIST_DIR not in target.parents and target != FRONTEND_DIST_DIR:
+        raise HTTPException(status_code=404, detail="File not found")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Frontend build not found. Run npm run build.")
+    return FileResponse(target)
+
+
+@app.get("/", include_in_schema=False)
+async def serve_frontend_root():
+    return frontend_file_response()
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def serve_frontend(full_path: str):
+    if full_path in {"index.html", "vite.svg", "favicon.ico"} or full_path.startswith("assets/"):
+        try:
+            return frontend_file_response(full_path)
+        except HTTPException:
+            pass
+    return frontend_file_response()
+
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

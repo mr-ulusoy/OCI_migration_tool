@@ -7,7 +7,11 @@ import {
   Lock, LogOut
 } from 'lucide-react';
 
-const API_BASE = import.meta.env.VITE_API_BASE || `http://${window.location.hostname}:8000`;
+const API_BASE = import.meta.env.VITE_API_BASE || (
+  window.location.port === '5173'
+    ? `http://${window.location.hostname}:8000`
+    : window.location.origin
+);
 const SESSION_TOKEN_KEY = 'OCI_MIGRATOR_SESSION_TOKEN';
 const SESSION_USERNAME_KEY = 'OCI_MIGRATOR_SESSION_USERNAME';
 

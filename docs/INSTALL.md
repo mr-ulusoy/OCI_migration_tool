@@ -36,14 +36,14 @@ cd OCI_migration_tool
 ./install.sh --public-host <server-ip-or-dns> --admin-password '<strong-password>'
 ./install.sh --public-host <server-ip-or-dns> --admin-password-file /path/to/password.txt
 ./install.sh --public-host migrator.example.com --open-firewall
-./install.sh --api-port 8001 --frontend-port 5174
+./install.sh --api-port 8001
 ./install.sh --stop-legacy-processes
-./install.sh --no-frontend-service
 ```
 
 ## Multiple Installations On The Same Host
 
-Use a unique directory, service prefix, ports, and env file:
+Use a unique directory, service prefix, app/API port, and env file.
+The built frontend is served by the backend, so each install only needs one app/API port.
 
 ```bash
 ./scripts/bootstrap.sh \
@@ -52,7 +52,6 @@ Use a unique directory, service prefix, ports, and env file:
   -- \
   --service-prefix migrator-dev \
   --api-port 8100 \
-  --frontend-port 5174 \
   --env-file ~/.oci-migrator-dev.env
 ```
 
@@ -82,7 +81,7 @@ cd /opt/oci-migrator
 Then open and log in:
 
 ```text
-http://<server-ip-or-dns>:5173
+http://<server-ip-or-dns>:8000
 ```
 
 ## Verify
