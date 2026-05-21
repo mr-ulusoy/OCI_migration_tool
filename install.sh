@@ -310,7 +310,7 @@ run_as_user() {
   if [ "$(id -un)" = "$RUN_USER" ]; then
     "$@"
   else
-    "${SUDO[@]}" -H -u "$RUN_USER" "$@"
+    sudo -H -u "$RUN_USER" "$@"
   fi
 }
 
@@ -321,7 +321,7 @@ run_as_user_in_dir() {
   if [ "$(id -un)" = "$RUN_USER" ]; then
     (cd "$dir" && "$@")
   else
-    "${SUDO[@]}" -H -u "$RUN_USER" bash -c 'cd "$1" && shift && "$@"' bash "$dir" "$@"
+    sudo -H -u "$RUN_USER" bash -c 'cd "$1" && shift && "$@"' bash "$dir" "$@"
   fi
 }
 
