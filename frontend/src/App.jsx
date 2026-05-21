@@ -1535,7 +1535,7 @@ export default function App() {
                         <Search className="absolute left-3 top-2.5 text-gray-400" size={15} />
                         <input
                           className="w-full bg-white border border-gray-200 rounded-md py-2 pl-9 pr-3 text-sm text-gray-800 focus:outline-none focus:border-[#9c3029] focus:ring-1 focus:ring-[#9c3029] disabled:bg-gray-50 disabled:text-gray-400"
-                          placeholder="Search name, OS, shape, IP..."
+                          placeholder="Search name, OS, shape, IP, OCID..."
                           value={searchTerm}
                           onChange={e => setSearchTerm(e.target.value)}
                           disabled={!activeSourceProfile}
@@ -1558,12 +1558,11 @@ export default function App() {
                   loading ? ( <div className="flex justify-center p-20"><Loader2 className="animate-spin text-gray-400" size={40} /></div>
                   ) : (
                     <div className="bg-white border border-gray-200 rounded-md shadow-sm overflow-hidden">
-                      <div className="hidden xl:grid grid-cols-[minmax(360px,1.7fr)_minmax(330px,1.35fr)_minmax(110px,0.55fr)_minmax(180px,0.8fr)_110px] gap-4 px-4 py-3 bg-gray-50 border-b border-gray-100 text-[10px] uppercase font-bold tracking-wider text-gray-400">
+                      <div className="hidden xl:grid grid-cols-[minmax(360px,1.7fr)_minmax(330px,1.35fr)_minmax(110px,0.55fr)_minmax(180px,0.8fr)] gap-4 px-4 py-3 bg-gray-50 border-b border-gray-100 text-[10px] uppercase font-bold tracking-wider text-gray-400">
                         <div>VM</div>
                         <div>OS / Shape</div>
                         <div>OCPU/RAM</div>
                         <div>IPs</div>
-                        <div className="text-right">State</div>
                       </div>
                       <div className="divide-y divide-gray-100">
                         {filteredVms.map(vm => {
@@ -1579,13 +1578,17 @@ export default function App() {
                             <div
                               key={vm.id}
                               onClick={() => { if (!isMigrating) setSelectedVms(prev => prev.includes(vm.id) ? prev.filter(i => i !== vm.id) : [...prev, vm.id]); }}
-                              className={`grid grid-cols-1 xl:grid-cols-[minmax(360px,1.7fr)_minmax(330px,1.35fr)_minmax(110px,0.55fr)_minmax(180px,0.8fr)_110px] gap-3 xl:gap-4 items-start p-4 transition-colors ${isSelected ? 'bg-red-50' : 'bg-white hover:bg-gray-50'} ${isMigrating ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'}`}
+                              className={`grid grid-cols-1 xl:grid-cols-[minmax(360px,1.7fr)_minmax(330px,1.35fr)_minmax(110px,0.55fr)_minmax(180px,0.8fr)] gap-3 xl:gap-4 items-start p-4 transition-colors ${isSelected ? 'bg-red-50' : 'bg-white hover:bg-gray-50'} ${isMigrating ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'}`}
                             >
                               <div className="flex items-start gap-3 min-w-0">
                                 <Cloud className={`mt-0.5 shrink-0 ${isSelected ? 'text-[#9c3029]' : 'text-gray-400'}`} size={18}/>
                                 <div className="min-w-0">
                                   <h4 className="font-bold text-gray-800 text-sm leading-snug break-words">{vm.name}</h4>
-                                  <p className="text-[10px] text-gray-500 font-mono mt-1 truncate">{vm.id}</p>
+                                  <div className="mt-1">
+                                    <span className={`text-[9px] px-2 py-0.5 rounded-full border font-bold uppercase ${stateClass}`}>
+                                      {vm.state || '-'}
+                                    </span>
+                                  </div>
                                   {taskData && (
                                     <div className={`mt-2 text-[10px] uppercase font-bold tracking-wider truncate ${getStatusColor(taskData.status)}`}>
                                       {isMigrating && <Loader2 size={12} className="inline animate-spin mr-1"/>}
@@ -1623,11 +1626,6 @@ export default function App() {
                                   <div className="text-[9px] uppercase font-bold text-gray-400 mb-0.5 font-sans">Public</div>
                                   <div className="text-xs text-gray-700 truncate" title={vm.public_ip || '-'}>{vm.public_ip || '-'}</div>
                                 </div>
-                              </div>
-                              <div className="flex xl:justify-end">
-                                <span className={`text-[9px] px-2 py-0.5 rounded-full border font-bold uppercase ${stateClass}`}>
-                                  {vm.state || '-'}
-                                </span>
                               </div>
                             </div>
                           );
