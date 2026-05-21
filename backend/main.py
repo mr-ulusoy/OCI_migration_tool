@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import pwd
 import re
 import secrets
 import shutil
@@ -341,10 +342,13 @@ RCLONE_CONF = os.path.expanduser("~/.config/rclone/rclone.conf")
 JOBS_FILE = os.path.join(OCI_DIR, "jobs.json")
 LOCAL_DATA_ROOT = Path(os.getenv("OCI_MIGRATOR_LOCAL_DATA_ROOT", "/var/lib/oci-migrator/local")).resolve()
 LOCAL_SHARE_HELPER = Path(os.getenv("OCI_MIGRATOR_LOCAL_SHARE_HELPER", "/usr/local/sbin/oci-migrator-local-share")).resolve()
+JOB_LOG_HELPER = Path(os.getenv("OCI_MIGRATOR_JOB_LOG_HELPER", "/usr/local/sbin/oci-migrator-job-log")).resolve()
+JOB_LOGROTATE_FILE = Path(os.getenv("OCI_MIGRATOR_JOB_LOGROTATE_FILE", "/etc/logrotate.d/migrator-job-logs"))
 try:
     LOCAL_SHARE_TIMEOUT_SECONDS = int(os.getenv("OCI_MIGRATOR_LOCAL_SHARE_TIMEOUT_SECONDS", "300"))
 except ValueError:
     LOCAL_SHARE_TIMEOUT_SECONDS = 300
+JOB_LOG_SETTINGS_LOCK = Lock()
 
 # Säkerställ att mappar finns
 os.makedirs(os.path.dirname(RCLONE_CONF), exist_ok=True)
@@ -394,6 +398,12 @@ class BulkMigrationJob(BaseModel):
     source_profile: str
     dest_profile: str
     bucket_name: str
+
+
+class JobLogSettingsRequest(BaseModel):
+    max_size: str
+    retention_days: int
+
 
 # NYA SCHEMAS FÖR STORAGE EXPLORER
 class CreateBucketReq(BaseModel):
@@ -716,6 +726,105 @@ def redis_url_from_runtime() -> str:
     )
 
 
+def normalize_job_log_max_size(value: str) -> str:
+    max_size = (value or "").strip().upper()
+    if not re.fullmatch(r"[1-9][0-9]*[KMG]?", max_size):
+        raise HTTPException(status_code=400, detail="Max size must look like 10M, 512K, or 1G.")
+    return max_size
+
+
+def validate_job_log_retention_days(value: int) -> int:
+    try:
+        retention_days = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Retention days must be a number.")
+
+    if retention_days < 1 or retention_days > 365:
+        raise HTTPException(status_code=400, detail="Retention days must be between 1 and 365.")
+    return retention_days
+
+
+def current_job_log_settings() -> dict:
+    runtime_env = read_runtime_env()
+    max_size = normalize_job_log_max_size(
+        runtime_env.get("OCI_MIGRATOR_JOB_LOG_MAX_SIZE")
+        or os.getenv("OCI_MIGRATOR_JOB_LOG_MAX_SIZE", "10M")
+    )
+    retention_days = validate_job_log_retention_days(
+        runtime_env.get("OCI_MIGRATOR_JOB_LOG_RETENTION_DAYS")
+        or os.getenv("OCI_MIGRATOR_JOB_LOG_RETENTION_DAYS", "14")
+    )
+    return {
+        "job_log_dir": str(JOB_LOG_DIR),
+        "max_size": max_size,
+        "retention_days": retention_days,
+        "rotation_frequency": "daily",
+        "logrotate_file": str(JOB_LOGROTATE_FILE),
+    }
+
+
+def job_log_helper_command() -> list[str]:
+    if not JOB_LOG_HELPER.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail="Job log settings helper is not installed. Rerun ./install.sh and try again.",
+        )
+
+    if os.geteuid() == 0:
+        return [str(JOB_LOG_HELPER)]
+
+    sudo_path = shutil.which("sudo")
+    if not sudo_path:
+        raise HTTPException(
+            status_code=503,
+            detail="sudo is required for job log settings. Rerun ./install.sh and try again.",
+        )
+    return [sudo_path, "-n", str(JOB_LOG_HELPER)]
+
+
+def apply_job_log_rotation_settings(max_size: str, retention_days: int) -> dict:
+    run_user = pwd.getpwuid(os.geteuid()).pw_name
+    command = job_log_helper_command() + [
+        "configure",
+        "--job-log-dir",
+        str(JOB_LOG_DIR),
+        "--max-size",
+        max_size,
+        "--retention-days",
+        str(retention_days),
+        "--run-user",
+        run_user,
+        "--logrotate-file",
+        str(JOB_LOGROTATE_FILE),
+    ]
+
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            raise RuntimeError(truncate_text(result.stderr or result.stdout or f"helper exited with code {result.returncode}"))
+
+        try:
+            return json.loads(result.stdout.strip().splitlines()[-1]) if result.stdout.strip() else {}
+        except (json.JSONDecodeError, IndexError):
+            return {"raw_output": truncate_text(result.stdout, 600)}
+    except subprocess.TimeoutExpired as exc:
+        raise_operation_error(
+            504,
+            "Update job log rotation settings",
+            exc,
+            "The logrotate helper took too long. Check sudoers and logrotate on the server.",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise_operation_error(
+            500,
+            "Update job log rotation settings",
+            exc,
+            "Check that install.sh installed /usr/local/sbin/oci-migrator-job-log and sudoers access for the service user.",
+        )
+
+
 def history_status_for_api(run: dict) -> str:
     status_map = {
         "queued": "PENDING",
@@ -908,6 +1017,29 @@ async def health():
 @app.get("/job-history")
 async def job_history(limit: int = Query(default=100, ge=1, le=300)):
     return {"runs": list_job_runs(limit)}
+
+
+@app.get("/job-log-settings")
+async def get_job_log_settings():
+    return current_job_log_settings()
+
+
+@app.put("/job-log-settings")
+async def update_job_log_settings(settings: JobLogSettingsRequest):
+    max_size = normalize_job_log_max_size(settings.max_size)
+    retention_days = validate_job_log_retention_days(settings.retention_days)
+
+    with JOB_LOG_SETTINGS_LOCK:
+        apply_job_log_rotation_settings(max_size, retention_days)
+        _write_env_values(
+            ENV_FILE_PATH,
+            {
+                "OCI_MIGRATOR_JOB_LOG_MAX_SIZE": max_size,
+                "OCI_MIGRATOR_JOB_LOG_RETENTION_DAYS": str(retention_days),
+            },
+        )
+
+    return current_job_log_settings()
 
 
 @app.get("/job-history/{run_id}")

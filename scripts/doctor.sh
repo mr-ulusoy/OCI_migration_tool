@@ -129,6 +129,18 @@ if [ -f "$ENV_FILE" ]; then
   else
     warn "OCI_MIGRATOR_JOB_LOG_DIR is not configured"
   fi
+
+  if [ -n "$(read_env_value OCI_MIGRATOR_JOB_LOG_MAX_SIZE || true)" ]; then
+    ok "OCI_MIGRATOR_JOB_LOG_MAX_SIZE is configured"
+  else
+    warn "OCI_MIGRATOR_JOB_LOG_MAX_SIZE is not configured"
+  fi
+
+  if [ -n "$(read_env_value OCI_MIGRATOR_JOB_LOG_RETENTION_DAYS || true)" ]; then
+    ok "OCI_MIGRATOR_JOB_LOG_RETENTION_DAYS is configured"
+  else
+    warn "OCI_MIGRATOR_JOB_LOG_RETENTION_DAYS is not configured"
+  fi
 else
   fail_check "Env file missing: $ENV_FILE"
 fi

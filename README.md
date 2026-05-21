@@ -96,10 +96,11 @@ The built frontend is served by the backend, so each install only needs one app/
 - `/var/lib/oci-migrator/local/`
 - `/var/log/oci-migrator/jobs/`
 - `/etc/logrotate.d/migrator-job-logs`
+- `/usr/local/sbin/oci-migrator-job-log`
 
 The backend service also serves the built frontend from `frontend/dist`. Backend dependencies use `backend/requirements.lock` when present.
 
-Rclone job logs are persisted per run and visible/downloadable from Job Dashboard -> Recent Runs. The installer configures logrotate with `maxsize 10M` by default; change it with `./install.sh --job-log-max-size <size>`.
+Rclone job logs are persisted per run and visible/downloadable from Job Dashboard -> Recent Runs. The dashboard also exposes log rotation settings. The installer configures logrotate with `maxsize 10M` and `14` retention days by default.
 
 Server local folders can optionally be shared from the UI with SMB. When a user chooses `Share to Everyone` or `Share to User`, the backend runs the installed root helper to install/configure Samba, expose that folder, and open inbound TCP `445`.
 

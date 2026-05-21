@@ -41,11 +41,13 @@ cd OCI_migration_tool
 ./install.sh --local-data-root /srv/oci-migrator/local
 ./install.sh --job-log-dir /var/log/oci-migrator/jobs
 ./install.sh --job-log-max-size 10M
+./install.sh --job-log-retention-days 14
 ./install.sh --local-share-helper /usr/local/sbin/oci-migrator-local-share
 ./install.sh --stop-legacy-processes
 ```
 
 `--job-log-max-size` controls the `maxsize` value written to logrotate. The default is `10M`.
+`--job-log-retention-days` controls how many daily rotated logs are kept. The default is `14`.
 
 ## Optional SMB Sharing
 

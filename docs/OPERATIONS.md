@@ -54,6 +54,7 @@ Each rclone run writes a persistent log file under:
 ```
 
 In the Job Dashboard, use `Recent Runs` -> terminal button to view the log tail, or the download button to download the full log file for that run.
+The same dashboard shows `Retention Days` and `Max Size`; saving those fields updates the managed logrotate config.
 
 Log rotation is installed at:
 
@@ -64,11 +65,11 @@ Log rotation is installed at:
 Default policy:
 
 - daily rotation
-- keep 14 rotated logs
+- keep 14 daily rotated logs
 - compress old logs
 - `maxsize 10M`
 
-Change the size with `./install.sh --job-log-max-size 25M` or edit the logrotate file directly.
+Change these values in the UI, with `./install.sh --job-log-max-size 25M --job-log-retention-days 30`, or by editing the logrotate file directly.
 
 ## Runtime Config Export
 
@@ -104,6 +105,7 @@ The SMB password is not stored in the app config. Samba stores its own password 
 /var/lib/oci-migrator/local
 /var/log/oci-migrator/jobs
 /etc/logrotate.d/migrator-job-logs
+/usr/local/sbin/oci-migrator-job-log
 /usr/local/sbin/oci-migrator-local-share
 /etc/oci-migrator/local-share.conf
 ```

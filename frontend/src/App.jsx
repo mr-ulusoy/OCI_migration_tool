@@ -4,7 +4,7 @@ import {
   Cloud, Shield, Database, Search, Key, Loader2, CheckCircle,
   ArrowRight, FileText, Archive, Edit, Trash2,
   Folder, Plus, RefreshCw, Globe, Cpu, Clock, Activity, Terminal,
-  Lock, LogOut, Download, HeartPulse, AlertCircle, X
+  Lock, LogOut, Download, HeartPulse, AlertCircle, X, Settings, Save
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (
@@ -99,6 +99,9 @@ export default function App() {
   const [health, setHealth] = useState(null);
   const [jobRuns, setJobRuns] = useState([]);
   const [exportingConfig, setExportingConfig] = useState(false);
+  const [jobLogSettings, setJobLogSettings] = useState(null);
+  const [jobLogSettingsForm, setJobLogSettingsForm] = useState({ retentionDays: 14, maxSize: '10M' });
+  const [savingJobLogSettings, setSavingJobLogSettings] = useState(false);
   const isAuthenticated = Boolean(authState.token);
 
   const api = useMemo(() => {
@@ -234,6 +237,19 @@ export default function App() {
     }
   };
 
+  const fetchJobLogSettings = async () => {
+    try {
+      const res = await api.get('/job-log-settings');
+      setJobLogSettings(res.data);
+      setJobLogSettingsForm({
+        retentionDays: res.data.retention_days || 14,
+        maxSize: res.data.max_size || '10M'
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const latestRunByJob = useMemo(() => {
     const byJob = {};
     jobRuns.forEach(run => {
@@ -284,6 +300,40 @@ export default function App() {
     }
   };
 
+  const handleSaveJobLogSettings = async (event) => {
+    event.preventDefault();
+    const retentionDays = Number(jobLogSettingsForm.retentionDays);
+    const maxSize = String(jobLogSettingsForm.maxSize || '').trim().toUpperCase();
+
+    if (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 365) {
+      setNotice({ type: 'error', title: 'Invalid retention', message: 'Retention days must be between 1 and 365.' });
+      return;
+    }
+
+    if (!/^[1-9][0-9]*[KMG]?$/.test(maxSize)) {
+      setNotice({ type: 'error', title: 'Invalid max size', message: 'Max size must look like 10M, 512K, or 1G.' });
+      return;
+    }
+
+    setSavingJobLogSettings(true);
+    try {
+      const res = await api.put('/job-log-settings', {
+        retention_days: retentionDays,
+        max_size: maxSize
+      });
+      setJobLogSettings(res.data);
+      setJobLogSettingsForm({
+        retentionDays: res.data.retention_days,
+        maxSize: res.data.max_size
+      });
+      showSuccess('Job log rotation settings saved.');
+      fetchHealth();
+    } catch (err) {
+      showError('Failed to save job log settings', err);
+    }
+    setSavingJobLogSettings(false);
+  };
+
   useEffect(() => {
     if (!isAuthenticated) return;
     fetchProfiles();
@@ -291,6 +341,7 @@ export default function App() {
     fetchJobs();
     fetchHealth();
     fetchJobRuns();
+    fetchJobLogSettings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, api]);
 
@@ -1025,6 +1076,53 @@ export default function App() {
           {view === 'datasync' && (
             <div className="max-w-5xl mx-auto space-y-6 animate-in fade-in">
               <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800"><Activity size={24} className="text-[#9c3029]"/> Active Sync Jobs</h2>
+              <form onSubmit={handleSaveJobLogSettings} className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
+                <div className="flex items-center justify-between gap-4 mb-4">
+                  <h3 className="font-bold text-sm text-gray-800 flex items-center gap-2"><Settings size={16} className="text-[#9c3029]" /> Job Log Rotation</h3>
+                  <button
+                    type="submit"
+                    disabled={savingJobLogSettings}
+                    className="px-3 py-2 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#7a2520] disabled:opacity-60 flex items-center gap-2"
+                  >
+                    {savingJobLogSettings ? <Loader2 className="animate-spin" size={14} /> : <Save size={14} />}
+                    Save
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-[1fr_140px_140px] gap-3">
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Log Directory</label>
+                    <input
+                      value={jobLogSettings?.job_log_dir || ''}
+                      readOnly
+                      className="w-full bg-gray-50 border border-gray-200 p-2 rounded-md text-xs font-mono text-gray-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Retention Days</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="365"
+                      value={jobLogSettingsForm.retentionDays}
+                      onChange={e => setJobLogSettingsForm({...jobLogSettingsForm, retentionDays: e.target.value})}
+                      className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Max Size</label>
+                    <input
+                      value={jobLogSettingsForm.maxSize}
+                      onChange={e => setJobLogSettingsForm({...jobLogSettingsForm, maxSize: e.target.value.toUpperCase()})}
+                      placeholder="10M"
+                      className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                    />
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2 text-[10px] text-gray-500 font-mono">
+                  <span>{jobLogSettings?.rotation_frequency || 'daily'}</span>
+                  <span>{jobLogSettings?.logrotate_file || '/etc/logrotate.d/migrator-job-logs'}</span>
+                </div>
+              </form>
               <div className="grid grid-cols-1 gap-4">
                 {jobs.map(job => (
                   <div key={job.name} className="flex flex-col gap-2">
