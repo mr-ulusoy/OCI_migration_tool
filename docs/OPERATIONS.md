@@ -43,6 +43,19 @@ The doctor checks:
 /tmp/rclone_<job>.log
 ```
 
+## Admin Password
+
+The admin password is stored as a hash in `~/.oci-migrator.env`.
+
+Reset it from the server:
+
+```bash
+cd /opt/oci-migrator
+./install.sh --admin-password '<new-strong-password>'
+```
+
+Or change it from the UI after logging in.
+
 ## Upgrade
 
 If installed with bootstrap:

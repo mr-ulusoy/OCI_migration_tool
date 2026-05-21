@@ -7,6 +7,10 @@ BRANCH="${BRANCH:-main}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/oci-migrator}"
 PUBLIC_HOST="${PUBLIC_HOST:-}"
 RUN_USER="${RUN_USER:-}"
+ADMIN_USERNAME="${OCI_MIGRATOR_ADMIN_USERNAME:-}"
+ADMIN_PASSWORD="${OCI_MIGRATOR_ADMIN_PASSWORD:-}"
+ADMIN_PASSWORD_FILE="${OCI_MIGRATOR_ADMIN_PASSWORD_FILE:-}"
+PROMPT_ADMIN_PASSWORD="${PROMPT_ADMIN_PASSWORD:-0}"
 INSTALL_ARGS=()
 
 if [ "$(id -u)" -eq 0 ]; then
@@ -30,10 +34,15 @@ Options:
   --install-dir PATH          Install directory. Default: $INSTALL_DIR
   --public-host HOST          Public IP/DNS passed to install.sh.
   --run-user USER             Linux user that owns files and runs services.
+  --admin-username USERNAME   Admin login username.
+  --admin-password PASSWORD   Set or reset the admin password.
+  --admin-password-file PATH  Read admin password from a file.
+  --prompt-admin-password     Prompt for admin password without storing it in shell history.
   -h, --help                  Show this help.
 
 Examples:
   ./scripts/bootstrap.sh --public-host <server-ip-or-dns>
+  ./scripts/bootstrap.sh --public-host <server-ip-or-dns> --prompt-admin-password
   ./scripts/bootstrap.sh --install-dir /opt/oci-migrator-dev --public-host dev.example.com -- --service-prefix migrator-dev --api-port 8100 --frontend-port 5174 --env-file ~/.oci-migrator-dev.env
 EOF
 }
@@ -59,6 +68,22 @@ while [ "$#" -gt 0 ]; do
     --run-user)
       RUN_USER="$2"
       shift 2
+      ;;
+    --admin-username)
+      ADMIN_USERNAME="$2"
+      shift 2
+      ;;
+    --admin-password)
+      ADMIN_PASSWORD="$2"
+      shift 2
+      ;;
+    --admin-password-file)
+      ADMIN_PASSWORD_FILE="$2"
+      shift 2
+      ;;
+    --prompt-admin-password)
+      PROMPT_ADMIN_PASSWORD=1
+      shift
       ;;
     --)
       shift
@@ -120,6 +145,18 @@ fi
 cmd=(./install.sh --run-user "$RUN_USER")
 if [ -n "$PUBLIC_HOST" ]; then
   cmd+=(--public-host "$PUBLIC_HOST")
+fi
+if [ -n "$ADMIN_USERNAME" ]; then
+  cmd+=(--admin-username "$ADMIN_USERNAME")
+fi
+if [ -n "$ADMIN_PASSWORD" ]; then
+  cmd+=(--admin-password "$ADMIN_PASSWORD")
+fi
+if [ -n "$ADMIN_PASSWORD_FILE" ]; then
+  cmd+=(--admin-password-file "$ADMIN_PASSWORD_FILE")
+fi
+if [ "$PROMPT_ADMIN_PASSWORD" = "1" ]; then
+  cmd+=(--prompt-admin-password)
 fi
 cmd+=("${INSTALL_ARGS[@]}")
 

@@ -3,37 +3,79 @@ import axios from 'axios';
 import { 
   Cloud, Shield, Database, Search, Key, Loader2, CheckCircle,
   ArrowRight, FileText, Archive, Edit, Trash2,
-  Folder, Plus, RefreshCw, Globe, Cpu, Clock, Activity, Terminal
+  Folder, Plus, RefreshCw, Globe, Cpu, Clock, Activity, Terminal,
+  Lock, LogOut
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || `http://${window.location.hostname}:8000`;
+const SESSION_TOKEN_KEY = 'OCI_MIGRATOR_SESSION_TOKEN';
+const SESSION_USERNAME_KEY = 'OCI_MIGRATOR_SESSION_USERNAME';
 
-function getApiToken() {
+function getLegacyApiToken() {
   return import.meta.env.VITE_API_TOKEN || localStorage.getItem('OCI_MIGRATOR_API_TOKEN') || '';
 }
 
+function getInitialAuth() {
+  const sessionToken = localStorage.getItem(SESSION_TOKEN_KEY);
+  if (sessionToken) {
+    return {
+      token: sessionToken,
+      mode: 'session',
+      username: localStorage.getItem(SESSION_USERNAME_KEY) || 'admin'
+    };
+  }
+
+  const legacyApiToken = getLegacyApiToken();
+  if (legacyApiToken) {
+    return { token: legacyApiToken, mode: 'api-token', username: 'admin' };
+  }
+
+  return { token: '', mode: '', username: 'admin' };
+}
+
 export default function App() {
+  const [authState, setAuthState] = useState(getInitialAuth);
+  const [loginForm, setLoginForm] = useState({ username: 'admin', password: '' });
+  const [loginError, setLoginError] = useState('');
+  const [authLoading, setAuthLoading] = useState(false);
+  const [showPasswordPanel, setShowPasswordPanel] = useState(false);
+  const [passwordForm, setPasswordForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
+  const [passwordMessage, setPasswordMessage] = useState('');
+  const isAuthenticated = Boolean(authState.token);
+
   const api = useMemo(() => {
+    const headers = {};
+    if (authState.mode === 'session') {
+      headers.Authorization = `Bearer ${authState.token}`;
+    } else if (authState.mode === 'api-token') {
+      headers['X-API-Token'] = authState.token;
+    }
+
     const instance = axios.create({
       baseURL: API_BASE,
-      headers: {
-        'X-API-Token': getApiToken()
-      }
+      headers
     });
 
     instance.interceptors.response.use(
       (res) => res,
       (err) => {
         if (err?.response?.status === 401) {
-          const msg = 'Unauthorized: set VITE_API_TOKEN (or localStorage OCI_MIGRATOR_API_TOKEN) to match OCI_MIGRATOR_API_TOKEN on backend.';
-          console.error(msg);
+          if (authState.mode === 'session') {
+            localStorage.removeItem(SESSION_TOKEN_KEY);
+            localStorage.removeItem(SESSION_USERNAME_KEY);
+            setAuthState({ token: '', mode: '', username: 'admin' });
+          } else if (authState.mode === 'api-token' && localStorage.getItem('OCI_MIGRATOR_API_TOKEN')) {
+            localStorage.removeItem('OCI_MIGRATOR_API_TOKEN');
+            setAuthState({ token: '', mode: '', username: 'admin' });
+          }
+          console.error('Unauthorized admin session.');
         }
         return Promise.reject(err);
       }
     );
 
     return instance;
-  }, []);
+  }, [authState]);
 
   const [vms, setVms] = useState([]);
   const [selectedVms, setSelectedVms] = useState([]);
@@ -99,11 +141,12 @@ export default function App() {
   const [newFolderName, setNewFolderName] = useState('');
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     fetchProfiles();
     fetchRemotes();
     fetchJobs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isAuthenticated, api]);
 
   useEffect(() => {
     let interval;
@@ -292,6 +335,73 @@ export default function App() {
       try { await api.delete(`/delete-object/${storageProfile}/${selectedBucket}/${encodeURIComponent(objectName)}`); handleBucketClick(selectedBucket); } catch (err) { console.error(err); alert("Failed to delete."); }
   };
 
+  const handleLogin = async (event) => {
+    event.preventDefault();
+    setLoginError('');
+    setAuthLoading(true);
+    try {
+      const res = await axios.post(`${API_BASE}/auth/login`, {
+        username: loginForm.username,
+        password: loginForm.password
+      });
+      localStorage.setItem(SESSION_TOKEN_KEY, res.data.token);
+      localStorage.setItem(SESSION_USERNAME_KEY, res.data.username || loginForm.username);
+      setAuthState({ token: res.data.token, mode: 'session', username: res.data.username || loginForm.username });
+      setLoginForm(prev => ({ ...prev, password: '' }));
+    } catch (err) {
+      console.error(err);
+      setLoginError(err?.response?.data?.detail || 'Login failed.');
+    }
+    setAuthLoading(false);
+  };
+
+  const handleLogout = async () => {
+    try {
+      if (authState.mode === 'session') {
+        await api.post('/auth/logout');
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      localStorage.removeItem(SESSION_TOKEN_KEY);
+      localStorage.removeItem(SESSION_USERNAME_KEY);
+      setAuthState({ token: '', mode: '', username: 'admin' });
+      setShowPasswordPanel(false);
+    }
+  };
+
+  const handleChangePassword = async (event) => {
+    event.preventDefault();
+    setPasswordMessage('');
+
+    if (passwordForm.newPassword.length < 12) {
+      setPasswordMessage('New password must be at least 12 characters.');
+      return;
+    }
+
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+      setPasswordMessage('New passwords do not match.');
+      return;
+    }
+
+    setAuthLoading(true);
+    try {
+      const res = await api.post('/auth/change-password', {
+        current_password: passwordForm.currentPassword,
+        new_password: passwordForm.newPassword
+      });
+      localStorage.setItem(SESSION_TOKEN_KEY, res.data.token);
+      localStorage.setItem(SESSION_USERNAME_KEY, res.data.username || authState.username);
+      setAuthState({ token: res.data.token, mode: 'session', username: res.data.username || authState.username });
+      setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+      setPasswordMessage('Password changed.');
+    } catch (err) {
+      console.error(err);
+      setPasswordMessage(err?.response?.data?.detail || 'Failed to change password.');
+    }
+    setAuthLoading(false);
+  };
+
   const filteredVms = vms.filter(vm => vm.name.toLowerCase().includes(searchTerm.toLowerCase()) || vm.id.includes(searchTerm));
 
   const getStatusColor = (status) => {
@@ -300,6 +410,47 @@ export default function App() {
     if (status === 'PROGRESS') return 'text-blue-500';
     return 'text-orange-500';
   };
+
+  if (!isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6 font-sans">
+        <form onSubmit={handleLogin} className="w-full max-w-sm bg-white border border-gray-200 rounded-md shadow-sm p-6">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="bg-[#9c3029] p-2 rounded-md"><Lock size={20} className="text-white" /></div>
+            <div>
+              <h1 className="text-lg font-bold text-gray-900">OCI Migrator Pro</h1>
+              <p className="text-xs text-gray-500">Admin login</p>
+            </div>
+          </div>
+          <div className="space-y-4 text-left">
+            <div>
+              <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Username</label>
+              <input
+                value={loginForm.username}
+                onChange={e => setLoginForm({ ...loginForm, username: e.target.value })}
+                className="w-full bg-white border border-gray-200 p-2.5 rounded-md text-sm text-gray-800 focus:outline-none focus:border-[#9c3029]"
+                autoComplete="username"
+              />
+            </div>
+            <div>
+              <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Password</label>
+              <input
+                type="password"
+                value={loginForm.password}
+                onChange={e => setLoginForm({ ...loginForm, password: e.target.value })}
+                className="w-full bg-white border border-gray-200 p-2.5 rounded-md text-sm text-gray-800 focus:outline-none focus:border-[#9c3029]"
+                autoComplete="current-password"
+              />
+            </div>
+            {loginError && <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-md p-2">{loginError}</div>}
+            <button type="submit" disabled={authLoading} className="w-full bg-[#9c3029] text-white py-2.5 rounded-md font-semibold hover:bg-[#7a2520] transition-colors shadow-sm flex items-center justify-center gap-2">
+              {authLoading ? <Loader2 className="animate-spin" size={18} /> : <><Lock size={16} /> Login</>}
+            </button>
+          </div>
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-white text-gray-800 flex overflow-hidden font-sans">
@@ -320,14 +471,63 @@ export default function App() {
 
       <main className="flex-1 flex flex-col relative overflow-y-auto bg-gray-50/50">
         <header className="h-16 flex items-center justify-between px-10 bg-white sticky top-0 z-20 shadow-sm border-b border-gray-100">
-          <div className="text-transparent">.</div> 
-          {view === 'explorer' && (
-            <div className="relative">
-              <Search className="absolute left-3 top-2 text-gray-400" size={16} />
-              <input className="bg-white border border-gray-200 rounded-md py-1.5 pl-9 pr-4 w-64 text-sm text-gray-800 focus:outline-none focus:border-[#9c3029] focus:ring-1 focus:ring-[#9c3029]" placeholder="Search VMs..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
-            </div>
-          )}
+          <div className="text-xs font-semibold text-gray-500">Signed in as <span className="text-gray-800">{authState.username}</span></div>
+          <div className="flex items-center gap-3">
+            {view === 'explorer' && (
+              <div className="relative">
+                <Search className="absolute left-3 top-2 text-gray-400" size={16} />
+                <input className="bg-white border border-gray-200 rounded-md py-1.5 pl-9 pr-4 w-64 text-sm text-gray-800 focus:outline-none focus:border-[#9c3029] focus:ring-1 focus:ring-[#9c3029]" placeholder="Search VMs..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+              </div>
+            )}
+            {authState.mode === 'session' && (
+              <button onClick={() => setShowPasswordPanel(prev => !prev)} className="p-2 bg-white border border-gray-200 text-gray-600 rounded-md hover:text-[#9c3029] hover:bg-gray-50" title="Change password">
+                <Lock size={16} />
+              </button>
+            )}
+            <button onClick={handleLogout} className="p-2 bg-white border border-gray-200 text-gray-600 rounded-md hover:text-[#9c3029] hover:bg-gray-50" title="Logout">
+              <LogOut size={16} />
+            </button>
+          </div>
         </header>
+
+        {showPasswordPanel && (
+          <div className="absolute right-10 top-20 z-30 w-80 bg-white border border-gray-200 rounded-md shadow-lg p-5 text-left">
+            <h2 className="text-sm font-bold text-gray-800 mb-4 flex items-center gap-2"><Lock size={16} className="text-[#9c3029]" /> Change Password</h2>
+            <form onSubmit={handleChangePassword} className="space-y-3">
+              <input
+                type="password"
+                value={passwordForm.currentPassword}
+                onChange={e => setPasswordForm({ ...passwordForm, currentPassword: e.target.value })}
+                placeholder="Current password"
+                className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                autoComplete="current-password"
+              />
+              <input
+                type="password"
+                value={passwordForm.newPassword}
+                onChange={e => setPasswordForm({ ...passwordForm, newPassword: e.target.value })}
+                placeholder="New password"
+                className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                autoComplete="new-password"
+              />
+              <input
+                type="password"
+                value={passwordForm.confirmPassword}
+                onChange={e => setPasswordForm({ ...passwordForm, confirmPassword: e.target.value })}
+                placeholder="Confirm new password"
+                className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                autoComplete="new-password"
+              />
+              {passwordMessage && <div className={`text-xs rounded-md p-2 border ${passwordMessage === 'Password changed.' ? 'text-green-700 bg-green-50 border-green-100' : 'text-red-600 bg-red-50 border-red-100'}`}>{passwordMessage}</div>}
+              <div className="flex gap-2">
+                <button type="submit" disabled={authLoading} className="flex-1 bg-[#9c3029] text-white py-2 rounded-md font-semibold text-sm hover:bg-[#7a2520] flex items-center justify-center gap-2">
+                  {authLoading ? <Loader2 className="animate-spin" size={16} /> : 'Save'}
+                </button>
+                <button type="button" onClick={() => setShowPasswordPanel(false)} className="px-3 bg-white border border-gray-200 text-gray-600 rounded-md text-sm hover:bg-gray-50">Close</button>
+              </div>
+            </form>
+          </div>
+        )}
 
         <div className="p-8 pb-40 min-h-screen">
           {/* VIEW: CREDENTIALS */}

@@ -2,9 +2,9 @@
 
 These are the main things worth improving before treating OCI Migrator as a broadly shared production tool.
 
-## 1. Put It Behind HTTPS And Auth
+## 1. Put It Behind HTTPS
 
-The app currently runs as an admin tool on ports `5173` and `8000`. For shared use, put it behind a VPN or reverse proxy with HTTPS and authentication.
+The app currently runs as an admin tool on ports `5173` and `8000`. It has admin login, but for shared use it should still sit behind HTTPS, VPN, or a reverse proxy.
 
 Recommended next step:
 
@@ -13,14 +13,14 @@ Recommended next step:
 - Basic auth, SSO, or IP allowlist
 - expose only port `443`
 
-## 2. Avoid Long-Term Tokens In Browser Storage
+## 2. Move Sessions To HttpOnly Cookies Later
 
-The frontend currently reads `OCI_MIGRATOR_API_TOKEN` from browser localStorage or a Vite env var. That is acceptable for a private admin tool, but not ideal for broader access.
+The frontend stores the admin session token in browser localStorage. That is acceptable for a private admin tool, but HttpOnly secure cookies are better for broader access.
 
 Better options:
 
 - reverse proxy authentication in front of the app
-- short-lived sessions
+- HttpOnly secure session cookies
 - per-user audit logging
 
 ## 3. Replace Vite Preview For Production
@@ -52,5 +52,5 @@ A GitHub Actions template is included at `docs/ci/github-actions.yml`. Copy it t
 ```bash
 bash -n install.sh scripts/*.sh
 python3 -m py_compile backend/main.py backend/worker.py backend/run_backups.py
-cd frontend && npm ci && npm run build
+cd frontend && npm ci && npm audit --omit=dev && npm run build
 ```

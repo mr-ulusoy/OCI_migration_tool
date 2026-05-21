@@ -112,6 +112,12 @@ if [ -f "$ENV_FILE" ]; then
   else
     fail_check "OCI_MIGRATOR_API_TOKEN is missing"
   fi
+
+  if [ -n "$(read_env_value OCI_MIGRATOR_ADMIN_PASSWORD_HASH || true)" ]; then
+    ok "OCI_MIGRATOR_ADMIN_PASSWORD_HASH is configured"
+  else
+    fail_check "OCI_MIGRATOR_ADMIN_PASSWORD_HASH is missing"
+  fi
 else
   fail_check "Env file missing: $ENV_FILE"
 fi

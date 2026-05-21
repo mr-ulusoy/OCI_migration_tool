@@ -9,6 +9,8 @@ python3 -m venv ../venv
 OCI_MIGRATOR_API_TOKEN=dev-token ../venv/bin/python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+For local UI login, create a local env file with an admin password hash or use the legacy dev token through `VITE_API_TOKEN=dev-token`.
+
 Redis is required for Celery tasks:
 
 ```bash

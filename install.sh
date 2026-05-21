@@ -12,6 +12,16 @@ INSTALL_FRONTEND_SERVICE="${INSTALL_FRONTEND_SERVICE:-1}"
 OPEN_FIREWALL="${OPEN_FIREWALL:-0}"
 STOP_LEGACY_PROCESSES="${STOP_LEGACY_PROCESSES:-0}"
 PRINT_TOKEN="${PRINT_TOKEN:-0}"
+ADMIN_USERNAME="${OCI_MIGRATOR_ADMIN_USERNAME:-admin}"
+ADMIN_USERNAME_PROVIDED=0
+if [ -n "${OCI_MIGRATOR_ADMIN_USERNAME:-}" ]; then
+  ADMIN_USERNAME_PROVIDED=1
+fi
+ADMIN_PASSWORD="${OCI_MIGRATOR_ADMIN_PASSWORD:-}"
+ADMIN_PASSWORD_FILE="${OCI_MIGRATOR_ADMIN_PASSWORD_FILE:-}"
+PROMPT_ADMIN_PASSWORD="${PROMPT_ADMIN_PASSWORD:-0}"
+GENERATED_ADMIN_PASSWORD=""
+ADMIN_PASSWORD_UPDATED=0
 RUN_USER="${RUN_USER:-}"
 OCI_MIGRATOR_ENV_FILE="${OCI_MIGRATOR_ENV_FILE:-}"
 
@@ -53,13 +63,19 @@ Options:
   --open-firewall             Open local firewall ports with ufw/iptables when possible.
   --stop-legacy-processes     Stop old manual uvicorn/vite processes from this project path.
   --no-frontend-service       Build frontend, but do not create/start migrator-frontend.service.
+  --admin-username USERNAME   Admin login username. Default: $ADMIN_USERNAME
+  --admin-password PASSWORD   Set or reset the admin password.
+  --admin-password-file PATH  Read admin password from a file.
+  --prompt-admin-password     Prompt for admin password without storing it in shell history.
   --print-token               Print API token in the final summary.
   -h, --help                  Show this help.
 
 Environment variables with the same names are also supported:
   PUBLIC_HOST, API_PORT, FRONTEND_PORT, SERVICE_PREFIX, RUN_USER,
   OCI_MIGRATOR_ENV_FILE, OPEN_FIREWALL, STOP_LEGACY_PROCESSES,
-  INSTALL_FRONTEND_SERVICE, CELERY_CONCURRENCY, PRINT_TOKEN.
+  INSTALL_FRONTEND_SERVICE, CELERY_CONCURRENCY, PRINT_TOKEN,
+  OCI_MIGRATOR_ADMIN_USERNAME, OCI_MIGRATOR_ADMIN_PASSWORD,
+  OCI_MIGRATOR_ADMIN_PASSWORD_FILE, PROMPT_ADMIN_PASSWORD.
 EOF
 }
 
@@ -104,6 +120,23 @@ parse_args() {
         ;;
       --no-frontend-service)
         INSTALL_FRONTEND_SERVICE=0
+        shift
+        ;;
+      --admin-username)
+        ADMIN_USERNAME="$2"
+        ADMIN_USERNAME_PROVIDED=1
+        shift 2
+        ;;
+      --admin-password)
+        ADMIN_PASSWORD="$2"
+        shift 2
+        ;;
+      --admin-password-file)
+        ADMIN_PASSWORD_FILE="$2"
+        shift 2
+        ;;
+      --prompt-admin-password)
+        PROMPT_ADMIN_PASSWORD=1
         shift
         ;;
       --print-token)
@@ -174,6 +207,91 @@ generate_token() {
   fi
 }
 
+generate_admin_password() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -base64 24 | tr -d '\n'
+  else
+    python3 -c 'import secrets; print(secrets.token_urlsafe(24))'
+  fi
+}
+
+hash_admin_password() {
+  ADMIN_PASSWORD_TO_HASH="$1" python3 - <<'PY'
+import base64
+import hashlib
+import os
+
+password = os.environ["ADMIN_PASSWORD_TO_HASH"].encode("utf-8")
+salt = os.urandom(16)
+iterations = 390000
+digest = hashlib.pbkdf2_hmac("sha256", password, salt, iterations)
+print(
+    "pbkdf2_sha256${}${}${}".format(
+        iterations,
+        base64.b64encode(salt).decode("ascii"),
+        base64.b64encode(digest).decode("ascii"),
+    )
+)
+PY
+}
+
+validate_admin_password() {
+  local password="$1"
+  if [ "${#password}" -lt 12 ]; then
+    fail "Admin password must be at least 12 characters."
+  fi
+}
+
+load_admin_password_input() {
+  if [ -n "$ADMIN_PASSWORD_FILE" ]; then
+    [ -f "$ADMIN_PASSWORD_FILE" ] || fail "Admin password file does not exist: $ADMIN_PASSWORD_FILE"
+    ADMIN_PASSWORD="$(tr -d '\r\n' < "$ADMIN_PASSWORD_FILE")"
+  fi
+
+  if [ "$PROMPT_ADMIN_PASSWORD" = "1" ]; then
+    local first second
+    read -r -s -p "Admin password: " first
+    printf '\n'
+    read -r -s -p "Confirm admin password: " second
+    printf '\n'
+    [ "$first" = "$second" ] || fail "Admin passwords did not match."
+    ADMIN_PASSWORD="$first"
+  fi
+
+  if [ -n "$ADMIN_PASSWORD" ]; then
+    validate_admin_password "$ADMIN_PASSWORD"
+  fi
+}
+
+set_env_value() {
+  local key="$1"
+  local value="$2"
+  local temp_file
+  temp_file="$(mktemp)"
+
+  if [ -f "$ENV_FILE" ]; then
+    awk -v key="$key" -v value="$value" '
+      BEGIN { updated = 0 }
+      $0 ~ "^" key "=" {
+        print key "=" value
+        updated = 1
+        next
+      }
+      { print }
+      END {
+        if (!updated) {
+          print key "=" value
+        }
+      }
+    ' "$ENV_FILE" > "$temp_file"
+  else
+    printf '%s=%s\n' "$key" "$value" > "$temp_file"
+  fi
+
+  "${SUDO[@]}" install -o "$RUN_USER" -g "$RUN_USER" -m 600 "$temp_file" "$ENV_FILE"
+  rm -f "$temp_file"
+}
+
 ensure_supported_os() {
   command -v apt-get >/dev/null 2>&1 || fail "This installer currently targets Ubuntu/Debian hosts with apt-get."
   command -v systemctl >/dev/null 2>&1 || fail "systemd is required for service installation."
@@ -234,11 +352,23 @@ ensure_env_file() {
     log "Creating $ENV_FILE"
     local token
     token="${OCI_MIGRATOR_API_TOKEN:-$(generate_token)}"
+    local admin_password_hash
+    if [ -z "$ADMIN_PASSWORD" ]; then
+      ADMIN_PASSWORD="$(generate_admin_password)"
+      GENERATED_ADMIN_PASSWORD="$ADMIN_PASSWORD"
+    fi
+    admin_password_hash="$(hash_admin_password "$ADMIN_PASSWORD")"
+    if [ -z "$GENERATED_ADMIN_PASSWORD" ]; then
+      ADMIN_PASSWORD_UPDATED=1
+    fi
 
     local temp_file
     temp_file="$(mktemp)"
     {
       printf 'OCI_MIGRATOR_API_TOKEN=%s\n' "$token"
+      printf 'OCI_MIGRATOR_ADMIN_USERNAME=%s\n' "$ADMIN_USERNAME"
+      printf 'OCI_MIGRATOR_ADMIN_PASSWORD_HASH=%s\n' "$admin_password_hash"
+      printf 'OCI_MIGRATOR_SESSION_TTL_SECONDS=43200\n'
       printf 'OCI_MIGRATOR_ALLOWED_ORIGINS=%s\n' "$allowed_origins"
       printf 'OCI_MIGRATOR_REDIS_URL=redis://localhost:6379/0\n'
       printf 'OCI_MIGRATOR_LOG_LEVEL=INFO\n'
@@ -256,6 +386,26 @@ ensure_env_file() {
     grep -q '^OCI_MIGRATOR_REDIS_URL=' "$ENV_FILE" || printf 'OCI_MIGRATOR_REDIS_URL=redis://localhost:6379/0\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_LOG_LEVEL=' "$ENV_FILE" || printf 'OCI_MIGRATOR_LOG_LEVEL=INFO\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_RCLONE_TIMEOUT_SECONDS=' "$ENV_FILE" || printf 'OCI_MIGRATOR_RCLONE_TIMEOUT_SECONDS=7200\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+
+    if [ "$ADMIN_USERNAME_PROVIDED" = "1" ] || ! grep -q '^OCI_MIGRATOR_ADMIN_USERNAME=' "$ENV_FILE"; then
+      set_env_value "OCI_MIGRATOR_ADMIN_USERNAME" "$ADMIN_USERNAME"
+    fi
+    grep -q '^OCI_MIGRATOR_SESSION_TTL_SECONDS=' "$ENV_FILE" || set_env_value "OCI_MIGRATOR_SESSION_TTL_SECONDS" "43200"
+
+    if [ -n "$ADMIN_PASSWORD" ]; then
+      set_env_value "OCI_MIGRATOR_ADMIN_PASSWORD_HASH" "$(hash_admin_password "$ADMIN_PASSWORD")"
+      ADMIN_PASSWORD_UPDATED=1
+    elif ! grep -q '^OCI_MIGRATOR_ADMIN_PASSWORD_HASH=' "$ENV_FILE"; then
+      ADMIN_PASSWORD="$(generate_admin_password)"
+      GENERATED_ADMIN_PASSWORD="$ADMIN_PASSWORD"
+      set_env_value "OCI_MIGRATOR_ADMIN_PASSWORD_HASH" "$(hash_admin_password "$ADMIN_PASSWORD")"
+    fi
+  fi
+
+  local configured_admin_username
+  configured_admin_username="$(grep '^OCI_MIGRATOR_ADMIN_USERNAME=' "$ENV_FILE" | tail -1 | cut -d= -f2- || true)"
+  if [ -n "$configured_admin_username" ]; then
+    ADMIN_USERNAME="$configured_admin_username"
   fi
 }
 
@@ -471,6 +621,15 @@ print_summary() {
     printf 'Frontend: http://%s:%s\n' "${PUBLIC_HOST:-localhost}" "$FRONTEND_PORT"
   fi
   printf 'Env file: %s\n' "$ENV_FILE"
+  printf 'Admin username: %s\n' "$ADMIN_USERNAME"
+  if [ -n "$GENERATED_ADMIN_PASSWORD" ]; then
+    printf 'Generated admin password: %s\n' "$GENERATED_ADMIN_PASSWORD"
+    printf 'Store this password now. It will not be shown again.\n'
+  elif [ "$ADMIN_PASSWORD_UPDATED" = "1" ]; then
+    printf 'Admin password: updated\n'
+  else
+    printf 'Admin password: already configured\n'
+  fi
   if [ "$PRINT_TOKEN" = "1" ] && [ -f "$ENV_FILE" ]; then
     printf 'API token: %s\n' "$(grep '^OCI_MIGRATOR_API_TOKEN=' "$ENV_FILE" | tail -1 | cut -d= -f2- || printf '<not found>')"
   else
@@ -487,6 +646,7 @@ main() {
   initialize_runtime_paths
   ensure_supported_os
   install_system_dependencies
+  load_admin_password_input
   install_node
   install_rclone
   ensure_env_file

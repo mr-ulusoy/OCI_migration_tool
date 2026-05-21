@@ -91,6 +91,18 @@ remote_cmd+="PRINT_TOKEN=$(quote "$PRINT_TOKEN") "
 if [ -n "${OCI_MIGRATOR_API_TOKEN:-}" ]; then
   remote_cmd+="OCI_MIGRATOR_API_TOKEN=$(quote "$OCI_MIGRATOR_API_TOKEN") "
 fi
+if [ -n "${OCI_MIGRATOR_ADMIN_USERNAME:-}" ]; then
+  remote_cmd+="OCI_MIGRATOR_ADMIN_USERNAME=$(quote "$OCI_MIGRATOR_ADMIN_USERNAME") "
+fi
+if [ -n "${OCI_MIGRATOR_ADMIN_PASSWORD:-}" ]; then
+  remote_cmd+="OCI_MIGRATOR_ADMIN_PASSWORD=$(quote "$OCI_MIGRATOR_ADMIN_PASSWORD") "
+fi
+if [ -n "${OCI_MIGRATOR_ADMIN_PASSWORD_FILE:-}" ]; then
+  remote_cmd+="OCI_MIGRATOR_ADMIN_PASSWORD_FILE=$(quote "$OCI_MIGRATOR_ADMIN_PASSWORD_FILE") "
+fi
+if [ -n "${PROMPT_ADMIN_PASSWORD:-}" ]; then
+  remote_cmd+="PROMPT_ADMIN_PASSWORD=$(quote "$PROMPT_ADMIN_PASSWORD") "
+fi
 if [ -n "${OCI_MIGRATOR_ENV_FILE:-}" ]; then
   remote_cmd+="OCI_MIGRATOR_ENV_FILE=$(quote "$OCI_MIGRATOR_ENV_FILE") "
 fi

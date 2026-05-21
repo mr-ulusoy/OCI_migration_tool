@@ -9,7 +9,7 @@ On a fresh server:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mr-ulusoy/OCI_migration_tool/main/scripts/bootstrap.sh -o bootstrap.sh
 chmod +x bootstrap.sh
-./bootstrap.sh --public-host <server-ip-or-dns>
+./bootstrap.sh --public-host <server-ip-or-dns> --prompt-admin-password
 ```
 
 This will:
@@ -19,19 +19,22 @@ This will:
 - run `install.sh`
 - create systemd services
 - create `~/.oci-migrator.env`
+- store a hashed admin password
 
 ## Manual Install
 
 ```bash
 git clone https://github.com/mr-ulusoy/OCI_migration_tool.git
 cd OCI_migration_tool
-./install.sh --public-host <server-ip-or-dns>
+./install.sh --public-host <server-ip-or-dns> --prompt-admin-password
 ```
 
 ## Common Options
 
 ```bash
 ./install.sh --public-host <server-ip-or-dns>
+./install.sh --public-host <server-ip-or-dns> --admin-password '<strong-password>'
+./install.sh --public-host <server-ip-or-dns> --admin-password-file /path/to/password.txt
 ./install.sh --public-host migrator.example.com --open-firewall
 ./install.sh --api-port 8001 --frontend-port 5174
 ./install.sh --stop-legacy-processes
@@ -53,23 +56,30 @@ Use a unique directory, service prefix, ports, and env file:
   --env-file ~/.oci-migrator-dev.env
 ```
 
-## Token Setup
+## Admin Password
 
-The installer creates `~/.oci-migrator.env` with an API token.
+The installer stores only a password hash in `~/.oci-migrator.env`.
 
-To retrieve it on the server:
+Recommended interactive setup:
 
 ```bash
-grep '^OCI_MIGRATOR_API_TOKEN=' ~/.oci-migrator.env
+./install.sh --public-host <server-ip-or-dns> --prompt-admin-password
 ```
 
-In the browser, set the token once:
+Non-interactive setup:
 
-```js
-localStorage.setItem('OCI_MIGRATOR_API_TOKEN', '<token>');
+```bash
+./install.sh --public-host <server-ip-or-dns> --admin-password '<strong-password>'
 ```
 
-Then open:
+Reset from the server:
+
+```bash
+cd /opt/oci-migrator
+./install.sh --admin-password '<new-strong-password>'
+```
+
+Then open and log in:
 
 ```text
 http://<server-ip-or-dns>:5173

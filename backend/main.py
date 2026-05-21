@@ -1,17 +1,22 @@
 import configparser
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from threading import Lock
 
 import oci
 import uvicorn
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile, status
+from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional
@@ -58,11 +63,14 @@ _CONFIG_CACHE: dict[str, object] = {
     "mtime": None,
     "api_token": "",
     "allowed_origins": None,
+    "admin_username": "admin",
+    "admin_password_hash": "",
+    "session_ttl_seconds": 43200,
 }
 
 
-def get_runtime_config() -> tuple[str, list[str]]:
-    """Return (api_token, allowed_origins) reloaded when env file changes.
+def get_runtime_config() -> dict[str, object]:
+    """Return runtime config reloaded when env file changes.
 
     This avoids requiring a service restart after editing ~/.oci-migrator.env.
     """
@@ -83,18 +91,161 @@ def get_runtime_config() -> tuple[str, list[str]]:
             )
             allowed_origins = [o.strip() for o in raw_origins.split(",") if o.strip()]
 
+            admin_username = (
+                file_env.get("OCI_MIGRATOR_ADMIN_USERNAME")
+                or os.getenv("OCI_MIGRATOR_ADMIN_USERNAME")
+                or "admin"
+            ).strip()
+            admin_password_hash = (
+                file_env.get("OCI_MIGRATOR_ADMIN_PASSWORD_HASH")
+                or os.getenv("OCI_MIGRATOR_ADMIN_PASSWORD_HASH")
+                or ""
+            ).strip()
+            try:
+                session_ttl_seconds = int(
+                    file_env.get("OCI_MIGRATOR_SESSION_TTL_SECONDS")
+                    or os.getenv("OCI_MIGRATOR_SESSION_TTL_SECONDS", "43200")
+                )
+            except ValueError:
+                session_ttl_seconds = 43200
+
             _CONFIG_CACHE["mtime"] = mtime
             _CONFIG_CACHE["api_token"] = api_token
             _CONFIG_CACHE["allowed_origins"] = allowed_origins
+            _CONFIG_CACHE["admin_username"] = admin_username
+            _CONFIG_CACHE["admin_password_hash"] = admin_password_hash
+            _CONFIG_CACHE["session_ttl_seconds"] = session_ttl_seconds
 
-        return str(_CONFIG_CACHE["api_token"]), list(_CONFIG_CACHE["allowed_origins"])  # type: ignore[arg-type]
+        return {k: v for k, v in _CONFIG_CACHE.items() if k != "mtime"}
 CONFIG_LOCK = Lock()
 JOBS_LOCK = Lock()
 RCLONE_LOCK = Lock()
+SESSION_LOCK = Lock()
+SESSIONS: dict[str, float] = {}
+
+
+def _b64decode(value: str) -> bytes:
+    return base64.b64decode(value.encode("ascii"), validate=True)
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    iterations = 390000
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    return "pbkdf2_sha256${}${}${}".format(
+        iterations,
+        base64.b64encode(salt).decode("ascii"),
+        base64.b64encode(digest).decode("ascii"),
+    )
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        scheme, iterations_raw, salt_raw, digest_raw = stored_hash.split("$", 3)
+        if scheme != "pbkdf2_sha256":
+            return False
+
+        iterations = int(iterations_raw)
+        salt = _b64decode(salt_raw)
+        expected_digest = _b64decode(digest_raw)
+        actual_digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+        return hmac.compare_digest(actual_digest, expected_digest)
+    except Exception:
+        return False
+
+
+def create_session_token() -> str:
+    config = get_runtime_config()
+    ttl = int(config.get("session_ttl_seconds", 43200))
+    token = secrets.token_urlsafe(48)
+    expires_at = time.time() + max(ttl, 300)
+
+    with SESSION_LOCK:
+        now = time.time()
+        expired_tokens = [session for session, expiry in SESSIONS.items() if expiry <= now]
+        for session in expired_tokens:
+            SESSIONS.pop(session, None)
+        SESSIONS[token] = expires_at
+
+    return token
+
+
+def invalidate_session_token(token: str) -> None:
+    with SESSION_LOCK:
+        SESSIONS.pop(token, None)
+
+
+def session_token_is_valid(token: str) -> bool:
+    with SESSION_LOCK:
+        expires_at = SESSIONS.get(token)
+        if not expires_at:
+            return False
+        if expires_at <= time.time():
+            SESSIONS.pop(token, None)
+            return False
+        return True
+
+
+def bearer_token_from_header(authorization: Optional[str]) -> str:
+    if not authorization:
+        return ""
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer":
+        return ""
+    return token.strip()
+
+
+def request_is_authenticated(request) -> bool:
+    config = get_runtime_config()
+
+    api_token = str(config.get("api_token", "")).strip()
+    x_api_token = request.headers.get("X-API-Token", "")
+    if api_token and hmac.compare_digest(x_api_token, api_token):
+        return True
+
+    bearer_token = bearer_token_from_header(request.headers.get("Authorization"))
+    return bool(bearer_token and session_token_is_valid(bearer_token))
+
+
+def _write_env_values(path: str, updates: dict[str, str]) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    existing_lines: list[str] = []
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as handle:
+            existing_lines = handle.readlines()
+
+    remaining = dict(updates)
+    output_lines: list[str] = []
+
+    for raw_line in existing_lines:
+        line = raw_line.rstrip("\n")
+        if not line or line.lstrip().startswith("#") or "=" not in line:
+            output_lines.append(raw_line if raw_line.endswith("\n") else f"{raw_line}\n")
+            continue
+
+        key, _ = line.split("=", 1)
+        if key in remaining:
+            output_lines.append(f"{key}={remaining.pop(key)}\n")
+        else:
+            output_lines.append(raw_line if raw_line.endswith("\n") else f"{raw_line}\n")
+
+    for key, value in remaining.items():
+        output_lines.append(f"{key}={value}\n")
+
+    file_descriptor, temp_path = tempfile.mkstemp(dir=os.path.dirname(path))
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as temp_file:
+            temp_file.writelines(output_lines)
+        os.chmod(temp_path, 0o600)
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
 
 def require_api_token(x_api_token: Optional[str] = Header(default=None, alias="X-API-Token")) -> None:
-    api_token, _ = get_runtime_config()
+    config = get_runtime_config()
+    api_token = str(config.get("api_token", "")).strip()
 
     if not api_token:
         raise HTTPException(
@@ -102,14 +253,21 @@ def require_api_token(x_api_token: Optional[str] = Header(default=None, alias="X
             detail="Server API token is not configured.",
         )
 
-    if x_api_token != api_token:
+    if not hmac.compare_digest(x_api_token or "", api_token):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing API token.",
         )
 
 
-app = FastAPI(title="OCI Migration & Sync Engine", dependencies=[Depends(require_api_token)])
+app = FastAPI(title="OCI Migration & Sync Engine")
+
+PUBLIC_PATHS = {
+    "/auth/login",
+    "/docs",
+    "/openapi.json",
+    "/redoc",
+}
 
 
 @app.middleware("http")
@@ -123,7 +281,8 @@ async def dynamic_cors_allowlist(request, call_next):
     origin = request.headers.get("origin")
 
     if origin:
-        _, allowed_origins = get_runtime_config()
+        config = get_runtime_config()
+        allowed_origins = list(config.get("allowed_origins", []))
         if origin not in allowed_origins:
             return JSONResponse(
                 status_code=403,
@@ -139,11 +298,18 @@ async def dynamic_cors_allowlist(request, call_next):
             headers = {
                 "Access-Control-Allow-Origin": origin,
                 "Access-Control-Allow-Methods": request_method or "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-                "Access-Control-Allow-Headers": request_headers or "Content-Type, X-API-Token",
+                "Access-Control-Allow-Headers": request_headers or "Content-Type, X-API-Token, Authorization",
                 "Access-Control-Max-Age": "600",
                 "Vary": "Origin",
             }
             return JSONResponse(status_code=204, content=None, headers=headers)
+
+    if request.url.path not in PUBLIC_PATHS and not request_is_authenticated(request):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid or missing admin session."},
+            headers={"Vary": "Origin"} if origin else {},
+        )
 
     response = await call_next(request)
 
@@ -164,6 +330,16 @@ os.makedirs(os.path.dirname(RCLONE_CONF), exist_ok=True)
 os.makedirs(OCI_DIR, exist_ok=True)
 
 # --- Schemas ---
+class LoginRequest(BaseModel):
+    username: str = "admin"
+    password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 class ConfigSchema(BaseModel):
     profile_name: str
     user_ocid: str
@@ -282,6 +458,70 @@ def sync_oci_to_rclone(profile_name, region, storage_compartment_ocid):
 
     with RCLONE_LOCK:
         write_ini_atomically(r_parser, RCLONE_CONF)
+
+
+# --- 0. Admin Auth ---
+@app.post("/auth/login")
+async def login(data: LoginRequest):
+    config = get_runtime_config()
+    admin_username = str(config.get("admin_username", "admin"))
+    admin_password_hash = str(config.get("admin_password_hash", ""))
+
+    if not admin_password_hash:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Admin password is not configured. Run install.sh with --admin-password or --prompt-admin-password.",
+        )
+
+    if data.username != admin_username or not verify_password(data.password, admin_password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password.")
+
+    token = create_session_token()
+    return {
+        "token": token,
+        "token_type": "bearer",
+        "username": admin_username,
+        "expires_in": int(config.get("session_ttl_seconds", 43200)),
+    }
+
+
+@app.post("/auth/logout")
+async def logout(authorization: Optional[str] = Header(default=None, alias="Authorization")):
+    token = bearer_token_from_header(authorization)
+    if token:
+        invalidate_session_token(token)
+    return {"message": "Logged out"}
+
+
+@app.post("/auth/change-password")
+async def change_password(data: ChangePasswordRequest):
+    if len(data.new_password) < 12:
+        raise HTTPException(status_code=400, detail="New password must be at least 12 characters.")
+
+    config = get_runtime_config()
+    admin_password_hash = str(config.get("admin_password_hash", ""))
+    if not admin_password_hash or not verify_password(data.current_password, admin_password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect.")
+
+    new_hash = hash_password(data.new_password)
+    _write_env_values(
+        ENV_FILE_PATH,
+        {
+            "OCI_MIGRATOR_ADMIN_USERNAME": str(config.get("admin_username", "admin")),
+            "OCI_MIGRATOR_ADMIN_PASSWORD_HASH": new_hash,
+        },
+    )
+
+    with SESSION_LOCK:
+        SESSIONS.clear()
+
+    return {
+        "message": "Admin password changed.",
+        "token": create_session_token(),
+        "token_type": "bearer",
+        "username": str(config.get("admin_username", "admin")),
+        "expires_in": int(config.get("session_ttl_seconds", 43200)),
+    }
 
 # --- 1. OCI Profile Management ---
 @app.post("/upload-key")

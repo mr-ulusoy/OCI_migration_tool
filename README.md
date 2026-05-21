@@ -15,7 +15,7 @@ On an Ubuntu server:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mr-ulusoy/OCI_migration_tool/main/scripts/bootstrap.sh -o bootstrap.sh
 chmod +x bootstrap.sh
-./bootstrap.sh --public-host <server-ip-or-dns>
+./bootstrap.sh --public-host <server-ip-or-dns> --prompt-admin-password
 ```
 
 Open:
@@ -24,10 +24,12 @@ Open:
 http://<server-ip-or-dns>:5173
 ```
 
-The installer creates `~/.oci-migrator.env`. Use the token from that file in the browser:
+The installer stores a hashed admin password in `~/.oci-migrator.env`. If you do not pass or prompt for a password, the installer generates one and prints it once.
 
-```js
-localStorage.setItem('OCI_MIGRATOR_API_TOKEN', '<token>');
+You can also set it non-interactively:
+
+```bash
+./bootstrap.sh --public-host <server-ip-or-dns> --admin-password '<strong-password>'
 ```
 
 ## Common Commands
@@ -46,7 +48,7 @@ make package
 ```bash
 git clone https://github.com/mr-ulusoy/OCI_migration_tool.git
 cd OCI_migration_tool
-./install.sh --public-host <server-ip-or-dns>
+./install.sh --public-host <server-ip-or-dns> --prompt-admin-password
 ```
 
 ## Deploy From A Workstation
