@@ -1,0 +1,815 @@
+import { useMemo, useState, useEffect } from 'react';
+import axios from 'axios';
+import { 
+  Cloud, Shield, Database, Search, Key, Loader2, CheckCircle,
+  ArrowRight, FileText, Archive, Edit, Trash2,
+  Folder, Plus, RefreshCw, Globe, Cpu, Clock, Activity, Terminal
+} from 'lucide-react';
+
+const API_BASE = import.meta.env.VITE_API_BASE || `http://${window.location.hostname}:8000`;
+
+function getApiToken() {
+  return import.meta.env.VITE_API_TOKEN || localStorage.getItem('OCI_MIGRATOR_API_TOKEN') || '';
+}
+
+export default function App() {
+  const api = useMemo(() => {
+    const instance = axios.create({
+      baseURL: API_BASE,
+      headers: {
+        'X-API-Token': getApiToken()
+      }
+    });
+
+    instance.interceptors.response.use(
+      (res) => res,
+      (err) => {
+        if (err?.response?.status === 401) {
+          const msg = 'Unauthorized: set VITE_API_TOKEN (or localStorage OCI_MIGRATOR_API_TOKEN) to match OCI_MIGRATOR_API_TOKEN on backend.';
+          console.error(msg);
+        }
+        return Promise.reject(err);
+      }
+    );
+
+    return instance;
+  }, []);
+
+  const [vms, setVms] = useState([]);
+  const [selectedVms, setSelectedVms] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [view, setView] = useState('keys'); 
+  const [searchTerm, setSearchTerm] = useState('');
+  
+  // Multi-Tenant State (OCI Profiles)
+  const [profiles, setProfiles] = useState([]);
+  const [activeSourceProfile, setActiveSourceProfile] = useState(''); 
+  const [formData, setFormData] = useState({
+    profileName: '', userOcid: '', tenancyOcid: '', fingerprint: '', region: 'eu-stockholm-1', 
+    compartmentOcid: '', storageCompartmentOcid: ''
+  });
+  
+  // Add Remote State (Combined OCI + Big 5)
+  const [remoteConfig, setRemoteConfig] = useState({
+    name: '', provider: 'oci', accessKey: '', secretKey: '', region: 'eu-stockholm-1', accountName: '', accountKey: '',
+    gcpObjectAcl: 'bucketOwnerFullControl', gcpBucketAcl: 'private', gcpLocation: 'us-west3'
+  });
+  const [gcpKeyFile, setGcpKeyFile] = useState(null);
+
+  // Rclone / Data Sync State
+  const [remotes, setRemotes] = useState([]);
+  const [jobs, setJobs] = useState([]);
+  const [sourceBuckets, setSourceBuckets] = useState([]);
+  const [destBuckets, setDestBuckets] = useState([]);
+
+  const [syncJob, setSyncJob] = useState({
+    name: '', source_remote: '', dest_profile: '', dest_bucket: '',
+    sync_mode: 'copy', transfers: 16, checkers: 32, buffer_size: '128M',
+    schedule: { frequency: 'none', time: '02:00', day_of_week: 'monday', day_of_month: '1' }
+  });
+
+  // VM Migration Panel State
+  const [vmMigrationConfig, setVmMigrationConfig] = useState({
+    destProfile: '', destBucket: ''
+  });
+  
+  const [vmTasks, setVmTasks] = useState({});
+  const [activeLogJob, setActiveLogJob] = useState(null);
+  const [liveLogData, setLiveLogData] = useState("");
+
+  // Common UI State
+  const [keyInputMode, setKeyInputMode] = useState('upload');
+  const [file, setFile] = useState(null);
+  const [pastedKey, setPastedKey] = useState('');
+  const [lastKeySavedPath, setLastKeySavedPath] = useState('');
+
+  useEffect(() => {
+    if (!lastKeySavedPath) return;
+    const timer = setTimeout(() => setLastKeySavedPath(''), 10_000);
+    return () => clearTimeout(timer);
+  }, [lastKeySavedPath]);
+
+  // Storage Viewer State
+  const [storageProfile, setStorageProfile] = useState('');
+  const [storageBuckets, setStorageBuckets] = useState([]);
+  const [selectedBucket, setSelectedBucket] = useState('');
+  const [storageObjects, setStorageObjects] = useState([]);
+  
+  const [newBucketName, setNewBucketName] = useState('');
+  const [newFolderName, setNewFolderName] = useState('');
+
+  useEffect(() => {
+    fetchProfiles();
+    fetchRemotes();
+    fetchJobs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let interval;
+    if (activeLogJob) {
+      interval = setInterval(async () => {
+        try {
+          const res = await api.get(`/job-log/${activeLogJob}`);
+          setLiveLogData(res.data.log);
+        } catch {
+          setLiveLogData("Error fetching logs or job finished.");
+        }
+      }, 2000);
+    } else {
+      setLiveLogData("");
+    }
+    return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeLogJob]);
+
+  useEffect(() => {
+    const taskIds = Object.keys(vmTasks);
+    if (taskIds.length === 0) return;
+
+    const interval = setInterval(() => {
+      taskIds.forEach(async (taskId) => {
+        if (vmTasks[taskId].status !== 'SUCCESS' && vmTasks[taskId].status !== 'FAILURE') {
+          try {
+            const res = await api.get(`/migration-status/${taskId}`);
+            setVmTasks(prev => ({
+              ...prev,
+              [taskId]: { ...prev[taskId], status: res.data.status, details: res.data.details || res.data.status }
+            }));
+          } catch (err) {
+            console.error(err);
+          }
+        }
+      });
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [vmTasks, api]);
+
+  const fetchProfiles = async () => { try { const res = await api.get(`/list-profiles`); setProfiles(res.data.profiles); } catch (err) { console.error(err); } };
+  const fetchRemotes = async () => { try { const res = await api.get(`/list-remotes`); setRemotes(res.data.remotes); } catch (err) { console.error(err); } };
+  const fetchJobs = async () => { try { const res = await api.get(`/list-jobs`); setJobs(res.data); } catch (err) { console.error(err); } };
+
+  // --- OCI Profile (Saved Profiles) Management ---
+  const handleSaveProfile = async () => {
+    if (!formData.profileName || !formData.compartmentOcid) return alert("Missing Profile Name or Compartment OCID.");
+    const safeProfileName = formData.profileName.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    const secureFileName = `${safeProfileName}_api_key.pem`;
+    let finalFile;
+    if (keyInputMode === 'paste') {
+      const blob = new Blob([pastedKey], { type: 'text/plain' });
+      finalFile = new File([blob], secureFileName, { type: 'text/plain' });
+    } else {
+      finalFile = new File([file], secureFileName, { type: 'text/plain' });
+    }
+    setLoading(true);
+    try {
+      const fData = new FormData();
+      fData.append("file", finalFile);
+      const uploadRes = await api.post(`/upload-key`, fData);
+      setLastKeySavedPath(uploadRes?.data?.saved_path || '');
+      await api.post(`/save-config`, {
+        profile_name: formData.profileName,
+        user_ocid: formData.userOcid,
+        tenancy_ocid: formData.tenancyOcid,
+        fingerprint: formData.fingerprint,
+        region: formData.region,
+        compartment_ocid: formData.compartmentOcid,
+        storage_compartment_ocid: formData.storageCompartmentOcid,
+        key_file_name: secureFileName
+      });
+      fetchProfiles();
+      alert("OCI Profile Secured!");
+      setFormData({ profileName: '', userOcid: '', tenancyOcid: '', fingerprint: '', region: 'eu-stockholm-1', compartmentOcid: '', storageCompartmentOcid: '' });
+      setPastedKey(''); setFile(null); setKeyInputMode('upload');
+    } catch (err) { console.error(err); alert("Save failed."); }
+    setLoading(false);
+  };
+
+  const handleEditProfile = async (profileName) => {
+    try {
+      const res = await api.get(`/get-profile/${profileName}`);
+      setFormData({
+        profileName: res.data.profileName, userOcid: res.data.userOcid, tenancyOcid: res.data.tenancyOcid,
+        fingerprint: res.data.fingerprint, region: res.data.region, compartmentOcid: res.data.compartmentOcid,
+        storageCompartmentOcid: res.data.storageCompartmentOcid || ''
+      });
+      setKeyInputMode('paste'); setView('keys');
+    } catch (err) { console.error(err); alert("Failed to load profile details."); }
+  };
+
+  const handleDeleteProfile = async (profileName) => {
+    if (!window.confirm(`Delete profile: ${profileName}?`)) return;
+    try {
+      await api.delete(`/delete-profile/${profileName}`);
+      fetchProfiles();
+    } catch (err) { console.error(err); alert("Failed to delete."); }
+  };
+
+  // --- Universal Remote Management ---
+  const handleSaveRemote = async () => {
+    if (remoteConfig.provider === 'oci') {
+        return handleSaveProfile();
+    }
+    if (!remoteConfig.name) return alert("Please provide a name for the remote.");
+    setLoading(true);
+    try {
+      const rData = new FormData();
+      rData.append("name", remoteConfig.name);
+      rData.append("provider", remoteConfig.provider);
+      if (remoteConfig.provider === 's3') {
+        rData.append("access_key", remoteConfig.accessKey);
+        rData.append("secret_key", remoteConfig.secretKey);
+        rData.append("region", remoteConfig.region);
+      } else if (remoteConfig.provider === 'azureblob') {
+        rData.append("account_name", remoteConfig.accountName);
+        rData.append("account_key", remoteConfig.accountKey);
+      } else if (remoteConfig.provider === 'google cloud storage') {
+        rData.append("gcp_object_acl", remoteConfig.gcpObjectAcl);
+        rData.append("gcp_bucket_acl", remoteConfig.gcpBucketAcl);
+        rData.append("gcp_location", remoteConfig.gcpLocation);
+        if (gcpKeyFile) rData.append("gcp_file", gcpKeyFile);
+      }
+      await api.post(`/save-remote`, rData);
+      fetchRemotes();
+      alert("Cloud Remote Saved!");
+      setRemoteConfig({ name: '', provider: 'oci', accessKey: '', secretKey: '', region: 'eu-west-1', accountName: '', accountKey: '', gcpObjectAcl: 'bucketOwnerFullControl', gcpBucketAcl: 'private', gcpLocation: 'us-west3' });
+      setGcpKeyFile(null);
+    } catch (err) { console.error(err); alert("Failed to save remote."); }
+    setLoading(false);
+  };
+
+  const handleDeleteRemote = async (remoteName) => {
+    if (!window.confirm(`Delete remote: ${remoteName}?`)) return;
+    try {
+      await api.delete(`/delete-remote/${remoteName}`);
+      fetchRemotes();
+    } catch (err) { console.error(err); alert("Failed to delete remote."); }
+  };
+
+  const fetchVms = async (p) => { setLoading(true); try { const res = await api.get(`/list-vms/${p}`); setVms(res.data); setActiveSourceProfile(p); setView('explorer'); } catch (err) { console.error(err); } setLoading(false); };
+
+  // --- Job Management ---
+  const handleSaveJob = async () => {
+    if (!syncJob.name || !syncJob.source_remote || !syncJob.dest_bucket) return alert("Fill in all required fields!");
+    setLoading(true);
+    try {
+      await api.post(`/save-job`, syncJob);
+      alert("Job saved and scheduled!");
+      fetchJobs(); setView('datasync');
+    } catch (err) { console.error(err); alert("Failed to save job."); }
+    setLoading(false);
+  };
+
+  const handleDeleteJob = async (name) => {
+    if (!window.confirm("Delete this job?")) return;
+    await api.delete(`/delete-job/${name}`);
+    fetchJobs(); if (activeLogJob === name) setActiveLogJob(null);
+  };
+
+  const handleRunManual = async (job) => {
+    try { await api.post(`/start-data-sync-manual`, job); setActiveLogJob(job.name); } catch (err) { console.error(err); alert("Failed to start."); }
+  };
+
+  // --- Storage Explorer ---
+  const handleStorageProfileChange = async (p) => { 
+      setStorageProfile(p); setSelectedBucket(''); setStorageObjects([]);
+      try { const res = await api.get(`/list-buckets/${p}`); setStorageBuckets(res.data); } catch (err) { console.error(err); } 
+  };
+  const handleBucketClick = async (b) => { 
+      setSelectedBucket(b); try { const res = await api.get(`/list-objects/${storageProfile}/${b}`); setStorageObjects(res.data); } catch (err) { console.error(err); } 
+  };
+  const handleCreateBucket = async () => {
+      if (!newBucketName) return;
+      try { await api.post(`/create-bucket`, { profile_name: storageProfile, bucket_name: newBucketName }); setNewBucketName(''); handleStorageProfileChange(storageProfile); } catch (err) { console.error(err); alert("Failed to create bucket."); }
+  };
+  const handleCreateFolder = async () => {
+      if (!newFolderName || !selectedBucket) return;
+      try { await api.post(`/create-folder`, { profile_name: storageProfile, bucket_name: selectedBucket, folder_name: newFolderName }); setNewFolderName(''); handleBucketClick(selectedBucket); } catch (err) { console.error(err); alert("Failed to create folder."); }
+  };
+  const handleDeleteObject = async (objectName) => {
+      if (!window.confirm(`Delete: ${objectName}?`)) return;
+      try { await api.delete(`/delete-object/${storageProfile}/${selectedBucket}/${encodeURIComponent(objectName)}`); handleBucketClick(selectedBucket); } catch (err) { console.error(err); alert("Failed to delete."); }
+  };
+
+  const filteredVms = vms.filter(vm => vm.name.toLowerCase().includes(searchTerm.toLowerCase()) || vm.id.includes(searchTerm));
+
+  const getStatusColor = (status) => {
+    if (status === 'SUCCESS') return 'text-green-500';
+    if (status === 'FAILURE') return 'text-red-500';
+    if (status === 'PROGRESS') return 'text-blue-500';
+    return 'text-orange-500';
+  };
+
+  return (
+    <div className="min-h-screen bg-white text-gray-800 flex overflow-hidden font-sans">
+      {/* Sidebar - MJUK SALVIAGRÖN (#e1ebd5) */}
+      <nav className="w-64 bg-[#e1ebd5] flex flex-col p-6 z-10 border-r border-[#d1dcca]">
+        <div className="flex items-center gap-3 mb-10 px-2">
+          <div className="bg-[#9c3029] p-1.5 rounded-md"><Cpu size={20} className="text-white" /></div>
+          <h1 className="text-lg font-bold tracking-tight text-gray-900">OCI Migrator Pro</h1>
+        </div>
+        <div className="space-y-1 font-medium text-sm text-gray-700">
+          <button onClick={() => setView('keys')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'keys' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Key size={18} /> <span>Credentials</span></button>
+          <button onClick={() => setView('datasync')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'datasync' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Activity size={18} /> <span>Job Dashboard</span></button>
+          <button onClick={() => setView('builder')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'builder' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Plus size={18} /> <span>New Sync Job</span></button>
+          <button onClick={() => setView('explorer')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'explorer' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Database size={18} /> <span>VM Migration</span></button>
+          <button onClick={() => setView('storage')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'storage' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Archive size={18} /> <span>Storage Explorer</span></button>
+        </div>
+      </nav>
+
+      <main className="flex-1 flex flex-col relative overflow-y-auto bg-gray-50/50">
+        <header className="h-16 flex items-center justify-between px-10 bg-white sticky top-0 z-20 shadow-sm border-b border-gray-100">
+          <div className="text-transparent">.</div> 
+          {view === 'explorer' && (
+            <div className="relative">
+              <Search className="absolute left-3 top-2 text-gray-400" size={16} />
+              <input className="bg-white border border-gray-200 rounded-md py-1.5 pl-9 pr-4 w-64 text-sm text-gray-800 focus:outline-none focus:border-[#9c3029] focus:ring-1 focus:ring-[#9c3029]" placeholder="Search VMs..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
+            </div>
+          )}
+        </header>
+
+        <div className="p-8 pb-40 min-h-screen">
+          {/* VIEW: CREDENTIALS */}
+          {view === 'keys' && (
+             <div className="max-w-7xl animate-in fade-in">
+                <div className="grid grid-cols-1 xl:grid-cols-2 gap-6 mb-8">
+                  
+                  {/* --- COMBINED ADD REMOTE (OCI + BIG 5) --- */}
+                  <div className="bg-white border border-gray-200 rounded-md p-6 shadow-sm">
+                    <h2 className="text-lg font-bold mb-5 flex items-center gap-2 text-gray-800"><Plus className="text-[#9c3029]" size={20} /> Add Remote</h2>
+                    {lastKeySavedPath && (
+                      <div className="mb-4 p-3 rounded-md border border-green-200 bg-green-50 text-left">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="text-[11px] font-bold text-green-700 uppercase tracking-wider">Key stored securely</div>
+                          <button
+                            type="button"
+                            onClick={() => setLastKeySavedPath('')}
+                            className="text-green-700/70 hover:text-green-900 text-xs font-bold leading-none"
+                            aria-label="Dismiss"
+                            title="Dismiss"
+                          >
+                            ×
+                          </button>
+                        </div>
+                        <div className="mt-1 text-[11px] font-mono text-green-900 break-all">{lastKeySavedPath}</div>
+                        <div className="mt-1 text-[10px] text-green-700">Permissions are set to 600.</div>
+                      </div>
+                    )}
+                    <div className="space-y-4 text-left">
+                      <div>
+                        <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Provider</label>
+                        <select 
+                          value={remoteConfig.provider} 
+                          onChange={e => {
+                            setRemoteConfig({...remoteConfig, provider: e.target.value});
+                            // Reset name when changing OCI vs Others
+                            setFormData({...formData, profileName: ''});
+                          }} 
+                          className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm text-gray-800 focus:outline-none focus:border-[#9c3029]"
+                        >
+                          <option value="oci">Oracle Cloud Infrastructure (OCI)</option>
+                          <option value="s3">AWS S3 (or S3 Clone)</option>
+                          <option value="azureblob">Azure Blob Storage</option>
+                          <option value="google cloud storage">Google Cloud Storage</option>
+                          <option value="local">Local Directory</option>
+                        </select>
+                      </div>
+
+                      {/* --- OCI FIELDS --- */}
+                      {remoteConfig.provider === 'oci' && (
+                        <>
+                          <div>
+                            <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Profile Name</label>
+                            <input value={formData.profileName} onChange={e => setFormData({...formData, profileName: e.target.value})} placeholder="e.g. Prod_Environment" className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm text-gray-800 focus:outline-none focus:border-[#9c3029]" />
+                          </div>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Compute Compartment</label>
+                              <input value={formData.compartmentOcid} onChange={e => setFormData({...formData, compartmentOcid: e.target.value})} placeholder="ocid1.compartment..." className="w-full bg-white border border-gray-200 p-2 rounded-md text-[11px] font-mono text-gray-500 focus:outline-none focus:border-[#9c3029]" />
+                            </div>
+                            <div>
+                              <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Storage Compartment</label>
+                              <input value={formData.storageCompartmentOcid} onChange={e => setFormData({...formData, storageCompartmentOcid: e.target.value})} placeholder="ocid1.compartment..." className="w-full bg-white border border-gray-200 p-2 rounded-md text-[11px] font-mono text-gray-500 focus:outline-none focus:border-[#9c3029]" />
+                            </div>
+                          </div>
+                          <div>
+                            <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Tenancy OCID</label>
+                            <input value={formData.tenancyOcid} onChange={e => setFormData({...formData, tenancyOcid: e.target.value})} placeholder="ocid1.tenancy..." className="w-full bg-white border border-gray-200 p-2 rounded-md text-[11px] font-mono text-gray-500 focus:outline-none focus:border-[#9c3029]" />
+                          </div>
+                          <div>
+                            <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">User OCID</label>
+                            <input value={formData.userOcid} onChange={e => setFormData({...formData, userOcid: e.target.value})} placeholder="ocid1.user..." className="w-full bg-white border border-gray-200 p-2 rounded-md text-[11px] font-mono text-gray-500 focus:outline-none focus:border-[#9c3029]" />
+                          </div>
+                          <div className="grid grid-cols-2 gap-4">
+                            <div>
+                              <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Fingerprint</label>
+                              <input value={formData.fingerprint} onChange={e => setFormData({...formData, fingerprint: e.target.value})} placeholder="aa:bb:cc:dd..." className="w-full bg-white border border-gray-200 p-2 rounded-md text-[11px] font-mono text-gray-500 focus:outline-none focus:border-[#9c3029]" />
+                            </div>
+                            <div>
+                              <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Region</label>
+                              <input value={formData.region} onChange={e => setFormData({...formData, region: e.target.value})} placeholder="eu-stockholm-1" className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm text-gray-800 focus:outline-none focus:border-[#9c3029]" />
+                            </div>
+                          </div>
+                          <div className="pt-2 border-t border-gray-100">
+                            <div className="flex gap-2 mb-2">
+                               <button onClick={() => setKeyInputMode('upload')} className={`px-4 py-1.5 text-xs rounded-md font-semibold border ${keyInputMode === 'upload' ? 'bg-[#9c3029] border-[#9c3029] text-white' : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'}`}>Upload API Key</button>
+                               <button onClick={() => setKeyInputMode('paste')} className={`px-4 py-1.5 text-xs rounded-md font-semibold border ${keyInputMode === 'paste' ? 'bg-[#9c3029] border-[#9c3029] text-white' : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'}`}>Paste Key</button>
+                            </div>
+                            {keyInputMode === 'upload' ? (
+                               <input type="file" onChange={e => setFile(e.target.files[0])} className="text-xs text-gray-600 file:mr-4 file:py-1 file:px-3 file:rounded file:border-0 file:text-xs file:bg-gray-100 file:text-gray-700" />
+                            ) : (
+                               <textarea value={pastedKey} onChange={e => setPastedKey(e.target.value)} className="w-full h-20 bg-gray-50 border border-gray-200 p-2 text-[11px] font-mono text-gray-600 rounded-md focus:outline-none focus:border-[#9c3029]" placeholder="-----BEGIN PRIVATE KEY-----" />
+                            )}
+                          </div>
+                        </>
+                      )}
+
+                      {/* --- OTHER CLOUD FIELDS --- */}
+                      {remoteConfig.provider !== 'oci' && (
+                        <>
+                          <div>
+                            <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Remote Name</label>
+                            <input value={remoteConfig.name} onChange={e => setRemoteConfig({...remoteConfig, name: e.target.value})} placeholder="e.g. Backup_Target" className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm text-gray-800 focus:outline-none focus:border-[#9c3029]" />
+                          </div>
+                          {remoteConfig.provider === 's3' && (
+                            <>
+                              <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                  <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Access Key ID</label>
+                                  <input value={remoteConfig.accessKey} onChange={e => setRemoteConfig({...remoteConfig, accessKey: e.target.value})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-[11px] font-mono focus:outline-none focus:border-[#9c3029]" />
+                                </div>
+                                <div>
+                                  <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Region</label>
+                                  <input value={remoteConfig.region} onChange={e => setRemoteConfig({...remoteConfig, region: e.target.value})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
+                                </div>
+                              </div>
+                              <div>
+                                <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Secret Access Key</label>
+                                <input type="password" value={remoteConfig.secretKey} onChange={e => setRemoteConfig({...remoteConfig, secretKey: e.target.value})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-[11px] font-mono focus:outline-none focus:border-[#9c3029]" />
+                              </div>
+                            </>
+                          )}
+                          {remoteConfig.provider === 'azureblob' && (
+                            <div className="grid grid-cols-1 gap-4">
+                                <input value={remoteConfig.accountName} onChange={e => setRemoteConfig({...remoteConfig, accountName: e.target.value})} placeholder="Account Name" className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
+                                <input type="password" value={remoteConfig.accountKey} onChange={e => setRemoteConfig({...remoteConfig, accountKey: e.target.value})} placeholder="Account Key" className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
+                            </div>
+                          )}
+                          {remoteConfig.provider === 'google cloud storage' && (
+                            <div className="space-y-3 p-3 bg-gray-50 rounded-md border border-gray-200">
+                               <label className="text-[10px] font-bold text-gray-400 uppercase">GCP Advanced Config</label>
+                               <input value={remoteConfig.gcpObjectAcl} onChange={e => setRemoteConfig({...remoteConfig, gcpObjectAcl: e.target.value})} placeholder="Object ACL" className="w-full bg-white border border-gray-200 p-2 rounded-md text-xs focus:outline-none focus:border-[#9c3029]" />
+                               <input value={remoteConfig.gcpBucketAcl} onChange={e => setRemoteConfig({...remoteConfig, gcpBucketAcl: e.target.value})} placeholder="Bucket ACL" className="w-full bg-white border border-gray-200 p-2 rounded-md text-xs focus:outline-none focus:border-[#9c3029]" />
+                               <input value={remoteConfig.gcpLocation} onChange={e => setRemoteConfig({...remoteConfig, gcpLocation: e.target.value})} placeholder="Location" className="w-full bg-white border border-gray-200 p-2 rounded-md text-xs focus:outline-none focus:border-[#9c3029]" />
+                               <input type="file" accept=".json" onChange={e => setGcpKeyFile(e.target.files[0])} className="text-xs" />
+                            </div>
+                          )}
+                        </>
+                      )}
+                      
+                      <button onClick={handleSaveRemote} disabled={loading} className="w-full bg-[#9c3029] text-white py-2.5 rounded-md font-semibold hover:bg-[#7a2520] transition-colors shadow-sm">
+                         {loading ? <Loader2 className="animate-spin mx-auto" /> : (remoteConfig.provider === 'oci' ? "Save Profile" : "Add Remote")}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* --- RIGHT COLUMN: SAVED PROFILES (OCI + Remotes) --- */}
+                  <div className="bg-white border border-gray-200 rounded-md p-6 shadow-sm">
+                     <h2 className="text-lg font-bold mb-5 flex items-center gap-2 text-gray-800"><Database className="text-[#9c3029]" size={20} /> Saved Profiles</h2>
+                     <div className="space-y-3 max-h-[600px] overflow-y-auto pr-2">
+                        {profiles.map(p => (
+                          <div key={p} className="p-4 bg-white border border-gray-200 rounded-md flex justify-between items-center hover:shadow-md transition-shadow">
+                             <span className="font-semibold text-gray-800">{p}</span>
+                             <div className="flex gap-2 items-center">
+                               <button onClick={() => handleEditProfile(p)} className="p-1.5 text-white bg-[#9c3029] hover:bg-[#7a2520] rounded-md transition-colors"><Edit size={14}/></button>
+                               <button onClick={() => handleDeleteProfile(p)} className="p-1.5 text-gray-500 border border-gray-200 hover:text-[#9c3029] hover:bg-red-50 rounded-md transition-colors"><Trash2 size={14}/></button>
+                               <button onClick={() => fetchVms(p)} className="text-xs bg-white text-gray-700 border border-gray-300 font-semibold px-3 py-1.5 rounded-md hover:bg-gray-50 transition-colors ml-2">Scan VMs</button>
+                             </div>
+                          </div>
+                        ))}
+                        {profiles.length === 0 && <p className="text-gray-500 italic text-sm">No profiles found.</p>}
+                        
+                        {/* Externa Remotes */}
+                        {remotes.filter(r => !r.endsWith('_rclone')).length > 0 && (
+                          <div className="pt-4 border-t border-gray-100 mt-4">
+                            <label className="text-[10px] font-bold text-gray-400 uppercase mb-2 block">External Remotes</label>
+                            {remotes.filter(r => !r.endsWith('_rclone')).map(r => (
+                               <div key={r} className="p-3 bg-gray-50 border border-gray-200 rounded-md flex justify-between items-center mb-2">
+                                  <span className="text-sm text-gray-600 font-medium">{r}</span>
+                                  <button onClick={() => handleDeleteRemote(r)} className="p-1.5 text-gray-400 hover:text-[#9c3029]"><Trash2 size={14}/></button>
+                               </div>
+                            ))}
+                          </div>
+                        )}
+                     </div>
+                  </div>
+                </div>
+             </div>
+          )}
+
+          {/* VIEW: JOB DASHBOARD */}
+          {view === 'datasync' && (
+            <div className="max-w-5xl mx-auto space-y-6 animate-in fade-in">
+              <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800"><Activity size={24} className="text-[#9c3029]"/> Active Sync Jobs</h2>
+              <div className="grid grid-cols-1 gap-4">
+                {jobs.map(job => (
+                  <div key={job.name} className="flex flex-col gap-2">
+                    <div className="bg-white border border-gray-200 p-5 rounded-md flex items-center justify-between shadow-sm">
+                      <div className="flex items-center gap-5 text-left">
+                        <div className="bg-gray-50 border border-gray-100 p-2.5 rounded-md"><RefreshCw className="text-[#9c3029]" size={20} /></div>
+                        <div>
+                          <h3 className="font-bold text-md text-gray-800">{job.name}</h3>
+                          <div className="flex items-center gap-3 text-[11px] text-gray-500 font-mono mt-1">
+                            <span>{job.source_remote}</span>
+                            <ArrowRight size={10} className="text-gray-400" />
+                            <span className="text-gray-700 font-semibold">{job.dest_bucket}</span>
+                          </div>
+                          <div className="mt-2 text-[10px] text-gray-500 uppercase font-bold tracking-wider flex gap-4">
+                            <span className="flex items-center gap-1"><Clock size={12}/> {job.schedule.frequency} @ {job.schedule.time}</span>
+                            <span className="flex items-center gap-1"><Cpu size={12}/> {job.transfers} Transfers</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button onClick={() => activeLogJob === job.name ? setActiveLogJob(null) : setActiveLogJob(job.name)} className={`p-2 rounded-md transition-colors ${activeLogJob === job.name ? 'bg-gray-100 text-gray-800' : 'bg-white border border-gray-200 text-gray-500 hover:bg-gray-50'}`}><Terminal size={16}/></button>
+                        <button onClick={() => handleRunManual(job)} className="px-4 py-2 bg-[#9c3029] text-white rounded-md font-semibold text-sm shadow-sm hover:bg-[#a63d2e]">Run</button>
+                        <button onClick={() => handleDeleteJob(job.name)} className="p-2 bg-white border border-gray-200 text-gray-500 rounded-md hover:text-[#9c3029]"><Trash2 size={16}/></button>
+                      </div>
+                    </div>
+                    {activeLogJob === job.name && (
+                      <div className="bg-gray-900 border border-gray-800 rounded-md p-4 relative animate-in slide-in-from-top-2 shadow-inner">
+                        <pre className="text-[11px] font-mono text-gray-300 h-32 overflow-y-auto text-left">{liveLogData || "Awaiting process..."}</pre>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {jobs.length === 0 && <div className="text-center p-12 bg-white border border-gray-200 rounded-md text-gray-500 shadow-sm">No jobs saved.</div>}
+              </div>
+            </div>
+          )}
+
+          {/* VIEW: JOB BUILDER */}
+          {view === 'builder' && (
+            <div className="max-w-3xl mx-auto animate-in slide-in-from-bottom-4">
+              <div className="bg-white border border-gray-200 rounded-md p-8 shadow-sm text-left">
+                <h2 className="text-xl font-bold mb-8 flex items-center gap-2 text-gray-800"><Plus className="text-[#9c3029]"/> Build Sync Pipeline</h2>
+                <div className="grid grid-cols-2 gap-6 mb-6">
+                  <div className="space-y-1">
+                    <label className="text-[11px] uppercase font-bold text-gray-500">Job Name</label>
+                    <input value={syncJob.name} onChange={e => setSyncJob({...syncJob, name: e.target.value})} placeholder="e.g. Daily_Web_Sync" className="w-full bg-white border border-gray-200 p-2.5 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] uppercase font-bold text-gray-500">Sync Mode</label>
+                    <select value={syncJob.sync_mode} onChange={e => setSyncJob({...syncJob, sync_mode: e.target.value})} className="w-full bg-white border border-gray-200 p-2.5 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
+                      <option value="copy">COPY (Safe)</option>
+                      <option value="sync">SYNC (Mirror)</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-6 mb-6 bg-gray-50 p-6 rounded-md border border-gray-200">
+                  <div className="space-y-3 text-left">
+                    <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Globe size={16}/> Source</h4>
+                    <select onChange={async e => {
+                      const r = e.target.value;
+                      setSyncJob(prev => ({...prev, source_remote: r}));
+                      try {
+                        const res = await api.get(`/list-remote-buckets/${r}`);
+                        setSourceBuckets(res.data.buckets);
+                      } catch (err) {
+                        console.error(err);
+                        alert('Failed to list buckets for remote.');
+                        setSourceBuckets([]);
+                      }
+                    }} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
+                      <option value="">Select Remote...</option>
+                      {remotes.map(r => <option key={r} value={r}>{r}</option>)}
+                    </select>
+                    <select onChange={e => {
+                      const bucket = e.target.value;
+                      setSyncJob(prev => {
+                        const remoteName = (prev.source_remote || '').split(':')[0];
+                        return {...prev, source_remote: remoteName && bucket ? `${remoteName}:${bucket}` : remoteName};
+                      });
+                    }} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" disabled={!sourceBuckets.length}>
+                      <option value="">Select Bucket/Folder...</option>
+                      {sourceBuckets.map(b => <option key={b} value={b}>{b}</option>)}
+                    </select>
+                  </div>
+                  <div className="space-y-3 text-left">
+                    <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Shield size={16}/> Destination</h4>
+                    <select onChange={async e => {
+                      const profile = e.target.value;
+                      setSyncJob(prev => ({...prev, dest_profile: profile}));
+                      try {
+                        const res = await api.get(`/list-buckets/${profile}`);
+                        setDestBuckets(res.data);
+                      } catch (err) {
+                        console.error(err);
+                        alert('Failed to list buckets for destination profile.');
+                        setDestBuckets([]);
+                      }
+                    }} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
+                      <option value="">Select OCI Profile...</option>
+                      {profiles.map(p => <option key={p} value={p}>{p}</option>)}
+                    </select>
+                    <select onChange={e => setSyncJob({...syncJob, dest_bucket: e.target.value})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" disabled={!destBuckets.length}>
+                      <option value="">Select Target Bucket...</option>
+                      {destBuckets.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+                
+                {/* SCHEMALÄGGNING & OPTIMERING (Transfers, Checkers, Buffer, Time) */}
+                <div className="grid grid-cols-3 gap-4 mb-6 text-left">
+                  <div className="space-y-1">
+                    <label className="text-[11px] uppercase font-bold text-gray-500">Transfers</label>
+                    <input type="number" value={syncJob.transfers} onChange={e => setSyncJob({...syncJob, transfers: parseInt(e.target.value)})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] uppercase font-bold text-gray-500">Checkers</label>
+                    <input type="number" value={syncJob.checkers} onChange={e => setSyncJob({...syncJob, checkers: parseInt(e.target.value)})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]" />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] uppercase font-bold text-gray-500">Buffer Size</label>
+                    <select value={syncJob.buffer_size} onChange={e => setSyncJob({...syncJob, buffer_size: e.target.value})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]">
+                      <option value="16M">16M</option><option value="128M">128M</option><option value="512M">512M</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="p-4 bg-gray-50 rounded-md border border-gray-200 mb-6 grid grid-cols-3 gap-4 text-left">
+                  <div className="space-y-1">
+                    <label className="text-[11px] uppercase font-bold text-gray-500">Frequency</label>
+                    <select value={syncJob.schedule.frequency} onChange={e => setSyncJob({...syncJob, schedule: {...syncJob.schedule, frequency: e.target.value}})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
+                      <option value="none">Manual Only</option><option value="daily">Daily</option><option value="weekly">Weekly</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] uppercase font-bold text-gray-500">Time</label>
+                    <input type="time" value={syncJob.schedule.time} onChange={e => setSyncJob({...syncJob, schedule: {...syncJob.schedule, time: e.target.value}})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
+                  </div>
+                  {syncJob.schedule.frequency === 'weekly' && (
+                    <div className="space-y-1">
+                      <label className="text-[11px] uppercase font-bold text-gray-500">Day</label>
+                      <select value={syncJob.schedule.day_of_week} onChange={e => setSyncJob({...syncJob, schedule: {...syncJob.schedule, day_of_week: e.target.value}})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
+                        <option value="monday">Monday</option><option value="sunday">Sunday</option>
+                      </select>
+                    </div>
+                  )}
+                </div>
+
+                <button onClick={handleSaveJob} disabled={loading} className="w-full bg-[#9c3029] text-white py-3 rounded-md font-semibold hover:bg-[#a63d2e] transition-colors flex items-center justify-center gap-2 shadow-sm">
+                  {loading ? <Loader2 className="animate-spin" /> : <><CheckCircle size={18}/> Save Pipeline</>}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* VIEW: VM EXPLORER */}
+          {view === 'explorer' && (
+             <div className="space-y-6 animate-in slide-in-from-right-4 max-w-7xl mx-auto">
+                {activeSourceProfile ? (
+                  <>
+                    <div className="bg-white p-4 rounded-md border border-gray-200 shadow-sm flex items-center justify-between">
+                      <h2 className="text-md font-bold text-gray-800">Source: <span className="text-[#9c3029]">{activeSourceProfile}</span></h2>
+                      <span className="text-xs font-semibold text-gray-500 bg-gray-100 px-3 py-1 rounded-full">{vms.length} VMs</span>
+                    </div>
+                    {loading ? ( <div className="flex justify-center p-20"><Loader2 className="animate-spin text-gray-400" size={40} /></div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {filteredVms.map(vm => {
+                          const taskData = Object.values(vmTasks).find(t => t.vm_id === vm.id);
+                          const isMigrating = !!taskData && taskData.status !== 'SUCCESS' && taskData.status !== 'FAILURE';
+                          return (
+                            <div key={vm.id} onClick={() => { if (!isMigrating) setSelectedVms(prev => prev.includes(vm.id) ? prev.filter(i => i !== vm.id) : [...prev, vm.id]); }}
+                                  className={`p-5 rounded-md border transition-all relative ${selectedVms.includes(vm.id) ? 'border-[#9c3029] bg-red-50' : 'border-gray-200 bg-white hover:shadow-md'} ${isMigrating ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'}`}>
+                                <div className="flex items-start gap-4">
+                                  <Cloud className={`mt-1 ${selectedVms.includes(vm.id) ? 'text-[#9c3029]' : 'text-gray-400'}`} size={24}/>
+                                  <div className="overflow-hidden">
+                                    <h4 className="font-bold text-gray-800 truncate text-sm">{vm.name}</h4>
+                                    <p className="text-[11px] text-gray-500 font-mono mt-1 truncate">{vm.id}</p>
+                                  </div>
+                                </div>
+                                {taskData && (
+                                  <div className={`mt-4 pt-3 border-t border-gray-100 text-[10px] uppercase font-bold tracking-widest ${getStatusColor(taskData.status)}`}>
+                                    {isMigrating && <Loader2 size={12} className="inline animate-spin mr-1"/>}
+                                    {taskData.details}
+                                  </div>
+                                )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="flex flex-col items-center justify-center h-64 bg-white border border-gray-200 rounded-md text-gray-500">
+                    <Database size={32} className="mb-3 text-gray-300"/>
+                    <p className="text-sm">No profile selected. Scan VMs from Credentials.</p>
+                  </div>
+                )}
+             </div>
+          )}
+
+          {/* VIEW: STORAGE EXPLORER */}
+          {view === 'storage' && (
+             <div className="max-w-6xl mx-auto space-y-6 animate-in fade-in">
+                <div className="bg-white p-1 rounded-md border border-gray-200 shadow-sm">
+                  <select value={storageProfile} onChange={e => handleStorageProfileChange(e.target.value)} className="w-full bg-transparent p-2 text-gray-800 outline-none font-semibold text-sm">
+                     <option value="">Select Profile to Explore...</option>
+                     {profiles.map(p => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </div>
+                {storageProfile && (
+                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                      <div className="bg-white border border-gray-200 rounded-md p-5 h-[600px] flex flex-col text-left shadow-sm">
+                         <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2 text-sm"><Database size={16} className="text-[#9c3029]"/> Buckets</h3>
+                         <div className="flex gap-2 mb-4">
+                             <input value={newBucketName} onChange={e => setNewBucketName(e.target.value)} placeholder="New bucket name" className="w-full bg-gray-50 border border-gray-200 p-2 rounded-md text-xs focus:outline-none focus:border-[#9c3029]" />
+                             <button onClick={handleCreateBucket} className="bg-[#9c3029] text-white px-3 py-2 rounded-md hover:bg-[#a63d2e]"><Plus size={14}/></button>
+                         </div>
+                         <div className="flex-1 overflow-y-auto pr-1">
+                             {storageBuckets.map(b => (
+                               <div key={b.name} onClick={() => handleBucketClick(b.name)} className={`p-2.5 rounded-md cursor-pointer transition-colors text-sm border ${selectedBucket === b.name ? 'bg-red-50 border-red-200 text-[#9c3029]' : 'hover:bg-gray-50 border-transparent text-gray-600'}`}>{b.name}</div>
+                             ))}
+                         </div>
+                      </div>
+                      <div className="col-span-2 bg-white border border-gray-200 rounded-md p-0 h-[600px] flex flex-col shadow-sm overflow-hidden text-left">
+                         <div className="flex justify-between items-center p-4 border-b border-gray-200 bg-gray-50">
+                             <h3 className="font-bold text-gray-800 flex items-center gap-2 text-sm"><Folder size={16} className={selectedBucket ? "text-[#9c3029]" : "text-gray-400"}/> {selectedBucket || 'Select a bucket'}</h3>
+                             {selectedBucket && (
+                               <div className="flex gap-2">
+                                   <input value={newFolderName} onChange={e => setNewFolderName(e.target.value)} placeholder="New Folder..." className="bg-white border border-gray-200 p-1.5 rounded-md text-xs w-40 focus:outline-none focus:border-[#9c3029]" />
+                                   <button onClick={handleCreateFolder} className="bg-white border border-gray-200 text-[#9c3029] px-3 rounded-md text-xs font-bold shadow-sm hover:bg-gray-50">Folder</button>
+                               </div>
+                             )}
+                         </div>
+                         <div className="flex-1 overflow-y-auto">
+                             <table className="w-full text-left text-sm">
+                                <thead className="text-gray-500 text-[10px] uppercase font-bold sticky top-0 bg-white border-b border-gray-200">
+                                  <tr><th className="py-2.5 px-5">Name</th><th className="py-2.5 px-5 text-right">Size</th><th className="py-2.5 px-5 text-center w-16">Action</th></tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-100 text-sm text-gray-800">
+                                  {storageObjects.map(obj => (
+                                    <tr key={obj.name} className="hover:bg-gray-50 group transition-colors">
+                                      <td className="py-3 px-5 flex items-center gap-3 font-medium text-xs">
+                                        {obj.name.endsWith('/') ? <Folder size={14} className="text-[#9c3029]"/> : <FileText size={14} className="text-gray-400"/>}
+                                        {obj.name}
+                                      </td>
+                                      <td className="py-3 px-5 text-right text-gray-500 font-mono text-[11px]">{obj.name.endsWith('/') ? '--' : `${Math.round(obj.size/1024)} KB`}</td>
+                                      <td className="py-3 px-5 text-center">
+                                        <button onClick={() => handleDeleteObject(obj.name)} className="text-gray-400 hover:text-[#9c3029] transition-all opacity-0 group-hover:opacity-100"><Trash2 size={14} /></button>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                             </table>
+                         </div>
+                      </div>
+                   </div>
+                )}
+             </div>
+          )}
+        </div>
+
+        {/* Bulk Migration Drawer */}
+        {selectedVms.length > 0 && view === 'explorer' && (
+          <div className="absolute bottom-0 left-0 w-full bg-white border-t border-gray-200 p-4 flex flex-col items-center shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-50 animate-in slide-in-from-bottom-full text-left">
+             <div className="w-full max-w-5xl flex justify-between items-center gap-6">
+                <div className="flex-1">
+                   <label className="text-[11px] font-bold text-gray-500 uppercase mb-1 block">Dest Profile</label>
+                   <select value={vmMigrationConfig.destProfile} onChange={e => {
+                      setVmMigrationConfig({...vmMigrationConfig, destProfile: e.target.value});
+                      api.get(`/list-buckets/${e.target.value}`).then(res => setDestBuckets(res.data));
+                   }} className="w-full bg-white border border-gray-200 p-2.5 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
+                      <option value="">Select Target...</option>
+                      {profiles.map(p => <option key={p} value={p}>{p}</option>)}
+                   </select>
+                </div>
+                <div className="flex-1">
+                   <label className="text-[11px] font-bold text-gray-500 uppercase mb-1 block">Storage Bucket</label>
+                   <select value={vmMigrationConfig.destBucket} onChange={e => setVmMigrationConfig({...vmMigrationConfig, destBucket: e.target.value})} className="w-full bg-white border border-gray-200 p-2.5 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
+                      <option value="">Select Bucket...</option>
+                      {destBuckets.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
+                   </select>
+                </div>
+                <div className="pt-5">
+                  <button onClick={async () => {
+                    if (!vmMigrationConfig.destProfile || !vmMigrationConfig.destBucket) return alert("Select Destination and Bucket!");
+                    try {
+                      const res = await api.post(`/start-bulk-migration`, {
+                        vm_ids: selectedVms, source_profile: activeSourceProfile, dest_profile: vmMigrationConfig.destProfile, bucket_name: vmMigrationConfig.destBucket
+                      });
+                      const newTasks = {}; res.data.tasks.forEach(t => { newTasks[t.task_id] = { vm_id: t.vm_id, status: 'PENDING', details: 'Starting...' }; });
+                      setVmTasks(prev => ({ ...prev, ...newTasks })); setSelectedVms([]); 
+                    } catch (err) { console.error(err); alert("Failed to start migration."); }
+                  }} className="bg-[#9c3029] text-white px-6 py-2.5 rounded-md font-semibold text-sm flex items-center gap-2 hover:bg-[#a63d2e] transition-colors shadow-sm">Execute Migration <ArrowRight size={16} /></button>
+                </div>
+             </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
