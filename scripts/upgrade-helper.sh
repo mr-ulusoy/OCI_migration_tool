@@ -16,6 +16,7 @@ OCI Migrator upgrade helper
 
 Usage:
   oci-migrator-upgrade start
+  oci-migrator-upgrade run
 EOF
 }
 
@@ -153,7 +154,32 @@ finish_failed() {
   exit "$exit_code"
 }
 
-start_upgrade() {
+schedule_upgrade() {
+  require_root
+  load_config
+  validate_config
+  prepare_paths
+
+  if [ -d "$UPGRADE_STATE_DIR/upgrade.lock" ]; then
+    write_status "running" "Upgrade is already running." "$(git_value rev-parse HEAD)" "$(git_value rev-parse "origin/$BRANCH")"
+    fail "Upgrade is already running."
+  fi
+
+  write_status "running" "Upgrade queued." "$(git_value rev-parse HEAD)" ""
+
+  if command -v systemd-run >/dev/null 2>&1; then
+    systemd-run \
+      --unit="$SERVICE_PREFIX-self-upgrade" \
+      --collect \
+      --description="OCI Migrator self upgrade" \
+      --setenv="OCI_MIGRATOR_UPGRADE_CONFIG=$CONFIG_FILE" \
+      "$UPGRADE_HELPER" run >>"$UPGRADE_LOG_FILE" 2>&1
+  else
+    nohup env OCI_MIGRATOR_UPGRADE_CONFIG="$CONFIG_FILE" "$UPGRADE_HELPER" run >>"$UPGRADE_LOG_FILE" 2>&1 &
+  fi
+}
+
+run_upgrade() {
   require_root
   load_config
   validate_config
@@ -230,7 +256,10 @@ start_upgrade() {
 main() {
   case "${1:-}" in
     start)
-      start_upgrade
+      schedule_upgrade
+      ;;
+    run)
+      run_upgrade
       ;;
     -h|--help)
       usage
