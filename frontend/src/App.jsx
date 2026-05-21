@@ -33,6 +33,17 @@ const DEFAULT_REMOTE_CONFIG = {
   localShareUsername: '',
   localSharePassword: ''
 };
+const createDefaultSyncJob = () => ({
+  name: '',
+  source_remote: '',
+  dest_profile: '',
+  dest_bucket: '',
+  sync_mode: 'copy',
+  transfers: 16,
+  checkers: 32,
+  buffer_size: '128M',
+  schedule: { frequency: 'none', time: '02:00', day_of_week: 'monday', day_of_month: '1' }
+});
 
 function getLegacyApiToken() {
   return import.meta.env.VITE_API_TOKEN || localStorage.getItem('OCI_MIGRATOR_API_TOKEN') || '';
@@ -85,6 +96,21 @@ function formatTimestamp(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
+}
+
+function cleanJobMessage(value = '') {
+  const message = String(value || '').replace(/^rclone\s+/i, '').trim();
+  return message ? `${message.charAt(0).toUpperCase()}${message.slice(1)}` : '';
+}
+
+function remoteNameFromPath(value = '') {
+  return String(value || '').split(':')[0] || '';
+}
+
+function remoteTargetFromPath(value = '') {
+  const rawValue = String(value || '');
+  const separatorIndex = rawValue.indexOf(':');
+  return separatorIndex >= 0 ? rawValue.slice(separatorIndex + 1) : '';
 }
 
 export default function App() {
@@ -163,11 +189,8 @@ export default function App() {
   const [sourceBuckets, setSourceBuckets] = useState([]);
   const [destBuckets, setDestBuckets] = useState([]);
 
-  const [syncJob, setSyncJob] = useState({
-    name: '', source_remote: '', dest_profile: '', dest_bucket: '',
-    sync_mode: 'copy', transfers: 16, checkers: 32, buffer_size: '128M',
-    schedule: { frequency: 'none', time: '02:00', day_of_week: 'monday', day_of_month: '1' }
-  });
+  const [syncJob, setSyncJob] = useState(createDefaultSyncJob);
+  const [editingJobName, setEditingJobName] = useState('');
   const visibleRemoteDetails = useMemo(() => {
     const detailsByName = new Map(remoteDetails.map((remote) => [remote.name, remote]));
     return remotes
@@ -176,6 +199,8 @@ export default function App() {
   }, [remotes, remoteDetails]);
   const localRemotes = visibleRemoteDetails.filter((remote) => remote.type === 'local');
   const externalRemotes = visibleRemoteDetails.filter((remote) => remote.type !== 'local');
+  const selectedSyncRemoteName = remoteNameFromPath(syncJob.source_remote);
+  const selectedSyncSourceValue = remoteTargetFromPath(syncJob.source_remote);
 
   // VM Migration Panel State
   const [vmMigrationConfig, setVmMigrationConfig] = useState({
@@ -555,7 +580,72 @@ export default function App() {
     } catch (err) { showError('Failed to delete rclone remote', err); }
   };
 
-  const fetchVms = async (p) => { setLoading(true); try { const res = await api.get(`/list-vms/${p}`); setVms(res.data); setActiveSourceProfile(p); setView('explorer'); } catch (err) { showError('Failed to list VMs', err); } setLoading(false); };
+  const fetchVms = async (profile) => {
+    if (!profile) {
+      setActiveSourceProfile('');
+      setVms([]);
+      setSelectedVms([]);
+      setView('explorer');
+      return;
+    }
+
+    setLoading(true);
+    setSelectedVms([]);
+    try {
+      const res = await api.get(`/list-vms/${encodeURIComponent(profile)}`);
+      setVms(res.data);
+      setActiveSourceProfile(profile);
+      setView('explorer');
+    } catch (err) {
+      showError('Failed to list VMs', err);
+    }
+    setLoading(false);
+  };
+
+  const loadSourceBuckets = async (remoteName) => {
+    if (!remoteName) {
+      setSourceBuckets([]);
+      return [];
+    }
+
+    try {
+      const res = await api.get(`/list-remote-buckets/${encodeURIComponent(remoteName)}`);
+      const buckets = (res.data.buckets || []).map(item => (
+        typeof item === 'string' ? { name: item, value: item } : item
+      ));
+      setSourceBuckets(buckets);
+      return buckets;
+    } catch (err) {
+      showError('Failed to list buckets for remote', err);
+      setSourceBuckets([]);
+      return [];
+    }
+  };
+
+  const loadDestBuckets = async (profile) => {
+    if (!profile) {
+      setDestBuckets([]);
+      return [];
+    }
+
+    try {
+      const res = await api.get(`/list-buckets/${encodeURIComponent(profile)}`);
+      setDestBuckets(res.data);
+      return res.data;
+    } catch (err) {
+      showError('Failed to list buckets for destination profile', err);
+      setDestBuckets([]);
+      return [];
+    }
+  };
+
+  const startNewSyncJob = () => {
+    setEditingJobName('');
+    setSyncJob(createDefaultSyncJob());
+    setSourceBuckets([]);
+    setDestBuckets([]);
+    setView('builder');
+  };
 
   // --- Job Management ---
   const handleSaveJob = async () => {
@@ -566,16 +656,39 @@ export default function App() {
     setLoading(true);
     try {
       await api.post(`/save-job`, syncJob);
-      showSuccess('Job saved.');
+      if (editingJobName && editingJobName !== syncJob.name) {
+        await api.delete(`/delete-job/${encodeURIComponent(editingJobName)}`);
+      }
+      showSuccess(editingJobName ? 'Job updated.' : 'Job saved.');
+      setEditingJobName('');
       fetchJobs(); setView('datasync');
     } catch (err) { showError('Failed to save job', err); }
     setLoading(false);
   };
 
+  const handleEditJob = async (job) => {
+    const normalizedJob = {
+      ...createDefaultSyncJob(),
+      ...job,
+      schedule: {
+        ...createDefaultSyncJob().schedule,
+        ...(job.schedule || {})
+      }
+    };
+    setEditingJobName(job.name);
+    setSyncJob(normalizedJob);
+    setView('builder');
+
+    await Promise.all([
+      loadSourceBuckets(remoteNameFromPath(normalizedJob.source_remote)),
+      loadDestBuckets(normalizedJob.dest_profile)
+    ]);
+  };
+
   const handleDeleteJob = async (name) => {
     if (!window.confirm("Delete this job?")) return;
     try {
-      await api.delete(`/delete-job/${name}`);
+      await api.delete(`/delete-job/${encodeURIComponent(name)}`);
       fetchJobs(); if (activeLogJob === name) setActiveLogJob(null);
       showSuccess('Job deleted.');
     } catch (err) {
@@ -680,7 +793,17 @@ export default function App() {
     setAuthLoading(false);
   };
 
-  const filteredVms = vms.filter(vm => vm.name.toLowerCase().includes(searchTerm.toLowerCase()) || vm.id.includes(searchTerm));
+  const filteredVms = vms.filter(vm => {
+    const searchText = [
+      vm.name,
+      vm.id,
+      vm.os,
+      vm.shape,
+      vm.public_ip,
+      vm.private_ip,
+    ].filter(Boolean).join(' ').toLowerCase();
+    return searchText.includes(searchTerm.toLowerCase());
+  });
 
   const getStatusColor = (status) => {
     if (status === 'SUCCESS') return 'text-green-500';
@@ -741,7 +864,7 @@ export default function App() {
         <div className="space-y-1 font-medium text-sm text-gray-700">
           <button onClick={() => setView('keys')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'keys' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Key size={18} /> <span>Credentials</span></button>
           <button onClick={() => setView('datasync')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'datasync' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Activity size={18} /> <span>Job Dashboard</span></button>
-          <button onClick={() => setView('builder')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'builder' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Plus size={18} /> <span>New Sync Job</span></button>
+          <button onClick={startNewSyncJob} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'builder' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Plus size={18} /> <span>New Sync Job</span></button>
           <button onClick={() => setView('explorer')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'explorer' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Database size={18} /> <span>VM Migration</span></button>
           <button onClick={() => setView('storage')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'storage' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Archive size={18} /> <span>Storage Explorer</span></button>
         </div>
@@ -1074,7 +1197,7 @@ export default function App() {
 
           {/* VIEW: JOB DASHBOARD */}
           {view === 'datasync' && (
-            <div className="max-w-5xl mx-auto space-y-6 animate-in fade-in">
+            <div className="max-w-7xl mx-auto space-y-6 animate-in fade-in">
               <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800"><Activity size={24} className="text-[#9c3029]"/> Active Sync Jobs</h2>
               <form onSubmit={handleSaveJobLogSettings} className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
                 <div className="flex items-center justify-between gap-4 mb-4">
@@ -1123,46 +1246,61 @@ export default function App() {
                   <span>{jobLogSettings?.logrotate_file || '/etc/logrotate.d/migrator-job-logs'}</span>
                 </div>
               </form>
-              <div className="grid grid-cols-1 gap-4">
-                {jobs.map(job => (
-                  <div key={job.name} className="flex flex-col gap-2">
-                    <div className="bg-white border border-gray-200 p-5 rounded-md flex items-center justify-between shadow-sm">
-                      <div className="flex items-center gap-5 text-left">
-                        <div className="bg-gray-50 border border-gray-100 p-2.5 rounded-md"><RefreshCw className="text-[#9c3029]" size={20} /></div>
-                        <div>
-                          <h3 className="font-bold text-md text-gray-800">{job.name}</h3>
-                          <div className="flex items-center gap-3 text-[11px] text-gray-500 font-mono mt-1">
-                            <span>{job.source_remote}</span>
-                            <ArrowRight size={10} className="text-gray-400" />
-                            <span className="text-gray-700 font-semibold">{job.dest_bucket}</span>
-                          </div>
-                          <div className="mt-2 text-[10px] text-gray-500 uppercase font-bold tracking-wider flex gap-4">
-                            <span className="flex items-center gap-1"><Clock size={12}/> {job.schedule.frequency} @ {job.schedule.time}</span>
-                            <span className="flex items-center gap-1"><Cpu size={12}/> {job.transfers} Transfers</span>
-                          </div>
-                          {latestRunByJob[job.name] && (
-                            <div className="mt-2 flex items-center gap-2">
-                              <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase ${runStatusClass(latestRunByJob[job.name].status)}`}>
-                                {latestRunByJob[job.name].status}
-                              </span>
-                              <span className="text-[11px] text-gray-500 max-w-md truncate inline-block align-bottom">{latestRunByJob[job.name].error || latestRunByJob[job.name].details || formatTimestamp(latestRunByJob[job.name].updated_at)}</span>
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                {jobs.map(job => {
+                  const latestRun = latestRunByJob[job.name];
+                  const latestMessage = cleanJobMessage(latestRun?.error || latestRun?.details || '');
+                  const scheduleText = job.schedule?.frequency === 'none'
+                    ? 'manual'
+                    : `${job.schedule?.frequency || 'manual'} @ ${job.schedule?.time || '02:00'}`;
+
+                  return (
+                    <div key={job.name} className="flex flex-col gap-2">
+                      <div className="bg-white border border-gray-200 p-3 rounded-md shadow-sm">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-start gap-3 text-left min-w-0">
+                            <div className="bg-gray-50 border border-gray-100 p-2 rounded-md shrink-0"><RefreshCw className="text-[#9c3029]" size={16} /></div>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <h3 className="font-bold text-sm text-gray-800 truncate">{job.name}</h3>
+                                {latestRun && (
+                                  <span className={`text-[9px] px-2 py-0.5 rounded-full border font-bold uppercase shrink-0 ${runStatusClass(latestRun.status)}`}>
+                                    {latestRun.status}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2 text-[11px] text-gray-500 font-mono mt-1 min-w-0">
+                                <span className="truncate" title={job.source_remote}>{job.source_remote}</span>
+                                <ArrowRight size={10} className="text-gray-400 shrink-0" />
+                                <span className="text-gray-700 font-semibold truncate" title={job.dest_bucket}>{job.dest_bucket}</span>
+                              </div>
+                              <div className="mt-2 text-[10px] text-gray-500 uppercase font-bold tracking-wider flex gap-3">
+                                <span className="flex items-center gap-1"><Clock size={11}/> {scheduleText}</span>
+                                <span>{job.sync_mode || 'copy'}</span>
+                              </div>
+                              {latestRun && (
+                                <div className="mt-1 text-[11px] text-gray-500 truncate max-w-xl">
+                                  {latestMessage || formatTimestamp(latestRun.updated_at)}
+                                </div>
+                              )}
                             </div>
-                          )}
+                          </div>
+                          <div className="flex gap-1 shrink-0">
+                            <button onClick={() => handleEditJob(job)} className="p-1.5 bg-white border border-gray-200 text-gray-500 rounded-md hover:text-[#9c3029] hover:bg-gray-50" title="Edit job"><Edit size={14}/></button>
+                            <button onClick={() => activeLogJob === job.name ? setActiveLogJob(null) : setActiveLogJob(job.name)} className={`p-1.5 rounded-md transition-colors ${activeLogJob === job.name ? 'bg-gray-100 text-gray-800 border border-gray-300' : 'bg-white border border-gray-200 text-gray-500 hover:bg-gray-50'}`} title="View latest log"><Terminal size={14}/></button>
+                            <button onClick={() => handleRunManual(job)} className="px-2.5 py-1.5 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#a63d2e]">Run</button>
+                            <button onClick={() => handleDeleteJob(job.name)} className="p-1.5 bg-white border border-gray-200 text-gray-500 rounded-md hover:text-[#9c3029] hover:bg-gray-50" title="Delete job"><Trash2 size={14}/></button>
+                          </div>
                         </div>
                       </div>
-                      <div className="flex gap-2">
-                        <button onClick={() => activeLogJob === job.name ? setActiveLogJob(null) : setActiveLogJob(job.name)} className={`p-2 rounded-md transition-colors ${activeLogJob === job.name ? 'bg-gray-100 text-gray-800' : 'bg-white border border-gray-200 text-gray-500 hover:bg-gray-50'}`}><Terminal size={16}/></button>
-                        <button onClick={() => handleRunManual(job)} className="px-4 py-2 bg-[#9c3029] text-white rounded-md font-semibold text-sm shadow-sm hover:bg-[#a63d2e]">Run</button>
-                        <button onClick={() => handleDeleteJob(job.name)} className="p-2 bg-white border border-gray-200 text-gray-500 rounded-md hover:text-[#9c3029]"><Trash2 size={16}/></button>
-                      </div>
+                      {activeLogJob === job.name && (
+                        <div className="bg-gray-900 border border-gray-800 rounded-md p-4 relative animate-in slide-in-from-top-2 shadow-inner">
+                          <pre className="text-[11px] font-mono text-gray-300 h-32 overflow-y-auto text-left">{liveLogData || "Awaiting process..."}</pre>
+                        </div>
+                      )}
                     </div>
-                    {activeLogJob === job.name && (
-                      <div className="bg-gray-900 border border-gray-800 rounded-md p-4 relative animate-in slide-in-from-top-2 shadow-inner">
-                        <pre className="text-[11px] font-mono text-gray-300 h-32 overflow-y-auto text-left">{liveLogData || "Awaiting process..."}</pre>
-                      </div>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
                 {jobs.length === 0 && <div className="text-center p-12 bg-white border border-gray-200 rounded-md text-gray-500 shadow-sm">No jobs saved.</div>}
               </div>
               <div className="bg-white border border-gray-200 rounded-md shadow-sm overflow-hidden">
@@ -1184,7 +1322,7 @@ export default function App() {
                               <span className="font-semibold text-sm text-gray-800 truncate">{run.job_name || run.kind}</span>
                               <span className="text-[11px] text-gray-400 uppercase">{run.trigger || 'manual'}</span>
                             </div>
-                            <div className="mt-1 text-xs text-gray-500 truncate">{run.error || run.details || `${run.source || ''} -> ${run.destination || ''}`}</div>
+                            <div className="mt-1 text-xs text-gray-500 truncate">{cleanJobMessage(run.error || run.details) || `${run.source || ''} -> ${run.destination || ''}`}</div>
                             <div className="mt-1 text-[10px] text-gray-400 font-mono truncate">{run.id}</div>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
@@ -1231,7 +1369,7 @@ export default function App() {
           {view === 'builder' && (
             <div className="max-w-3xl mx-auto animate-in slide-in-from-bottom-4">
               <div className="bg-white border border-gray-200 rounded-md p-8 shadow-sm text-left">
-                <h2 className="text-xl font-bold mb-8 flex items-center gap-2 text-gray-800"><Plus className="text-[#9c3029]"/> Build Sync Pipeline</h2>
+                <h2 className="text-xl font-bold mb-8 flex items-center gap-2 text-gray-800"><Plus className="text-[#9c3029]"/> {editingJobName ? 'Edit Sync Pipeline' : 'Build Sync Pipeline'}</h2>
                 <div className="grid grid-cols-2 gap-6 mb-6">
                   <div className="space-y-1">
                     <label className="text-[11px] uppercase font-bold text-gray-500">Job Name</label>
@@ -1248,23 +1386,15 @@ export default function App() {
                 <div className="grid grid-cols-2 gap-6 mb-6 bg-gray-50 p-6 rounded-md border border-gray-200">
                   <div className="space-y-3 text-left">
                     <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Globe size={16}/> Source</h4>
-                    <select onChange={async e => {
+                    <select value={selectedSyncRemoteName} onChange={async e => {
                       const r = e.target.value;
                       setSyncJob(prev => ({...prev, source_remote: r}));
-                      try {
-                        const res = await api.get(`/list-remote-buckets/${r}`);
-                        setSourceBuckets((res.data.buckets || []).map(item => (
-                          typeof item === 'string' ? { name: item, value: item } : item
-                        )));
-                      } catch (err) {
-                        showError('Failed to list buckets for remote', err);
-                        setSourceBuckets([]);
-                      }
+                      await loadSourceBuckets(r);
                     }} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
                       <option value="">Select Remote...</option>
                       {remotes.map(r => <option key={r} value={r}>{r}</option>)}
                     </select>
-                    <select onChange={e => {
+                    <select value={selectedSyncSourceValue} onChange={e => {
                       const bucket = e.target.value;
                       setSyncJob(prev => {
                         const remoteName = (prev.source_remote || '').split(':')[0];
@@ -1277,21 +1407,15 @@ export default function App() {
                   </div>
                   <div className="space-y-3 text-left">
                     <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Shield size={16}/> Destination</h4>
-                    <select onChange={async e => {
+                    <select value={syncJob.dest_profile} onChange={async e => {
                       const profile = e.target.value;
-                      setSyncJob(prev => ({...prev, dest_profile: profile}));
-                      try {
-                        const res = await api.get(`/list-buckets/${profile}`);
-                        setDestBuckets(res.data);
-                      } catch (err) {
-                        showError('Failed to list buckets for destination profile', err);
-                        setDestBuckets([]);
-                      }
+                      setSyncJob(prev => ({...prev, dest_profile: profile, dest_bucket: ''}));
+                      await loadDestBuckets(profile);
                     }} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
                       <option value="">Select OCI Profile...</option>
                       {profiles.map(p => <option key={p} value={p}>{p}</option>)}
                     </select>
-                    <select onChange={e => setSyncJob({...syncJob, dest_bucket: e.target.value})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" disabled={!destBuckets.length}>
+                    <select value={syncJob.dest_bucket} onChange={e => setSyncJob({...syncJob, dest_bucket: e.target.value})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" disabled={!destBuckets.length}>
                       <option value="">Select Target Bucket...</option>
                       {destBuckets.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
                     </select>
@@ -1338,7 +1462,7 @@ export default function App() {
                 </div>
 
                 <button onClick={handleSaveJob} disabled={loading} className="w-full bg-[#9c3029] text-white py-3 rounded-md font-semibold hover:bg-[#a63d2e] transition-colors flex items-center justify-center gap-2 shadow-sm">
-                  {loading ? <Loader2 className="animate-spin" /> : <><CheckCircle size={18}/> Save Pipeline</>}
+                  {loading ? <Loader2 className="animate-spin" /> : <><CheckCircle size={18}/> {editingJobName ? 'Save Changes' : 'Save Pipeline'}</>}
                 </button>
               </div>
             </div>
@@ -1347,44 +1471,90 @@ export default function App() {
           {/* VIEW: VM EXPLORER */}
           {view === 'explorer' && (
              <div className="space-y-6 animate-in slide-in-from-right-4 max-w-7xl mx-auto">
-                {activeSourceProfile ? (
-                  <>
-                    <div className="bg-white p-4 rounded-md border border-gray-200 shadow-sm flex items-center justify-between">
-                      <h2 className="text-md font-bold text-gray-800">Source: <span className="text-[#9c3029]">{activeSourceProfile}</span></h2>
-                      <span className="text-xs font-semibold text-gray-500 bg-gray-100 px-3 py-1 rounded-full">{vms.length} VMs</span>
+                <div className="bg-white p-4 rounded-md border border-gray-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <Database size={20} className="text-[#9c3029] shrink-0" />
+                    <div className="min-w-0">
+                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider block mb-1">Source</label>
+                      <select value={activeSourceProfile} onChange={e => fetchVms(e.target.value)} className="w-64 max-w-full bg-white border border-gray-200 rounded-md py-2 px-3 text-sm font-semibold text-gray-800 focus:outline-none focus:border-[#9c3029]">
+                        <option value="">Select OCI profile...</option>
+                        {profiles.map(p => <option key={p} value={p}>{p}</option>)}
+                      </select>
                     </div>
-                    {loading ? ( <div className="flex justify-center p-20"><Loader2 className="animate-spin text-gray-400" size={40} /></div>
-                    ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                        {filteredVms.map(vm => {
-                          const taskData = Object.values(vmTasks).find(t => t.vm_id === vm.id);
-                          const isMigrating = !!taskData && taskData.status !== 'SUCCESS' && taskData.status !== 'FAILURE';
-                          return (
-                            <div key={vm.id} onClick={() => { if (!isMigrating) setSelectedVms(prev => prev.includes(vm.id) ? prev.filter(i => i !== vm.id) : [...prev, vm.id]); }}
-                                  className={`p-5 rounded-md border transition-all relative ${selectedVms.includes(vm.id) ? 'border-[#9c3029] bg-red-50' : 'border-gray-200 bg-white hover:shadow-md'} ${isMigrating ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'}`}>
-                                <div className="flex items-start gap-4">
-                                  <Cloud className={`mt-1 ${selectedVms.includes(vm.id) ? 'text-[#9c3029]' : 'text-gray-400'}`} size={24}/>
-                                  <div className="overflow-hidden">
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => fetchVms(activeSourceProfile)} disabled={!activeSourceProfile || loading} className="px-3 py-2 bg-white border border-gray-200 text-gray-600 rounded-md hover:text-[#9c3029] hover:bg-gray-50 disabled:opacity-50 flex items-center gap-2 text-xs font-semibold">
+                      {loading ? <Loader2 className="animate-spin" size={14} /> : <RefreshCw size={14} />}
+                      Refresh
+                    </button>
+                    <span className="text-xs font-semibold text-gray-500 bg-gray-100 px-3 py-1 rounded-full">{activeSourceProfile ? `${vms.length} VMs` : 'No source selected'}</span>
+                  </div>
+                </div>
+
+                {activeSourceProfile ? (
+                  loading ? ( <div className="flex justify-center p-20"><Loader2 className="animate-spin text-gray-400" size={40} /></div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                      {filteredVms.map(vm => {
+                        const taskData = Object.values(vmTasks).find(t => t.vm_id === vm.id);
+                        const isMigrating = !!taskData && taskData.status !== 'SUCCESS' && taskData.status !== 'FAILURE';
+                        return (
+                          <div key={vm.id} onClick={() => { if (!isMigrating) setSelectedVms(prev => prev.includes(vm.id) ? prev.filter(i => i !== vm.id) : [...prev, vm.id]); }}
+                                className={`p-4 rounded-md border transition-all relative ${selectedVms.includes(vm.id) ? 'border-[#9c3029] bg-red-50' : 'border-gray-200 bg-white hover:shadow-md'} ${isMigrating ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'}`}>
+                              <div className="flex items-start gap-3">
+                                <Cloud className={`mt-1 shrink-0 ${selectedVms.includes(vm.id) ? 'text-[#9c3029]' : 'text-gray-400'}`} size={20}/>
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-start justify-between gap-2">
                                     <h4 className="font-bold text-gray-800 truncate text-sm">{vm.name}</h4>
-                                    <p className="text-[11px] text-gray-500 font-mono mt-1 truncate">{vm.id}</p>
+                                    <span className="text-[9px] px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 font-bold uppercase shrink-0">{vm.state}</span>
                                   </div>
+                                  <p className="text-[10px] text-gray-500 font-mono mt-1 truncate">{vm.id}</p>
                                 </div>
-                                {taskData && (
-                                  <div className={`mt-4 pt-3 border-t border-gray-100 text-[10px] uppercase font-bold tracking-widest ${getStatusColor(taskData.status)}`}>
-                                    {isMigrating && <Loader2 size={12} className="inline animate-spin mr-1"/>}
-                                    {taskData.details}
-                                  </div>
-                                )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </>
+                              </div>
+                              <div className="mt-4 grid grid-cols-2 gap-2 text-left">
+                                <div className="min-w-0">
+                                  <div className="text-[9px] uppercase font-bold text-gray-400">OS</div>
+                                  <div className="text-[11px] text-gray-700 truncate" title={vm.os || 'Unknown'}>{vm.os || 'Unknown'}</div>
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="text-[9px] uppercase font-bold text-gray-400">Shape</div>
+                                  <div className="text-[11px] text-gray-700 truncate" title={vm.shape || 'Unknown'}>{vm.shape || 'Unknown'}</div>
+                                </div>
+                                <div>
+                                  <div className="text-[9px] uppercase font-bold text-gray-400">OCPU</div>
+                                  <div className="text-[11px] text-gray-700">{vm.ocpus ?? '-'}</div>
+                                </div>
+                                <div>
+                                  <div className="text-[9px] uppercase font-bold text-gray-400">RAM</div>
+                                  <div className="text-[11px] text-gray-700">{vm.memory_gb ? `${vm.memory_gb} GB` : '-'}</div>
+                                </div>
+                              </div>
+                              <div className="mt-3 space-y-1 text-[10px] font-mono text-left">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="text-gray-400 uppercase font-bold shrink-0">Private</span>
+                                  <span className="text-gray-700 truncate" title={vm.private_ip || '-'}>{vm.private_ip || '-'}</span>
+                                </div>
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="text-gray-400 uppercase font-bold shrink-0">Public</span>
+                                  <span className="text-gray-700 truncate" title={vm.public_ip || '-'}>{vm.public_ip || '-'}</span>
+                                </div>
+                              </div>
+                              {taskData && (
+                                <div className={`mt-4 pt-3 border-t border-gray-100 text-[10px] uppercase font-bold tracking-widest ${getStatusColor(taskData.status)}`}>
+                                  {isMigrating && <Loader2 size={12} className="inline animate-spin mr-1"/>}
+                                  {taskData.details}
+                                </div>
+                              )}
+                          </div>
+                        );
+                      })}
+                      {filteredVms.length === 0 && <div className="col-span-full text-center p-12 bg-white border border-gray-200 rounded-md text-gray-500 shadow-sm">No VMs match your search.</div>}
+                    </div>
+                  )
                 ) : (
                   <div className="flex flex-col items-center justify-center h-64 bg-white border border-gray-200 rounded-md text-gray-500">
                     <Database size={32} className="mb-3 text-gray-300"/>
-                    <p className="text-sm">No profile selected. Scan VMs from Credentials.</p>
+                    <p className="text-sm">Select a source profile to list VMs.</p>
                   </div>
                 )}
              </div>

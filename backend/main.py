@@ -1072,7 +1072,7 @@ def job_run_log_payload(run: dict, max_lines: int = 500) -> dict:
     path = log_path_for_run(run)
     if not path or not path.exists():
         return {
-            "log": "Waiting for rclone to start reporting...",
+            "log": "Waiting for job to start reporting...",
             "exists": False,
             "log_file": str(path) if path else "",
         }
@@ -1320,7 +1320,7 @@ async def get_job_log(job_name: str):
 
     legacy_path = legacy_job_log_path(job_name)
     if not legacy_path.exists():
-        return {"log": "Waiting for rclone to start reporting...", "exists": False, "log_file": str(legacy_path)}
+        return {"log": "Waiting for job to start reporting...", "exists": False, "log_file": str(legacy_path)}
 
     return {"log": tail_file(legacy_path, max_lines=500), "exists": True, "log_file": str(legacy_path)}
 
@@ -1592,9 +1592,68 @@ async def list_vms(profile: str):
     try:
         config = oci.config.from_file(CONFIG_PATH, profile)
         compute = oci.core.ComputeClient(config)
+        network = oci.core.VirtualNetworkClient(config)
         comp_id = config.get("compartment", config.get("tenancy"))
         res = compute.list_instances(compartment_id=comp_id)
-        return [{"id": i.id, "name": i.display_name, "state": i.lifecycle_state} for i in res.data if i.lifecycle_state != "TERMINATED"]
+        image_cache = {}
+        vm_list = []
+
+        for instance in res.data:
+            if instance.lifecycle_state == "TERMINATED":
+                continue
+
+            image_id = getattr(instance, "image_id", "")
+            if image_id and image_id not in image_cache:
+                try:
+                    image = compute.get_image(image_id).data
+                    image_cache[image_id] = " ".join(
+                        value
+                        for value in [
+                            getattr(image, "operating_system", ""),
+                            getattr(image, "operating_system_version", ""),
+                        ]
+                        if value
+                    ).strip() or getattr(image, "display_name", "")
+                except Exception as exc:
+                    logger.info("Unable to resolve image metadata for %s: %s", image_id, exc)
+                    image_cache[image_id] = ""
+
+            private_ips = []
+            public_ips = []
+            try:
+                attachments = compute.list_vnic_attachments(
+                    compartment_id=getattr(instance, "compartment_id", comp_id) or comp_id,
+                    instance_id=instance.id,
+                ).data
+                for attachment in attachments:
+                    try:
+                        vnic = network.get_vnic(attachment.vnic_id).data
+                    except Exception as exc:
+                        logger.info("Unable to resolve VNIC %s: %s", attachment.vnic_id, exc)
+                        continue
+                    if getattr(vnic, "private_ip", None):
+                        private_ips.append(vnic.private_ip)
+                    if getattr(vnic, "public_ip", None):
+                        public_ips.append(vnic.public_ip)
+            except Exception as exc:
+                logger.info("Unable to resolve VNIC attachments for %s: %s", instance.id, exc)
+
+            shape_config = getattr(instance, "shape_config", None)
+            vm_list.append(
+                {
+                    "id": instance.id,
+                    "name": instance.display_name,
+                    "state": instance.lifecycle_state,
+                    "os": image_cache.get(image_id) or "Unknown",
+                    "shape": getattr(instance, "shape", "") or "Unknown",
+                    "ocpus": getattr(shape_config, "ocpus", None),
+                    "memory_gb": getattr(shape_config, "memory_in_gbs", None),
+                    "private_ip": ", ".join(private_ips),
+                    "public_ip": ", ".join(public_ips),
+                }
+            )
+
+        return vm_list
     except Exception as e:
         raise_operation_error(500, "List VMs", e, "Check the OCI profile, compartment OCID, region, and API key.")
 

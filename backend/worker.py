@@ -115,7 +115,7 @@ def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", trans
         trigger=trigger,
         source=source,
         destination=dest,
-        details="rclone is running.",
+        details="Job is running.",
         log_file=str(log_file),
         started_at=datetime.utcnow().isoformat() + "Z",
     )
@@ -161,7 +161,7 @@ def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", trans
         update_job_run(
             run_id,
             status="timeout",
-            details=f"rclone timed out after {timeout} seconds.",
+            details=f"Timed out after {timeout} seconds.",
             error=f"Timeout after {timeout} seconds.",
             finished_at=datetime.utcnow().isoformat() + "Z",
         )
@@ -169,7 +169,7 @@ def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", trans
 
     status = "success" if process.returncode == 0 else "failed"
     log_tail = tail_file(log_file, max_lines=12)
-    details = "rclone completed successfully." if process.returncode == 0 else f"rclone failed with exit code {process.returncode}."
+    details = "Completed successfully." if process.returncode == 0 else f"Failed with exit code {process.returncode}."
     update_job_run(
         run_id,
         status=status,
