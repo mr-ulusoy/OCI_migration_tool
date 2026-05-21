@@ -62,6 +62,14 @@ Local remotes have two modes:
 
 The installer creates `/var/lib/oci-migrator/local` for the service user. Use `--local-data-root PATH` to choose another managed root.
 
+When creating a server local folder in the UI, it can optionally be exposed as an SMB share:
+
+- `Do Not Share` only creates the local folder.
+- `Share to Everyone` creates a guest-access Samba share and opens TCP `445`.
+- `Share to User` creates/updates the requested SMB user, sets the Samba password, creates the share, and opens TCP `445`.
+
+The SMB password is not stored in the app config. Samba stores its own password hash. Deleting a remote that owns a managed share removes the Samba share block, but it does not delete the underlying local data folder.
+
 ## Runtime Files
 
 ```text
@@ -71,6 +79,8 @@ The installer creates `/var/lib/oci-migrator/local` for the service user. Use `-
 ~/.oci/job_history.json
 ~/.config/rclone/rclone.conf
 /var/lib/oci-migrator/local
+/usr/local/sbin/oci-migrator-local-share
+/etc/oci-migrator/local-share.conf
 /tmp/rclone_<job>.log
 ```
 

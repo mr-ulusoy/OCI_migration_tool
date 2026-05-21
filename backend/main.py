@@ -20,7 +20,7 @@ from threading import Lock
 
 import oci
 import uvicorn
-from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile, status
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -339,6 +339,11 @@ CONFIG_PATH = os.path.join(OCI_DIR, "config")
 RCLONE_CONF = os.path.expanduser("~/.config/rclone/rclone.conf")
 JOBS_FILE = os.path.join(OCI_DIR, "jobs.json")
 LOCAL_DATA_ROOT = Path(os.getenv("OCI_MIGRATOR_LOCAL_DATA_ROOT", "/var/lib/oci-migrator/local")).resolve()
+LOCAL_SHARE_HELPER = Path(os.getenv("OCI_MIGRATOR_LOCAL_SHARE_HELPER", "/usr/local/sbin/oci-migrator-local-share")).resolve()
+try:
+    LOCAL_SHARE_TIMEOUT_SECONDS = int(os.getenv("OCI_MIGRATOR_LOCAL_SHARE_TIMEOUT_SECONDS", "300"))
+except ValueError:
+    LOCAL_SHARE_TIMEOUT_SECONDS = 300
 
 # Säkerställ att mappar finns
 os.makedirs(os.path.dirname(RCLONE_CONF), exist_ok=True)
@@ -442,6 +447,131 @@ def create_server_local_folder(folder_name: str) -> Path:
             f"Check write permissions for {LOCAL_DATA_ROOT}.",
         )
     return target
+
+
+def normalize_smb_share_name(raw_name: str) -> str:
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", raw_name.strip()).strip("._-")
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="SMB share name is required.")
+    if safe_name.lower() in {"global", "homes", "printers", "print$"}:
+        raise HTTPException(status_code=400, detail="This SMB share name is reserved.")
+    return safe_name[:80]
+
+
+def validate_smb_username(username: str) -> str:
+    username = username.strip()
+    if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", username):
+        raise HTTPException(
+            status_code=400,
+            detail="SMB username must be lowercase and may contain letters, numbers, underscore, and dash.",
+        )
+    if username == "root":
+        raise HTTPException(status_code=400, detail="SMB username cannot be root.")
+    return username
+
+
+def share_host_from_request(request: Request) -> str:
+    host = request.url.hostname or request.headers.get("host", "server").split(":", 1)[0]
+    return host.strip("[]") or "server"
+
+
+def local_share_helper_command() -> list[str]:
+    if not LOCAL_SHARE_HELPER.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail="Local SMB share helper is not installed. Rerun ./install.sh and try again.",
+        )
+
+    if os.geteuid() == 0:
+        return [str(LOCAL_SHARE_HELPER)]
+
+    sudo_path = shutil.which("sudo")
+    if not sudo_path:
+        raise HTTPException(
+            status_code=503,
+            detail="sudo is required for local SMB share setup. Rerun ./install.sh and try again.",
+        )
+    return [sudo_path, "-n", str(LOCAL_SHARE_HELPER)]
+
+
+def run_local_share_helper(args: list[str], password: str = "") -> dict:
+    password_path = ""
+    try:
+        if password:
+            file_descriptor, password_path = tempfile.mkstemp(prefix="oci-migrator-smb-", text=True)
+            with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
+                handle.write(password)
+            os.chmod(password_path, 0o600)
+
+        command = local_share_helper_command() + args
+        if password_path:
+            command.extend(["--password-file", password_path])
+
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=LOCAL_SHARE_TIMEOUT_SECONDS,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(truncate_text(result.stderr or result.stdout or f"helper exited with code {result.returncode}"))
+
+        try:
+            return json.loads(result.stdout.strip().splitlines()[-1]) if result.stdout.strip() else {}
+        except (json.JSONDecodeError, IndexError):
+            return {"raw_output": truncate_text(result.stdout, 600)}
+    except subprocess.TimeoutExpired as exc:
+        raise_operation_error(
+            504,
+            "Configure local SMB share",
+            exc,
+            "Samba installation/configuration took too long. Check apt, systemd, and firewall status on the server.",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise_operation_error(
+            500,
+            "Configure local SMB share",
+            exc,
+            "Check that install.sh installed /usr/local/sbin/oci-migrator-local-share and sudoers access for the service user.",
+        )
+    finally:
+        if password_path and os.path.exists(password_path):
+            os.remove(password_path)
+
+
+def enable_local_share(
+    local_path: Path,
+    share_name: str,
+    access_mode: str,
+    username: str = "",
+    password: str = "",
+) -> dict:
+    if access_mode not in {"everyone", "user"}:
+        raise HTTPException(status_code=400, detail="Unsupported SMB share access mode.")
+
+    command_args = [
+        "enable",
+        "--share-name",
+        share_name,
+        "--path",
+        str(local_path),
+        "--access",
+        access_mode,
+    ]
+
+    if access_mode == "user":
+        username = validate_smb_username(username)
+        if len(password) < 8:
+            raise HTTPException(status_code=400, detail="SMB password must be at least 8 characters.")
+        command_args.extend(["--user", username])
+
+    return run_local_share_helper(command_args, password=password if access_mode == "user" else "")
+
+
+def disable_local_share(share_name: str) -> None:
+    run_local_share_helper(["disable", "--share-name", share_name])
 
 
 def validate_external_mount_path(raw_path: str) -> Path:
@@ -1083,6 +1213,7 @@ async def start_sync_manual(job: DataSyncJob):
 # NYTT: Spara Big 5 Remotes (AWS, Azure, GCP, Local)
 @app.post("/save-remote")
 async def save_remote(
+    request: Request,
     name: str = Form(...),
     provider: str = Form(...),
     access_key: str = Form(""),
@@ -1096,17 +1227,34 @@ async def save_remote(
     local_mode: str = Form("server_folder"),
     local_folder_name: str = Form(""),
     local_mount_path: str = Form(""),
+    local_share_access: str = Form("none"),
+    local_share_name: str = Form(""),
+    local_share_username: str = Form(""),
+    local_share_password: str = Form(""),
     gcp_file: Optional[UploadFile] = File(None)
 ):
     parser = configparser.ConfigParser()
     saved_local_path = None
+    saved_share = None
     try:
         with RCLONE_LOCK:
             if os.path.exists(RCLONE_CONF):
                 parser.read(RCLONE_CONF)
 
+            previous_share_name = parser.get(name, 'oci_migrator_share_name', fallback='') if parser.has_section(name) else ''
+
             if not parser.has_section(name):
                 parser.add_section(name)
+
+            for option in (
+                'oci_migrator_local_mode',
+                'oci_migrator_local_path',
+                'oci_migrator_local_display_name',
+                'oci_migrator_share_access',
+                'oci_migrator_share_name',
+                'oci_migrator_share_username',
+            ):
+                parser.remove_option(name, option)
 
             if provider == 's3':
                 parser.set(name, 'type', 's3')
@@ -1141,13 +1289,56 @@ async def save_remote(
                     local_path = validate_external_mount_path(local_mount_path)
                     display_name = local_path.name or str(local_path)
 
+                share_access = local_share_access.strip().lower() or "none"
+                if local_mode != "server_folder" and share_access != "none":
+                    raise HTTPException(status_code=400, detail="SMB sharing is only supported for server local folders.")
+
+                if share_access != "none":
+                    if share_access not in {"everyone", "user"}:
+                        raise HTTPException(status_code=400, detail="Unsupported SMB share access mode.")
+
+                    share_name = normalize_smb_share_name(local_share_name or display_name)
+                    for section in parser.sections():
+                        if section != name and parser.get(section, 'oci_migrator_share_name', fallback='') == share_name:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=f"SMB share name is already used by remote '{section}'.",
+                            )
+
+                    share_username = validate_smb_username(local_share_username) if share_access == "user" else ""
+                    helper_result = enable_local_share(
+                        local_path,
+                        share_name,
+                        share_access,
+                        username=share_username,
+                        password=local_share_password,
+                    )
+                    host = share_host_from_request(request)
+                    saved_share = {
+                        "name": share_name,
+                        "access": share_access,
+                        "username": share_username,
+                        "unc_path": f"\\\\{host}\\{share_name}",
+                        "smb_url": f"smb://{host}/{share_name}",
+                        "port": helper_result.get("port", 445),
+                    }
+
                 parser.set(name, 'type', 'local')
                 parser.set(name, 'oci_migrator_local_mode', local_mode)
                 parser.set(name, 'oci_migrator_local_path', str(local_path))
                 parser.set(name, 'oci_migrator_local_display_name', display_name)
+                if saved_share:
+                    parser.set(name, 'oci_migrator_share_access', saved_share["access"])
+                    parser.set(name, 'oci_migrator_share_name', saved_share["name"])
+                    if saved_share["username"]:
+                        parser.set(name, 'oci_migrator_share_username', saved_share["username"])
                 saved_local_path = str(local_path)
             else:
                 raise HTTPException(status_code=400, detail="Unsupported remote provider")
+
+            current_share_name = saved_share["name"] if saved_share else ""
+            if previous_share_name and previous_share_name != current_share_name:
+                disable_local_share(previous_share_name)
 
             write_ini_atomically(parser, RCLONE_CONF)
     except HTTPException:
@@ -1158,6 +1349,8 @@ async def save_remote(
     response = {"message": "Remote saved successfully"}
     if saved_local_path:
         response["local_path"] = saved_local_path
+    if saved_share:
+        response["share"] = saved_share
     return response
 
 # NYTT: Ta bort Remote
@@ -1170,8 +1363,13 @@ async def delete_remote(remote_name: str):
                 parser.read(RCLONE_CONF)
 
             if parser.has_section(remote_name):
+                share_name = parser.get(remote_name, 'oci_migrator_share_name', fallback='')
+                if share_name:
+                    disable_local_share(share_name)
                 parser.remove_section(remote_name)
                 write_ini_atomically(parser, RCLONE_CONF)
+    except HTTPException:
+        raise
     except Exception as e:
         raise_operation_error(500, "Delete rclone remote", e, "Check that the rclone config file is writable.")
     return {"message": "Remote deleted"}

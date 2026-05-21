@@ -90,11 +90,14 @@ The built frontend is served by the backend, so each install only needs one app/
 - `migrator-worker.service`
 - `migrator-scheduler.timer`
 - `~/.oci-migrator.env`
+- `/usr/local/sbin/oci-migrator-local-share`
 - `venv/`
 - `frontend/dist/`
 - `/var/lib/oci-migrator/local/`
 
 The backend service also serves the built frontend from `frontend/dist`. Backend dependencies use `backend/requirements.lock` when present.
+
+Server local folders can optionally be shared from the UI with SMB. When a user chooses `Share to Everyone` or `Share to User`, the backend runs the installed root helper to install/configure Samba, expose that folder, and open inbound TCP `445`.
 
 ## Documentation
 

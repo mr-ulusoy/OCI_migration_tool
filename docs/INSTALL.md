@@ -20,6 +20,7 @@ This will:
 - create systemd services
 - create `~/.oci-migrator.env`
 - store a hashed admin password
+- install a root-owned helper for optional SMB sharing from the UI
 
 ## Manual Install
 
@@ -38,8 +39,20 @@ cd OCI_migration_tool
 ./install.sh --public-host migrator.example.com --open-firewall
 ./install.sh --api-port 8001
 ./install.sh --local-data-root /srv/oci-migrator/local
+./install.sh --local-share-helper /usr/local/sbin/oci-migrator-local-share
 ./install.sh --stop-legacy-processes
 ```
+
+## Optional SMB Sharing
+
+No SMB share is enabled during installation. The installer only places a root-owned helper and a sudoers rule so the web UI can enable a managed share later.
+
+In the UI, choose `Add Remote` -> `Local / Mounted Share` -> `Server Local Folder`. If `SMB Share` is set to `Share to Everyone` or `Share to User`, the helper will:
+
+- install/configure Samba if needed
+- share the created folder under `/var/lib/oci-migrator/local`
+- create/update the SMB user when user access is selected
+- open inbound TCP `445` and save the firewall rule when supported
 
 ## Multiple Installations On The Same Host
 

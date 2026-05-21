@@ -7,6 +7,8 @@ SERVICE_PREFIX="${SERVICE_PREFIX:-migrator}"
 API_HOST="${API_HOST:-0.0.0.0}"
 API_PORT="${API_PORT:-8000}"
 LOCAL_DATA_ROOT="${OCI_MIGRATOR_LOCAL_DATA_ROOT:-/var/lib/oci-migrator/local}"
+LOCAL_SHARE_HELPER="${OCI_MIGRATOR_LOCAL_SHARE_HELPER:-/usr/local/sbin/oci-migrator-local-share}"
+LOCAL_SHARE_CONFIG="/etc/oci-migrator/local-share.conf"
 CELERY_CONCURRENCY="${CELERY_CONCURRENCY:-2}"
 OPEN_FIREWALL="${OPEN_FIREWALL:-0}"
 STOP_LEGACY_PROCESSES="${STOP_LEGACY_PROCESSES:-0}"
@@ -58,6 +60,7 @@ Options:
   --run-user USER             Linux user that runs services. Default: current sudo user.
   --env-file PATH             Runtime env file. Default: ~/.oci-migrator.env for the run user.
   --local-data-root PATH      Managed server-local source folder root. Default: $LOCAL_DATA_ROOT
+  --local-share-helper PATH   Root helper used by the UI for optional SMB shares. Default: $LOCAL_SHARE_HELPER
   --celery-concurrency N      Celery worker concurrency. Default: $CELERY_CONCURRENCY
   --open-firewall             Open local firewall ports with ufw/iptables when possible.
   --stop-legacy-processes     Stop old manual uvicorn/vite processes from this project path.
@@ -70,7 +73,7 @@ Options:
 
 Environment variables with the same names are also supported:
   PUBLIC_HOST, API_PORT, SERVICE_PREFIX, RUN_USER, OCI_MIGRATOR_LOCAL_DATA_ROOT,
-  OCI_MIGRATOR_ENV_FILE, OPEN_FIREWALL, STOP_LEGACY_PROCESSES,
+  OCI_MIGRATOR_LOCAL_SHARE_HELPER, OCI_MIGRATOR_ENV_FILE, OPEN_FIREWALL, STOP_LEGACY_PROCESSES,
   CELERY_CONCURRENCY, PRINT_TOKEN,
   OCI_MIGRATOR_ADMIN_USERNAME, OCI_MIGRATOR_ADMIN_PASSWORD,
   OCI_MIGRATOR_ADMIN_PASSWORD_FILE, PROMPT_ADMIN_PASSWORD.
@@ -106,6 +109,10 @@ parse_args() {
         ;;
       --local-data-root)
         LOCAL_DATA_ROOT="$2"
+        shift 2
+        ;;
+      --local-share-helper)
+        LOCAL_SHARE_HELPER="$2"
         shift 2
         ;;
       --celery-concurrency)
@@ -312,6 +319,7 @@ install_system_dependencies() {
     python3-pip \
     python3-venv \
     redis-server \
+    sudo \
     unzip
 }
 
@@ -376,6 +384,8 @@ ensure_env_file() {
       printf 'OCI_MIGRATOR_LOG_LEVEL=INFO\n'
       printf 'OCI_MIGRATOR_RCLONE_TIMEOUT_SECONDS=7200\n'
       printf 'OCI_MIGRATOR_LOCAL_DATA_ROOT=%s\n' "$LOCAL_DATA_ROOT"
+      printf 'OCI_MIGRATOR_LOCAL_SHARE_HELPER=%s\n' "$LOCAL_SHARE_HELPER"
+      printf 'OCI_MIGRATOR_LOCAL_SHARE_TIMEOUT_SECONDS=300\n'
     } > "$temp_file"
 
     "${SUDO[@]}" install -o "$RUN_USER" -g "$RUN_USER" -m 600 "$temp_file" "$ENV_FILE"
@@ -390,6 +400,8 @@ ensure_env_file() {
     grep -q '^OCI_MIGRATOR_LOG_LEVEL=' "$ENV_FILE" || printf 'OCI_MIGRATOR_LOG_LEVEL=INFO\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_RCLONE_TIMEOUT_SECONDS=' "$ENV_FILE" || printf 'OCI_MIGRATOR_RCLONE_TIMEOUT_SECONDS=7200\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_LOCAL_DATA_ROOT=' "$ENV_FILE" || printf 'OCI_MIGRATOR_LOCAL_DATA_ROOT=%s\n' "$LOCAL_DATA_ROOT" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_LOCAL_SHARE_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_LOCAL_SHARE_HELPER=%s\n' "$LOCAL_SHARE_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_LOCAL_SHARE_TIMEOUT_SECONDS=' "$ENV_FILE" || printf 'OCI_MIGRATOR_LOCAL_SHARE_TIMEOUT_SECONDS=300\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
 
     if [ "$ADMIN_USERNAME_PROVIDED" = "1" ] || ! grep -q '^OCI_MIGRATOR_ADMIN_USERNAME=' "$ENV_FILE"; then
       set_env_value "OCI_MIGRATOR_ADMIN_USERNAME" "$ADMIN_USERNAME"
@@ -416,6 +428,47 @@ ensure_env_file() {
 ensure_local_data_root() {
   log "Preparing managed local data root"
   "${SUDO[@]}" install -d -o "$RUN_USER" -g "$RUN_USER" -m 775 "$LOCAL_DATA_ROOT"
+}
+
+install_local_share_helper() {
+  log "Installing optional local SMB share helper"
+
+  case "$LOCAL_SHARE_HELPER" in
+    /*)
+      ;;
+    *)
+      fail "--local-share-helper must be an absolute path."
+      ;;
+  esac
+
+  local helper_source
+  helper_source="$PROJECT_DIR/scripts/local-share-helper.sh"
+  [ -f "$helper_source" ] || fail "Missing helper source: $helper_source"
+
+  "${SUDO[@]}" install -d -o root -g root -m 755 "$(dirname "$LOCAL_SHARE_HELPER")"
+  "${SUDO[@]}" install -o root -g root -m 755 "$helper_source" "$LOCAL_SHARE_HELPER"
+
+  "${SUDO[@]}" install -d -o root -g root -m 755 "$(dirname "$LOCAL_SHARE_CONFIG")"
+  local helper_config
+  helper_config="$(mktemp)"
+  {
+    printf 'LOCAL_DATA_ROOT=%q\n' "$LOCAL_DATA_ROOT"
+    printf 'RUN_USER=%q\n' "$RUN_USER"
+  } > "$helper_config"
+  "${SUDO[@]}" install -o root -g root -m 644 "$helper_config" "$LOCAL_SHARE_CONFIG"
+  rm -f "$helper_config"
+
+  local sudoers_file sudoers_temp
+  sudoers_file="/etc/sudoers.d/$SERVICE_PREFIX-local-share"
+  sudoers_temp="$(mktemp)"
+  {
+    printf '# Allow OCI Migrator to enable/disable managed local SMB shares only.\n'
+    printf '%s ALL=(root) NOPASSWD: %s\n' "$RUN_USER" "$LOCAL_SHARE_HELPER"
+  } > "$sudoers_temp"
+
+  "${SUDO[@]}" visudo -cf "$sudoers_temp" >/dev/null
+  "${SUDO[@]}" install -o root -g root -m 440 "$sudoers_temp" "$sudoers_file"
+  rm -f "$sudoers_temp"
 }
 
 install_backend() {
@@ -631,6 +684,7 @@ main() {
   install_rclone
   ensure_env_file
   ensure_local_data_root
+  install_local_share_helper
   install_backend
   install_frontend
   stop_services

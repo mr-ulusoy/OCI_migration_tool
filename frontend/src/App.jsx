@@ -27,7 +27,11 @@ const DEFAULT_REMOTE_CONFIG = {
   gcpLocation: 'us-west3',
   localMode: 'server_folder',
   localFolderName: '',
-  localMountPath: ''
+  localMountPath: '',
+  localShareAccess: 'none',
+  localShareName: '',
+  localShareUsername: '',
+  localSharePassword: ''
 };
 
 function getLegacyApiToken() {
@@ -382,6 +386,16 @@ export default function App() {
       setNotice({ type: 'error', title: 'Missing mount path', message: 'Mount path is required for mounted external shares.' });
       return;
     }
+    if (remoteConfig.provider === 'local' && remoteConfig.localMode === 'server_folder' && remoteConfig.localShareAccess === 'user') {
+      if (!remoteConfig.localShareUsername || !remoteConfig.localSharePassword) {
+        setNotice({ type: 'error', title: 'Missing SMB credentials', message: 'SMB username and password are required for user access.' });
+        return;
+      }
+      if (remoteConfig.localSharePassword.length < 8) {
+        setNotice({ type: 'error', title: 'Weak SMB password', message: 'SMB password must be at least 8 characters.' });
+        return;
+      }
+    }
     setLoading(true);
     try {
       const rData = new FormData();
@@ -403,10 +417,19 @@ export default function App() {
         rData.append("local_mode", remoteConfig.localMode);
         rData.append("local_folder_name", remoteConfig.localFolderName);
         rData.append("local_mount_path", remoteConfig.localMountPath);
+        rData.append("local_share_access", remoteConfig.localShareAccess);
+        rData.append("local_share_name", remoteConfig.localShareName);
+        rData.append("local_share_username", remoteConfig.localShareUsername);
+        rData.append("local_share_password", remoteConfig.localSharePassword);
       }
       const res = await api.post(`/save-remote`, rData);
       fetchRemotes();
-      showSuccess(res.data.local_path ? `Remote saved: ${res.data.local_path}` : 'Remote saved.');
+      if (res.data.share) {
+        const shareUser = res.data.share.username ? `\nUser: ${res.data.share.username}` : '\nAccess: everyone';
+        showSuccess(`Remote saved: ${res.data.local_path}\nSMB: ${res.data.share.unc_path}\nMac: ${res.data.share.smb_url}${shareUser}`);
+      } else {
+        showSuccess(res.data.local_path ? `Remote saved: ${res.data.local_path}` : 'Remote saved.');
+      }
       setRemoteConfig(DEFAULT_REMOTE_CONFIG);
       setGcpKeyFile(null);
     } catch (err) { showError('Failed to save rclone remote', err); }
@@ -833,15 +856,44 @@ export default function App() {
                             <div className="space-y-3 p-3 bg-gray-50 rounded-md border border-gray-200">
                               <div>
                                 <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Local Type</label>
-                                <select value={remoteConfig.localMode} onChange={e => setRemoteConfig({...remoteConfig, localMode: e.target.value})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
+                                <select value={remoteConfig.localMode} onChange={e => setRemoteConfig({...remoteConfig, localMode: e.target.value, localShareAccess: e.target.value === 'server_folder' ? remoteConfig.localShareAccess : 'none'})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
                                   <option value="server_folder">Server Local Folder</option>
                                   <option value="mounted_share">Mounted External Share</option>
                                 </select>
                               </div>
                               {remoteConfig.localMode === 'server_folder' && (
-                                <div>
-                                  <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Folder Name</label>
-                                  <input value={remoteConfig.localFolderName} onChange={e => setRemoteConfig({...remoteConfig, localFolderName: e.target.value})} placeholder="customer-a" className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
+                                <div className="space-y-3">
+                                  <div>
+                                    <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Folder Name</label>
+                                    <input value={remoteConfig.localFolderName} onChange={e => setRemoteConfig({...remoteConfig, localFolderName: e.target.value})} placeholder="customer-a" className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
+                                  </div>
+                                  <div>
+                                    <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">SMB Share</label>
+                                    <select value={remoteConfig.localShareAccess} onChange={e => setRemoteConfig({...remoteConfig, localShareAccess: e.target.value})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
+                                      <option value="none">Do Not Share</option>
+                                      <option value="everyone">Share to Everyone</option>
+                                      <option value="user">Share to User</option>
+                                    </select>
+                                  </div>
+                                  {remoteConfig.localShareAccess !== 'none' && (
+                                    <div>
+                                      <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Share Name</label>
+                                      <input value={remoteConfig.localShareName} onChange={e => setRemoteConfig({...remoteConfig, localShareName: e.target.value})} placeholder={remoteConfig.localFolderName || remoteConfig.name || 'customer-a'} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
+                                      <div className="mt-1 text-[10px] text-gray-500">TCP 445 opens when the share is created.</div>
+                                    </div>
+                                  )}
+                                  {remoteConfig.localShareAccess === 'user' && (
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                      <div>
+                                        <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">SMB User</label>
+                                        <input value={remoteConfig.localShareUsername} onChange={e => setRemoteConfig({...remoteConfig, localShareUsername: e.target.value})} placeholder="migratoruser" className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
+                                      </div>
+                                      <div>
+                                        <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">SMB Password</label>
+                                        <input type="password" value={remoteConfig.localSharePassword} onChange={e => setRemoteConfig({...remoteConfig, localSharePassword: e.target.value})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" autoComplete="new-password" />
+                                      </div>
+                                    </div>
+                                  )}
                                 </div>
                               )}
                               {remoteConfig.localMode === 'mounted_share' && (
