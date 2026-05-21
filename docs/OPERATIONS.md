@@ -21,6 +21,7 @@ journalctl -u migrator-worker -f
 
 ```bash
 make doctor
+curl http://127.0.0.1:8000/health
 ```
 
 The doctor checks:
@@ -29,7 +30,28 @@ The doctor checks:
 - runtime env file
 - systemd services
 - listening ports
+- public `/health` endpoint
 - authenticated backend response
+
+## Job History
+
+The UI shows recent runs in the Job Dashboard. The backend persists run history in:
+
+```text
+~/.oci/job_history.json
+```
+
+Authenticated API access:
+
+```bash
+curl -H "X-API-Token: <token>" http://127.0.0.1:8000/job-history
+```
+
+## Runtime Config Export
+
+After logging in, use the download button in the top bar to export a zip backup. It includes the runtime env file, OCI config, job definitions/history, rclone config, and referenced key files when present.
+
+The archive can contain secrets. Store it securely.
 
 ## Runtime Files
 
@@ -37,6 +59,7 @@ The doctor checks:
 ~/.oci-migrator.env
 ~/.oci/config
 ~/.oci/jobs.json
+~/.oci/job_history.json
 ~/.config/rclone/rclone.conf
 /tmp/rclone_<job>.log
 ```

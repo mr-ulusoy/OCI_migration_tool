@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timedelta
 from celery import Celery
 import oci
+from job_store import update_job_run
 
 logging.basicConfig(level=os.getenv("OCI_MIGRATOR_LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
@@ -25,6 +26,14 @@ def rclone_timeout_seconds() -> int:
     except ValueError:
         return 7200
 
+
+def tail_file(path: str, max_lines: int = 12) -> str:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            return "".join(handle.readlines()[-max_lines:]).strip()
+    except OSError:
+        return ""
+
 celery_app = Celery('tasks', broker=redis_url(), backend=redis_url())
 
 # --- HELPERS ---
@@ -35,25 +44,32 @@ def get_client(ctype, profile):
 # --- TASK 1: VM Migration ---
 @celery_app.task(bind=True, max_retries=3)
 def migrate_single_vm(self, src_p, dst_p, vm_id, dst_comp, bucket):
+    run_id = self.request.id
+
+    def set_progress(step: str) -> None:
+        self.update_state(state='PROGRESS', meta={'step': step})
+        update_job_run(run_id, status="running", details=step)
+
     try:
-        self.update_state(state='PROGRESS', meta={'step': '1/6: Connecting to OCI & Fetching VM...'})
+        set_progress('1/6: Connecting to OCI & Fetching VM...')
         c_src = get_client("Compute", src_p)
         inst = c_src.get_instance(vm_id).data
+        update_job_run(run_id, job_name=f"VM migration {inst.display_name}", vm_name=inst.display_name)
         
         if inst.lifecycle_state != 'STOPPED':
-            self.update_state(state='PROGRESS', meta={'step': f'2/6: Soft-stopping VM ({inst.display_name})...'})
+            set_progress(f'2/6: Soft-stopping VM ({inst.display_name})...')
             c_src.instance_action(vm_id, "SOFTSTOP")
             oci.wait_until(c_src, c_src.get_instance(vm_id), 'lifecycle_state', 'STOPPED', max_wait_seconds=600)
 
-        self.update_state(state='PROGRESS', meta={'step': '3/6: Creating Custom Image from Boot Volume...'})
+        set_progress('3/6: Creating Custom Image from Boot Volume...')
         img_name = f"migr-{inst.display_name}-{int(time.time())}"
         img = c_src.create_image(oci.core.models.CreateImageDetails(compartment_id=inst.compartment_id, instance_id=vm_id, display_name=img_name)).data
         oci.wait_until(c_src, c_src.get_image(img.id), 'lifecycle_state', 'AVAILABLE', max_wait_seconds=3600)
         
-        self.update_state(state='PROGRESS', meta={'step': 'Turning source VM back on...'})
+        set_progress('Turning source VM back on...')
         c_src.instance_action(vm_id, "START")
 
-        self.update_state(state='PROGRESS', meta={'step': '4/6: Building Cross-Tenant Bridge (PAR)...'})
+        set_progress('4/6: Building Cross-Tenant Bridge (PAR)...')
         # Cross-tenant Export via PAR
         os_dst = get_client("ObjectStorage", dst_p)
         ns_dst = os_dst.get_namespace().data
@@ -63,30 +79,51 @@ def migrate_single_vm(self, src_p, dst_p, vm_id, dst_comp, bucket):
         
         par_url = f"https://objectstorage.{os_dst.base_client.config['region']}.oraclecloud.com{par.access_uri}"
         
-        self.update_state(state='PROGRESS', meta={'step': '5/6: Exporting Image to Destination Bucket (This takes time)...'})
+        set_progress('5/6: Exporting Image to Destination Bucket (This takes time)...')
         exp = c_src.export_image(img.id, {"destinationType": "objectStorageUri", "destinationUri": par_url, "exportFormat": "OCI"})
         
         oci.wait_until(oci.work_requests.WorkRequestClient(c_src.base_client.config), 
                        oci.work_requests.WorkRequestClient(c_src.base_client.config).get_work_request(exp.headers["opc-work-request-id"]), 
                        'status', 'SUCCEEDED', max_wait_seconds=7200)
 
-        self.update_state(state='PROGRESS', meta={'step': '6/6: Importing Image into Destination Region...'})
+        set_progress('6/6: Importing Image into Destination Region...')
         get_client("Compute", dst_p).create_image(oci.core.models.CreateImageDetails(
             compartment_id=dst_comp, display_name=f"IMP-{img_name}",
             image_source_details=oci.core.models.ImageSourceViaObjectStorageTupleDetails(
                 source_type="objectStorageTuple", namespace_name=ns_dst, bucket_name=bucket, object_name=f"{img_name}.oci")))
         
+        update_job_run(run_id, status="success", details=f"Success! {inst.display_name} migrated.", finished_at=datetime.utcnow().isoformat() + "Z")
         return f"Success! {inst.display_name} migrated."
     except Exception as e:
         logger.exception("VM migration failed for vm_id=%s", vm_id)
+        retrying = self.request.retries < self.max_retries
+        update_job_run(
+            run_id,
+            status="retrying" if retrying else "failed",
+            details=f"Retrying after error: {str(e)}" if retrying else f"Error: {str(e)}",
+            error=str(e),
+            finished_at=None if retrying else datetime.utcnow().isoformat() + "Z",
+        )
         self.update_state(state='FAILURE', meta={'step': f"Error: {str(e)}"})
         raise self.retry(exc=e, countdown=60)
 
 # --- TASK 2: Rclone Sync ---
-@celery_app.task(name="worker.rclone_sync_task")
-def rclone_sync_task(source, dest_profile, dest_bucket, mode="copy", transfers=4, checkers=8, buffer_size="16M", job_name="default"):
+@celery_app.task(bind=True, name="worker.rclone_sync_task")
+def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", transfers=4, checkers=8, buffer_size="16M", job_name="default", run_id=None, trigger="manual"):
+    run_id = run_id or self.request.id
     dest = f"{dest_profile}_rclone:{dest_bucket}"
     log_file = f"/tmp/rclone_{job_name}.log"
+    update_job_run(
+        run_id,
+        kind="data_sync",
+        status="running",
+        trigger=trigger,
+        source=source,
+        destination=dest,
+        details="rclone is running.",
+        log_file=log_file,
+        started_at=datetime.utcnow().isoformat() + "Z",
+    )
     
     # Rensa gammal logg om den finns för att börja om på ny kula
     if os.path.exists(log_file):
@@ -124,9 +161,27 @@ def rclone_sync_task(source, dest_profile, dest_bucket, mode="copy", transfers=4
             process.kill()
             process.wait()
 
+        update_job_run(
+            run_id,
+            status="timeout",
+            details=f"rclone timed out after {timeout} seconds.",
+            error=f"Timeout after {timeout} seconds.",
+            finished_at=datetime.utcnow().isoformat() + "Z",
+        )
         return {"status": "timeout", "code": None, "timeout_seconds": timeout}
 
+    status = "success" if process.returncode == 0 else "failed"
+    log_tail = tail_file(log_file)
+    details = "rclone completed successfully." if process.returncode == 0 else f"rclone failed with exit code {process.returncode}."
+    update_job_run(
+        run_id,
+        status=status,
+        details=details,
+        error="" if process.returncode == 0 else (log_tail or details),
+        finished_at=datetime.utcnow().isoformat() + "Z",
+    )
+
     return {
-        "status": "success" if process.returncode == 0 else "failed",
+        "status": status,
         "code": process.returncode,
     }

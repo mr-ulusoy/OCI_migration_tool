@@ -4,7 +4,7 @@ import {
   Cloud, Shield, Database, Search, Key, Loader2, CheckCircle,
   ArrowRight, FileText, Archive, Edit, Trash2,
   Folder, Plus, RefreshCw, Globe, Cpu, Clock, Activity, Terminal,
-  Lock, LogOut
+  Lock, LogOut, Download, HeartPulse, AlertCircle, X
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (
@@ -37,6 +37,37 @@ function getInitialAuth() {
   return { token: '', mode: '', username: 'admin' };
 }
 
+function formatApiError(err, fallback = 'Request failed.') {
+  const detail = err?.response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  if (detail && typeof detail === 'object') {
+    const parts = [
+      detail.message,
+      detail.hint ? `Hint: ${detail.hint}` : '',
+      detail.code ? `Code: ${detail.code}` : '',
+      detail.service_message ? `OCI: ${detail.service_message}` : '',
+      detail.error ? `Error: ${detail.error}` : ''
+    ].filter(Boolean);
+    return parts.join('\n');
+  }
+  return err?.message || fallback;
+}
+
+function runStatusClass(status = '') {
+  const normalized = status.toLowerCase();
+  if (normalized === 'success') return 'text-green-700 bg-green-50 border-green-200';
+  if (normalized === 'failed' || normalized === 'timeout') return 'text-red-700 bg-red-50 border-red-200';
+  if (normalized === 'running' || normalized === 'retrying') return 'text-blue-700 bg-blue-50 border-blue-200';
+  return 'text-amber-700 bg-amber-50 border-amber-200';
+}
+
+function formatTimestamp(value) {
+  if (!value) return 'Never';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
+
 export default function App() {
   const [authState, setAuthState] = useState(getInitialAuth);
   const [loginForm, setLoginForm] = useState({ username: 'admin', password: '' });
@@ -45,6 +76,10 @@ export default function App() {
   const [showPasswordPanel, setShowPasswordPanel] = useState(false);
   const [passwordForm, setPasswordForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
   const [passwordMessage, setPasswordMessage] = useState('');
+  const [notice, setNotice] = useState(null);
+  const [health, setHealth] = useState(null);
+  const [jobRuns, setJobRuns] = useState([]);
+  const [exportingConfig, setExportingConfig] = useState(false);
   const isAuthenticated = Boolean(authState.token);
 
   const api = useMemo(() => {
@@ -144,11 +179,72 @@ export default function App() {
   const [newBucketName, setNewBucketName] = useState('');
   const [newFolderName, setNewFolderName] = useState('');
 
+  const showError = (title, err) => {
+    console.error(err);
+    setNotice({ type: 'error', title, message: formatApiError(err, title) });
+  };
+
+  const showSuccess = (message) => {
+    setNotice({ type: 'success', title: 'Done', message });
+  };
+
+  const fetchHealth = async () => {
+    try {
+      const res = await api.get('/health');
+      setHealth(res.data);
+    } catch (err) {
+      console.error(err);
+      setHealth({ status: 'error' });
+    }
+  };
+
+  const fetchJobRuns = async () => {
+    try {
+      const res = await api.get('/job-history?limit=60');
+      setJobRuns(res.data.runs || []);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const latestRunByJob = useMemo(() => {
+    const byJob = {};
+    jobRuns.forEach(run => {
+      if (run.kind === 'data_sync' && run.job_name && !byJob[run.job_name]) {
+        byJob[run.job_name] = run;
+      }
+    });
+    return byJob;
+  }, [jobRuns]);
+
+  const handleExportRuntimeConfig = async () => {
+    setExportingConfig(true);
+    try {
+      const res = await api.get('/runtime-config/export', { responseType: 'blob' });
+      const blobUrl = window.URL.createObjectURL(new Blob([res.data], { type: 'application/zip' }));
+      const link = document.createElement('a');
+      const disposition = res.headers['content-disposition'] || '';
+      const fileNameMatch = disposition.match(/filename="?([^"]+)"?/);
+      link.href = blobUrl;
+      link.download = fileNameMatch?.[1] || `oci-migrator-runtime-${Date.now()}.zip`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(blobUrl);
+      showSuccess('Runtime config export created.');
+    } catch (err) {
+      showError('Failed to export runtime config', err);
+    }
+    setExportingConfig(false);
+  };
+
   useEffect(() => {
     if (!isAuthenticated) return;
     fetchProfiles();
     fetchRemotes();
     fetchJobs();
+    fetchHealth();
+    fetchJobRuns();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, api]);
 
@@ -159,6 +255,7 @@ export default function App() {
         try {
           const res = await api.get(`/job-log/${activeLogJob}`);
           setLiveLogData(res.data.log);
+          fetchJobRuns();
         } catch {
           setLiveLogData("Error fetching logs or job finished.");
         }
@@ -193,13 +290,16 @@ export default function App() {
     return () => clearInterval(interval);
   }, [vmTasks, api]);
 
-  const fetchProfiles = async () => { try { const res = await api.get(`/list-profiles`); setProfiles(res.data.profiles); } catch (err) { console.error(err); } };
-  const fetchRemotes = async () => { try { const res = await api.get(`/list-remotes`); setRemotes(res.data.remotes); } catch (err) { console.error(err); } };
-  const fetchJobs = async () => { try { const res = await api.get(`/list-jobs`); setJobs(res.data); } catch (err) { console.error(err); } };
+  const fetchProfiles = async () => { try { const res = await api.get(`/list-profiles`); setProfiles(res.data.profiles); } catch (err) { showError('Failed to load OCI profiles', err); } };
+  const fetchRemotes = async () => { try { const res = await api.get(`/list-remotes`); setRemotes(res.data.remotes); } catch (err) { showError('Failed to load rclone remotes', err); } };
+  const fetchJobs = async () => { try { const res = await api.get(`/list-jobs`); setJobs(res.data); } catch (err) { showError('Failed to load jobs', err); } };
 
   // --- OCI Profile (Saved Profiles) Management ---
   const handleSaveProfile = async () => {
-    if (!formData.profileName || !formData.compartmentOcid) return alert("Missing Profile Name or Compartment OCID.");
+    if (!formData.profileName || !formData.compartmentOcid) {
+      setNotice({ type: 'error', title: 'Missing required fields', message: 'Profile Name and Compartment OCID are required.' });
+      return;
+    }
     const safeProfileName = formData.profileName.toLowerCase().replace(/[^a-z0-9]/g, '_');
     const secureFileName = `${safeProfileName}_api_key.pem`;
     let finalFile;
@@ -226,10 +326,10 @@ export default function App() {
         key_file_name: secureFileName
       });
       fetchProfiles();
-      alert("OCI Profile Secured!");
+      showSuccess('OCI profile saved.');
       setFormData({ profileName: '', userOcid: '', tenancyOcid: '', fingerprint: '', region: 'eu-stockholm-1', compartmentOcid: '', storageCompartmentOcid: '' });
       setPastedKey(''); setFile(null); setKeyInputMode('upload');
-    } catch (err) { console.error(err); alert("Save failed."); }
+    } catch (err) { showError('Failed to save OCI profile', err); }
     setLoading(false);
   };
 
@@ -242,7 +342,7 @@ export default function App() {
         storageCompartmentOcid: res.data.storageCompartmentOcid || ''
       });
       setKeyInputMode('paste'); setView('keys');
-    } catch (err) { console.error(err); alert("Failed to load profile details."); }
+    } catch (err) { showError('Failed to load profile details', err); }
   };
 
   const handleDeleteProfile = async (profileName) => {
@@ -250,7 +350,7 @@ export default function App() {
     try {
       await api.delete(`/delete-profile/${profileName}`);
       fetchProfiles();
-    } catch (err) { console.error(err); alert("Failed to delete."); }
+    } catch (err) { showError('Failed to delete OCI profile', err); }
   };
 
   // --- Universal Remote Management ---
@@ -258,7 +358,10 @@ export default function App() {
     if (remoteConfig.provider === 'oci') {
         return handleSaveProfile();
     }
-    if (!remoteConfig.name) return alert("Please provide a name for the remote.");
+    if (!remoteConfig.name) {
+      setNotice({ type: 'error', title: 'Missing remote name', message: 'Please provide a name for the remote.' });
+      return;
+    }
     setLoading(true);
     try {
       const rData = new FormData();
@@ -279,10 +382,10 @@ export default function App() {
       }
       await api.post(`/save-remote`, rData);
       fetchRemotes();
-      alert("Cloud Remote Saved!");
+      showSuccess('Cloud remote saved.');
       setRemoteConfig({ name: '', provider: 'oci', accessKey: '', secretKey: '', region: 'eu-west-1', accountName: '', accountKey: '', gcpObjectAcl: 'bucketOwnerFullControl', gcpBucketAcl: 'private', gcpLocation: 'us-west3' });
       setGcpKeyFile(null);
-    } catch (err) { console.error(err); alert("Failed to save remote."); }
+    } catch (err) { showError('Failed to save rclone remote', err); }
     setLoading(false);
   };
 
@@ -291,52 +394,65 @@ export default function App() {
     try {
       await api.delete(`/delete-remote/${remoteName}`);
       fetchRemotes();
-    } catch (err) { console.error(err); alert("Failed to delete remote."); }
+    } catch (err) { showError('Failed to delete rclone remote', err); }
   };
 
-  const fetchVms = async (p) => { setLoading(true); try { const res = await api.get(`/list-vms/${p}`); setVms(res.data); setActiveSourceProfile(p); setView('explorer'); } catch (err) { console.error(err); } setLoading(false); };
+  const fetchVms = async (p) => { setLoading(true); try { const res = await api.get(`/list-vms/${p}`); setVms(res.data); setActiveSourceProfile(p); setView('explorer'); } catch (err) { showError('Failed to list VMs', err); } setLoading(false); };
 
   // --- Job Management ---
   const handleSaveJob = async () => {
-    if (!syncJob.name || !syncJob.source_remote || !syncJob.dest_bucket) return alert("Fill in all required fields!");
+    if (!syncJob.name || !syncJob.source_remote || !syncJob.dest_bucket) {
+      setNotice({ type: 'error', title: 'Missing job fields', message: 'Job name, source remote, and destination bucket are required.' });
+      return;
+    }
     setLoading(true);
     try {
       await api.post(`/save-job`, syncJob);
-      alert("Job saved and scheduled!");
+      showSuccess('Job saved.');
       fetchJobs(); setView('datasync');
-    } catch (err) { console.error(err); alert("Failed to save job."); }
+    } catch (err) { showError('Failed to save job', err); }
     setLoading(false);
   };
 
   const handleDeleteJob = async (name) => {
     if (!window.confirm("Delete this job?")) return;
-    await api.delete(`/delete-job/${name}`);
-    fetchJobs(); if (activeLogJob === name) setActiveLogJob(null);
+    try {
+      await api.delete(`/delete-job/${name}`);
+      fetchJobs(); if (activeLogJob === name) setActiveLogJob(null);
+      showSuccess('Job deleted.');
+    } catch (err) {
+      showError('Failed to delete job', err);
+    }
   };
 
   const handleRunManual = async (job) => {
-    try { await api.post(`/start-data-sync-manual`, job); setActiveLogJob(job.name); } catch (err) { console.error(err); alert("Failed to start."); }
+    try {
+      await api.post(`/start-data-sync-manual`, job);
+      setActiveLogJob(job.name);
+      fetchJobRuns();
+      showSuccess(`Started ${job.name}.`);
+    } catch (err) { showError('Failed to start data sync job', err); }
   };
 
   // --- Storage Explorer ---
   const handleStorageProfileChange = async (p) => { 
       setStorageProfile(p); setSelectedBucket(''); setStorageObjects([]);
-      try { const res = await api.get(`/list-buckets/${p}`); setStorageBuckets(res.data); } catch (err) { console.error(err); } 
+      try { const res = await api.get(`/list-buckets/${p}`); setStorageBuckets(res.data); } catch (err) { showError('Failed to list buckets', err); }
   };
   const handleBucketClick = async (b) => { 
-      setSelectedBucket(b); try { const res = await api.get(`/list-objects/${storageProfile}/${b}`); setStorageObjects(res.data); } catch (err) { console.error(err); } 
+      setSelectedBucket(b); try { const res = await api.get(`/list-objects/${storageProfile}/${b}`); setStorageObjects(res.data); } catch (err) { showError('Failed to list bucket objects', err); }
   };
   const handleCreateBucket = async () => {
       if (!newBucketName) return;
-      try { await api.post(`/create-bucket`, { profile_name: storageProfile, bucket_name: newBucketName }); setNewBucketName(''); handleStorageProfileChange(storageProfile); } catch (err) { console.error(err); alert("Failed to create bucket."); }
+      try { await api.post(`/create-bucket`, { profile_name: storageProfile, bucket_name: newBucketName }); setNewBucketName(''); handleStorageProfileChange(storageProfile); showSuccess('Bucket created.'); } catch (err) { showError('Failed to create bucket', err); }
   };
   const handleCreateFolder = async () => {
       if (!newFolderName || !selectedBucket) return;
-      try { await api.post(`/create-folder`, { profile_name: storageProfile, bucket_name: selectedBucket, folder_name: newFolderName }); setNewFolderName(''); handleBucketClick(selectedBucket); } catch (err) { console.error(err); alert("Failed to create folder."); }
+      try { await api.post(`/create-folder`, { profile_name: storageProfile, bucket_name: selectedBucket, folder_name: newFolderName }); setNewFolderName(''); handleBucketClick(selectedBucket); showSuccess('Folder created.'); } catch (err) { showError('Failed to create folder', err); }
   };
   const handleDeleteObject = async (objectName) => {
       if (!window.confirm(`Delete: ${objectName}?`)) return;
-      try { await api.delete(`/delete-object/${storageProfile}/${selectedBucket}/${encodeURIComponent(objectName)}`); handleBucketClick(selectedBucket); } catch (err) { console.error(err); alert("Failed to delete."); }
+      try { await api.delete(`/delete-object/${storageProfile}/${selectedBucket}/${encodeURIComponent(objectName)}`); handleBucketClick(selectedBucket); showSuccess('Object deleted.'); } catch (err) { showError('Failed to delete object', err); }
   };
 
   const handleLogin = async (event) => {
@@ -354,7 +470,7 @@ export default function App() {
       setLoginForm(prev => ({ ...prev, password: '' }));
     } catch (err) {
       console.error(err);
-      setLoginError(err?.response?.data?.detail || 'Login failed.');
+      setLoginError(formatApiError(err, 'Login failed.'));
     }
     setAuthLoading(false);
   };
@@ -401,7 +517,7 @@ export default function App() {
       setPasswordMessage('Password changed.');
     } catch (err) {
       console.error(err);
-      setPasswordMessage(err?.response?.data?.detail || 'Failed to change password.');
+      setPasswordMessage(formatApiError(err, 'Failed to change password.'));
     }
     setAuthLoading(false);
   };
@@ -483,6 +599,13 @@ export default function App() {
                 <input className="bg-white border border-gray-200 rounded-md py-1.5 pl-9 pr-4 w-64 text-sm text-gray-800 focus:outline-none focus:border-[#9c3029] focus:ring-1 focus:ring-[#9c3029]" placeholder="Search VMs..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} />
               </div>
             )}
+            <button onClick={fetchHealth} className={`px-2.5 py-2 border rounded-md text-xs font-semibold flex items-center gap-2 ${!health?.status ? 'border-gray-200 text-gray-600 bg-white' : health.status === 'ok' ? 'border-green-200 text-green-700 bg-green-50' : health.status === 'warn' ? 'border-amber-200 text-amber-700 bg-amber-50' : 'border-red-200 text-red-700 bg-red-50'}`} title="Refresh health status">
+              <HeartPulse size={15} />
+              {health?.status || 'health'}
+            </button>
+            <button onClick={handleExportRuntimeConfig} disabled={exportingConfig} className="p-2 bg-white border border-gray-200 text-gray-600 rounded-md hover:text-[#9c3029] hover:bg-gray-50 disabled:opacity-60" title="Export runtime config backup">
+              {exportingConfig ? <Loader2 className="animate-spin" size={16} /> : <Download size={16} />}
+            </button>
             {authState.mode === 'session' && (
               <button onClick={() => setShowPasswordPanel(prev => !prev)} className="p-2 bg-white border border-gray-200 text-gray-600 rounded-md hover:text-[#9c3029] hover:bg-gray-50" title="Change password">
                 <Lock size={16} />
@@ -493,6 +616,19 @@ export default function App() {
             </button>
           </div>
         </header>
+
+        {notice && (
+          <div className="mx-8 mt-4 bg-white border border-gray-200 rounded-md shadow-sm p-4 flex items-start gap-3 text-left">
+            <AlertCircle size={18} className={notice.type === 'success' ? 'text-green-600 mt-0.5' : 'text-red-600 mt-0.5'} />
+            <div className="flex-1 min-w-0">
+              <div className={`text-sm font-bold ${notice.type === 'success' ? 'text-green-700' : 'text-red-700'}`}>{notice.title}</div>
+              <pre className="mt-1 text-xs text-gray-600 whitespace-pre-wrap font-sans break-words">{notice.message}</pre>
+            </div>
+            <button onClick={() => setNotice(null)} className="p-1 text-gray-400 hover:text-gray-700 rounded-md" title="Dismiss">
+              <X size={16} />
+            </button>
+          </div>
+        )}
 
         {showPasswordPanel && (
           <div className="absolute right-10 top-20 z-30 w-80 bg-white border border-gray-200 rounded-md shadow-lg p-5 text-left">
@@ -733,6 +869,14 @@ export default function App() {
                             <span className="flex items-center gap-1"><Clock size={12}/> {job.schedule.frequency} @ {job.schedule.time}</span>
                             <span className="flex items-center gap-1"><Cpu size={12}/> {job.transfers} Transfers</span>
                           </div>
+                          {latestRunByJob[job.name] && (
+                            <div className="mt-2 flex items-center gap-2">
+                              <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase ${runStatusClass(latestRunByJob[job.name].status)}`}>
+                                {latestRunByJob[job.name].status}
+                              </span>
+                              <span className="text-[11px] text-gray-500 max-w-md truncate inline-block align-bottom">{latestRunByJob[job.name].error || latestRunByJob[job.name].details || formatTimestamp(latestRunByJob[job.name].updated_at)}</span>
+                            </div>
+                          )}
                         </div>
                       </div>
                       <div className="flex gap-2">
@@ -749,6 +893,31 @@ export default function App() {
                   </div>
                 ))}
                 {jobs.length === 0 && <div className="text-center p-12 bg-white border border-gray-200 rounded-md text-gray-500 shadow-sm">No jobs saved.</div>}
+              </div>
+              <div className="bg-white border border-gray-200 rounded-md shadow-sm overflow-hidden">
+                <div className="flex items-center justify-between p-4 border-b border-gray-100">
+                  <h3 className="font-bold text-sm text-gray-800 flex items-center gap-2"><Clock size={16} className="text-[#9c3029]" /> Recent Runs</h3>
+                  <button onClick={fetchJobRuns} className="p-1.5 border border-gray-200 rounded-md text-gray-500 hover:text-[#9c3029] hover:bg-gray-50" title="Refresh job history">
+                    <RefreshCw size={14} />
+                  </button>
+                </div>
+                <div className="divide-y divide-gray-100">
+                  {jobRuns.slice(0, 12).map(run => (
+                    <div key={run.id} className="p-4 flex items-start justify-between gap-4 text-left">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase ${runStatusClass(run.status)}`}>{run.status}</span>
+                          <span className="font-semibold text-sm text-gray-800 truncate">{run.job_name || run.kind}</span>
+                          <span className="text-[11px] text-gray-400 uppercase">{run.trigger || 'manual'}</span>
+                        </div>
+                        <div className="mt-1 text-xs text-gray-500 truncate">{run.error || run.details || `${run.source || ''} -> ${run.destination || ''}`}</div>
+                        <div className="mt-1 text-[10px] text-gray-400 font-mono truncate">{run.id}</div>
+                      </div>
+                      <div className="text-[11px] text-gray-500 whitespace-nowrap">{formatTimestamp(run.updated_at || run.created_at)}</div>
+                    </div>
+                  ))}
+                  {jobRuns.length === 0 && <div className="p-8 text-center text-sm text-gray-500">No run history yet.</div>}
+                </div>
               </div>
             </div>
           )}
@@ -781,8 +950,7 @@ export default function App() {
                         const res = await api.get(`/list-remote-buckets/${r}`);
                         setSourceBuckets(res.data.buckets);
                       } catch (err) {
-                        console.error(err);
-                        alert('Failed to list buckets for remote.');
+                        showError('Failed to list buckets for remote', err);
                         setSourceBuckets([]);
                       }
                     }} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
@@ -809,8 +977,7 @@ export default function App() {
                         const res = await api.get(`/list-buckets/${profile}`);
                         setDestBuckets(res.data);
                       } catch (err) {
-                        console.error(err);
-                        alert('Failed to list buckets for destination profile.');
+                        showError('Failed to list buckets for destination profile', err);
                         setDestBuckets([]);
                       }
                     }} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
@@ -1000,14 +1167,19 @@ export default function App() {
                 </div>
                 <div className="pt-5">
                   <button onClick={async () => {
-                    if (!vmMigrationConfig.destProfile || !vmMigrationConfig.destBucket) return alert("Select Destination and Bucket!");
+                    if (!vmMigrationConfig.destProfile || !vmMigrationConfig.destBucket) {
+                      setNotice({ type: 'error', title: 'Missing migration target', message: 'Select destination profile and bucket.' });
+                      return;
+                    }
                     try {
                       const res = await api.post(`/start-bulk-migration`, {
                         vm_ids: selectedVms, source_profile: activeSourceProfile, dest_profile: vmMigrationConfig.destProfile, bucket_name: vmMigrationConfig.destBucket
                       });
                       const newTasks = {}; res.data.tasks.forEach(t => { newTasks[t.task_id] = { vm_id: t.vm_id, status: 'PENDING', details: 'Starting...' }; });
                       setVmTasks(prev => ({ ...prev, ...newTasks })); setSelectedVms([]); 
-                    } catch (err) { console.error(err); alert("Failed to start migration."); }
+                      fetchJobRuns();
+                      showSuccess('VM migration queued.');
+                    } catch (err) { showError('Failed to start VM migration', err); }
                   }} className="bg-[#9c3029] text-white px-6 py-2.5 rounded-md font-semibold text-sm flex items-center gap-2 hover:bg-[#a63d2e] transition-colors shadow-sm">Execute Migration <ArrowRight size={16} /></button>
                 </div>
              </div>

@@ -7,6 +7,7 @@ Admin tool for OCI migration and cloud data sync.
 - Celery worker with Redis
 - rclone sync/copy jobs
 - OCI SDK VM and Object Storage operations
+- persistent job run history and runtime config export
 
 ## Quick Install
 
@@ -41,6 +42,12 @@ make restart
 make logs-api
 make logs-worker
 make package
+```
+
+Health endpoint:
+
+```text
+http://<server-ip-or-dns>:8000/health
 ```
 
 ## Manual Install

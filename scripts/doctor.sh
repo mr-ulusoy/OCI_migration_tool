@@ -128,6 +128,14 @@ check_service "$SERVICE_PREFIX-scheduler.timer"
 
 check_port "$API_PORT" "App/backend"
 
+if have_command curl; then
+  if curl -fsS "http://$API_HOST:$API_PORT/health" >/dev/null; then
+    ok "Health endpoint responds"
+  else
+    fail_check "Health endpoint did not respond"
+  fi
+fi
+
 if have_command curl && [ -f "$ENV_FILE" ]; then
   token="$(read_env_value OCI_MIGRATOR_API_TOKEN || true)"
   if [ -n "$token" ]; then

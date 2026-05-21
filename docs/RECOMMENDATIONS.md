@@ -33,7 +33,9 @@ Future options if needed:
 - proxy to FastAPI
 - keep FastAPI bound to `127.0.0.1`
 
-## 4. Add Backups For Runtime Config
+## 4. Runtime Config Backups
+
+Done: the UI can export a runtime backup zip containing the env file, OCI config, job definitions/history, rclone config, and referenced key files when present.
 
 The application writes important runtime state to:
 
@@ -43,14 +45,22 @@ The application writes important runtime state to:
 ~/.oci-migrator.env
 ```
 
-Back these up before upgrades, especially when colleagues will manage real migration jobs.
+Keep exported backups encrypted or otherwise access-controlled, because they may contain cloud credentials.
 
-## 5. Enable CI And Add Real Tests
+## 5. Job History, Health, And Errors
+
+Done:
+
+- job run history is persisted in `~/.oci/job_history.json`
+- `/health` reports API readiness and dependency checks
+- OCI/rclone failures return structured messages and hints for the UI
+
+## 6. Enable CI And Add Real Tests
 
 A GitHub Actions template is included at `docs/ci/github-actions.yml`. Copy it to `.github/workflows/ci.yml` when the GitHub token/repo permissions allow workflow updates. After that, add real backend and frontend tests around critical migration behavior.
 
 ```bash
 bash -n install.sh scripts/*.sh
-python3 -m py_compile backend/main.py backend/worker.py backend/run_backups.py
+python3 -m py_compile backend/main.py backend/worker.py backend/run_backups.py backend/job_store.py
 cd frontend && npm ci && npm audit --omit=dev && npm run build
 ```

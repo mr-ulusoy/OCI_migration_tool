@@ -2,6 +2,7 @@ import configparser
 import base64
 import hashlib
 import hmac
+import io
 import json
 import logging
 import os
@@ -11,16 +12,20 @@ import shutil
 import subprocess
 import tempfile
 import time
+import uuid
+import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 
 import oci
 import uvicorn
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, File, Form, Header, HTTPException, Query, UploadFile, status
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
+from job_store import JOB_HISTORY_FILE, get_job_run, list_job_runs, upsert_job_run
 from worker import migrate_single_vm, rclone_sync_task
 from celery.result import AsyncResult 
 
@@ -261,6 +266,7 @@ app = FastAPI(title="OCI Migration & Sync Engine")
 
 PUBLIC_PATHS = {
     "/",
+    "/health",
     "/index.html",
     "/auth/login",
     "/docs",
@@ -439,6 +445,90 @@ def write_jobs_atomically(jobs: list[dict]) -> None:
             os.remove(temp_path)
 
 
+def truncate_text(value: str, limit: int = 1200) -> str:
+    value = (value or "").strip()
+    return value if len(value) <= limit else f"{value[:limit]}..."
+
+
+def build_error_detail(operation: str, exc: Exception, hint: Optional[str] = None) -> dict:
+    detail = {
+        "message": f"{operation} failed.",
+        "operation": operation,
+        "error_type": exc.__class__.__name__,
+    }
+
+    if isinstance(exc, oci.exceptions.ServiceError):
+        detail.update(
+            {
+                "status": exc.status,
+                "code": exc.code,
+                "service_message": truncate_text(exc.message),
+                "opc_request_id": getattr(exc, "request_id", None),
+            }
+        )
+    else:
+        detail["error"] = truncate_text(str(exc))
+
+    if hint:
+        detail["hint"] = hint
+
+    return detail
+
+
+def raise_operation_error(
+    status_code: int,
+    operation: str,
+    exc: Exception,
+    hint: Optional[str] = None,
+) -> None:
+    logger.warning("%s failed: %s", operation, exc)
+    raise HTTPException(status_code=status_code, detail=build_error_detail(operation, exc, hint))
+
+
+def health_check_item(state: str, message: str) -> dict:
+    return {"status": state, "message": message}
+
+
+def read_runtime_env() -> dict[str, str]:
+    return _read_env_file(ENV_FILE_PATH) if os.path.exists(ENV_FILE_PATH) else {}
+
+
+def redis_url_from_runtime() -> str:
+    runtime_env = read_runtime_env()
+    return runtime_env.get("OCI_MIGRATOR_REDIS_URL") or os.getenv(
+        "OCI_MIGRATOR_REDIS_URL", "redis://localhost:6379/0"
+    )
+
+
+def history_status_for_api(run: dict) -> str:
+    status_map = {
+        "queued": "PENDING",
+        "running": "PROGRESS",
+        "retrying": "PROGRESS",
+        "success": "SUCCESS",
+        "failed": "FAILURE",
+        "timeout": "FAILURE",
+    }
+    return status_map.get(str(run.get("status", "")).lower(), "PENDING")
+
+
+def add_file_to_zip(archive: zipfile.ZipFile, manifest: dict, source_path: str, archive_name: str) -> None:
+    expanded = os.path.expanduser(source_path)
+    if os.path.isfile(expanded):
+        archive.write(expanded, archive_name)
+        manifest["included"].append(
+            {
+                "name": archive_name,
+                "size_bytes": os.path.getsize(expanded),
+                "modified_at": datetime.fromtimestamp(
+                    os.path.getmtime(expanded), timezone.utc
+                ).isoformat().replace("+00:00", "Z"),
+            }
+        )
+    else:
+        manifest["missing"].append(archive_name)
+
+
 def sync_oci_to_rclone(profile_name, region, storage_compartment_ocid):
     try:
         config = oci.config.from_file(CONFIG_PATH, profile_name)
@@ -530,6 +620,144 @@ async def change_password(data: ChangePasswordRequest):
         "username": str(config.get("admin_username", "admin")),
         "expires_in": int(config.get("session_ttl_seconds", 43200)),
     }
+
+
+# --- 0.5. Operations ---
+@app.get("/health")
+async def health():
+    runtime_config = get_runtime_config()
+    admin_password_configured = bool(runtime_config.get("admin_password_hash"))
+    env_file_exists = os.path.isfile(ENV_FILE_PATH)
+    oci_config_exists = os.path.isfile(CONFIG_PATH)
+    rclone_config_exists = os.path.isfile(RCLONE_CONF)
+    rclone_installed = bool(shutil.which("rclone"))
+    frontend_build_exists = (FRONTEND_DIST_DIR / "index.html").is_file()
+
+    checks = {
+        "admin_password": health_check_item(
+            "ok" if admin_password_configured else "error",
+            "Admin password hash is configured." if admin_password_configured else "Admin password hash is missing.",
+        ),
+        "env_file": health_check_item(
+            "ok" if env_file_exists else "warn",
+            "Runtime env file exists." if env_file_exists else "Runtime env file not found; environment variables may still be used.",
+        ),
+        "oci_config": health_check_item(
+            "ok" if oci_config_exists else "warn",
+            "OCI config exists." if oci_config_exists else "No OCI config found yet.",
+        ),
+        "rclone_config": health_check_item(
+            "ok" if rclone_config_exists else "warn",
+            "rclone config exists." if rclone_config_exists else "No rclone config found yet.",
+        ),
+        "rclone_binary": health_check_item(
+            "ok" if rclone_installed else "error",
+            "rclone is installed." if rclone_installed else "rclone command is not available.",
+        ),
+        "frontend_build": health_check_item(
+            "ok" if frontend_build_exists else "warn",
+            "Frontend build is present." if frontend_build_exists else "Frontend build not found. Run npm run build.",
+        ),
+    }
+
+    try:
+        import redis
+
+        redis_client = redis.Redis.from_url(
+            redis_url_from_runtime(),
+            socket_connect_timeout=1,
+            socket_timeout=1,
+        )
+        redis_client.ping()
+        checks["redis"] = health_check_item("ok", "Redis is reachable.")
+    except Exception as exc:
+        checks["redis"] = health_check_item("error", f"Redis is not reachable: {truncate_text(str(exc), 300)}")
+
+    states = [check["status"] for check in checks.values()]
+    overall_status = "error" if "error" in states else "warn" if "warn" in states else "ok"
+
+    return {
+        "status": overall_status,
+        "service": "oci-migrator",
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "checks": checks,
+    }
+
+
+@app.get("/job-history")
+async def job_history(limit: int = Query(default=100, ge=1, le=300)):
+    return {"runs": list_job_runs(limit)}
+
+
+@app.get("/job-history/{run_id}")
+async def job_history_item(run_id: str):
+    run = get_job_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Job run not found.")
+    return run
+
+
+@app.get("/runtime-config/export")
+async def export_runtime_config():
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    archive_buffer = io.BytesIO()
+    manifest = {
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "included": [],
+        "missing": [],
+        "notes": [
+            "This archive may contain secrets such as API keys, rclone credentials, and the admin password hash.",
+            "Store it securely and delete old copies when they are no longer needed.",
+        ],
+    }
+
+    with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        add_file_to_zip(archive, manifest, ENV_FILE_PATH, "runtime/.oci-migrator.env")
+        add_file_to_zip(archive, manifest, CONFIG_PATH, "oci/config")
+        add_file_to_zip(archive, manifest, JOBS_FILE, "oci/jobs.json")
+        add_file_to_zip(archive, manifest, JOB_HISTORY_FILE, "oci/job_history.json")
+        add_file_to_zip(archive, manifest, RCLONE_CONF, "rclone/rclone.conf")
+
+        added_paths = {
+            os.path.realpath(path)
+            for path in (ENV_FILE_PATH, CONFIG_PATH, JOBS_FILE, JOB_HISTORY_FILE, RCLONE_CONF)
+        }
+
+        if os.path.isfile(CONFIG_PATH):
+            parser = configparser.ConfigParser()
+            parser.read(CONFIG_PATH)
+            for section in parser.sections():
+                key_file = parser.get(section, "key_file", fallback="")
+                if key_file and os.path.isfile(os.path.expanduser(key_file)):
+                    real_path = os.path.realpath(os.path.expanduser(key_file))
+                    if real_path not in added_paths:
+                        archive_name = (
+                            f"oci/keys/{sanitize_filename(section, 'profile')}_"
+                            f"{sanitize_filename(os.path.basename(key_file), 'api_key.pem')}"
+                        )
+                        add_file_to_zip(archive, manifest, key_file, archive_name)
+                        added_paths.add(real_path)
+
+        if os.path.isfile(RCLONE_CONF):
+            parser = configparser.ConfigParser()
+            parser.read(RCLONE_CONF)
+            for section in parser.sections():
+                service_account_file = parser.get(section, "service_account_file", fallback="")
+                if service_account_file and os.path.isfile(os.path.expanduser(service_account_file)):
+                    real_path = os.path.realpath(os.path.expanduser(service_account_file))
+                    if real_path not in added_paths:
+                        archive_name = (
+                            f"rclone/service-accounts/{sanitize_filename(section, 'remote')}_"
+                            f"{sanitize_filename(os.path.basename(service_account_file), 'service_account.json')}"
+                        )
+                        add_file_to_zip(archive, manifest, service_account_file, archive_name)
+                        added_paths.add(real_path)
+
+        archive.writestr("manifest.json", json.dumps(manifest, indent=2))
+
+    archive_buffer.seek(0)
+    headers = {"Content-Disposition": f'attachment; filename="oci-migrator-runtime-{timestamp}.zip"'}
+    return StreamingResponse(archive_buffer, media_type="application/zip", headers=headers)
 
 # --- 1. OCI Profile Management ---
 @app.post("/upload-key")
@@ -696,25 +924,55 @@ async def list_remote_buckets(remote_name: str):
         command = ["rclone", "lsf", f"{remote_name}:", "--max-depth", "1"]
         result = subprocess.run(command, capture_output=True, text=True, timeout=10)
         if result.returncode != 0:
-            raise HTTPException(status_code=500, detail=result.stderr)
+            raise RuntimeError(truncate_text(result.stderr or result.stdout or f"rclone exited with code {result.returncode}"))
         buckets = [line.replace('/', '').strip() for line in result.stdout.split('\n') if line.strip()]
         return {"buckets": buckets}
+    except HTTPException:
+        raise
+    except subprocess.TimeoutExpired as e:
+        raise_operation_error(504, "List remote buckets", e, "Check that the rclone remote is reachable.")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_operation_error(500, "List remote buckets", e, "Check rclone credentials and remote name.")
 
 @app.post("/start-data-sync-manual")
 async def start_sync_manual(job: DataSyncJob):
-    task = rclone_sync_task.delay(
-        job.source_remote, 
-        job.dest_profile, 
-        job.dest_bucket, 
-        job.sync_mode,
-        job.transfers,
-        job.checkers,
-        job.buffer_size,
-        job.name.replace(' ', '_')
+    run_id = str(uuid.uuid4())
+    safe_job_name = normalize_job_name(job.name)
+    destination = f"{job.dest_profile}_rclone:{job.dest_bucket}"
+    upsert_job_run(
+        {
+            "id": run_id,
+            "kind": "data_sync",
+            "job_name": job.name,
+            "status": "queued",
+            "trigger": "manual",
+            "source": job.source_remote,
+            "destination": destination,
+            "details": "Queued for worker.",
+            "log_file": f"/tmp/rclone_{safe_job_name}.log",
+        }
     )
-    return {"task_id": task.id, "status": "queued"}
+    try:
+        task = rclone_sync_task.apply_async(
+            args=[
+                job.source_remote,
+                job.dest_profile,
+                job.dest_bucket,
+                job.sync_mode,
+                job.transfers,
+                job.checkers,
+                job.buffer_size,
+                safe_job_name,
+                run_id,
+                "manual",
+            ],
+            task_id=run_id,
+        )
+    except Exception as e:
+        upsert_job_run({"id": run_id, "status": "failed", "details": "Unable to queue worker task.", "error": str(e)})
+        raise_operation_error(500, "Start data sync job", e, "Check that Redis and the Celery worker are running.")
+
+    return {"task_id": task.id, "run_id": run_id, "status": "queued"}
 
 # NYTT: Spara Big 5 Remotes (AWS, Azure, GCP, Local)
 @app.post("/save-remote")
@@ -732,41 +990,46 @@ async def save_remote(
     gcp_file: Optional[UploadFile] = File(None)
 ):
     parser = configparser.ConfigParser()
-    with RCLONE_LOCK:
-        if os.path.exists(RCLONE_CONF):
-            parser.read(RCLONE_CONF)
+    try:
+        with RCLONE_LOCK:
+            if os.path.exists(RCLONE_CONF):
+                parser.read(RCLONE_CONF)
 
-        if not parser.has_section(name):
-            parser.add_section(name)
+            if not parser.has_section(name):
+                parser.add_section(name)
 
-        if provider == 's3':
-            parser.set(name, 'type', 's3')
-            parser.set(name, 'provider', 'AWS')
-            parser.set(name, 'access_key_id', access_key)
-            parser.set(name, 'secret_access_key', secret_key)
-            parser.set(name, 'region', region)
-        elif provider == 'azureblob':
-            parser.set(name, 'type', 'azureblob')
-            parser.set(name, 'account', account_name)
-            parser.set(name, 'key', account_key)
-        elif provider == 'google cloud storage':
-            parser.set(name, 'type', 'google cloud storage')
-            parser.set(name, 'object_acl', gcp_object_acl)
-            parser.set(name, 'bucket_acl', gcp_bucket_acl)
-            parser.set(name, 'location', gcp_location)
-            if gcp_file:
-                file_name = sanitize_filename(gcp_file.filename, f"{name}_service_account.json")
-                file_path = os.path.join(OCI_DIR, file_name)
-                with open(file_path, "wb") as buffer:
-                    shutil.copyfileobj(gcp_file.file, buffer)
-                os.chmod(file_path, 0o600)
-                parser.set(name, 'service_account_file', file_path)
-        elif provider == 'local':
-            parser.set(name, 'type', 'local')
-        else:
-            raise HTTPException(status_code=400, detail="Unsupported remote provider")
+            if provider == 's3':
+                parser.set(name, 'type', 's3')
+                parser.set(name, 'provider', 'AWS')
+                parser.set(name, 'access_key_id', access_key)
+                parser.set(name, 'secret_access_key', secret_key)
+                parser.set(name, 'region', region)
+            elif provider == 'azureblob':
+                parser.set(name, 'type', 'azureblob')
+                parser.set(name, 'account', account_name)
+                parser.set(name, 'key', account_key)
+            elif provider == 'google cloud storage':
+                parser.set(name, 'type', 'google cloud storage')
+                parser.set(name, 'object_acl', gcp_object_acl)
+                parser.set(name, 'bucket_acl', gcp_bucket_acl)
+                parser.set(name, 'location', gcp_location)
+                if gcp_file:
+                    file_name = sanitize_filename(gcp_file.filename, f"{name}_service_account.json")
+                    file_path = os.path.join(OCI_DIR, file_name)
+                    with open(file_path, "wb") as buffer:
+                        shutil.copyfileobj(gcp_file.file, buffer)
+                    os.chmod(file_path, 0o600)
+                    parser.set(name, 'service_account_file', file_path)
+            elif provider == 'local':
+                parser.set(name, 'type', 'local')
+            else:
+                raise HTTPException(status_code=400, detail="Unsupported remote provider")
 
-        write_ini_atomically(parser, RCLONE_CONF)
+            write_ini_atomically(parser, RCLONE_CONF)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_operation_error(500, "Save rclone remote", e, "Check that the rclone config directory is writable.")
         
     return {"message": "Remote saved successfully"}
 
@@ -774,32 +1037,41 @@ async def save_remote(
 @app.delete("/delete-remote/{remote_name}")
 async def delete_remote(remote_name: str):
     parser = configparser.ConfigParser()
-    with RCLONE_LOCK:
-        if os.path.exists(RCLONE_CONF):
-            parser.read(RCLONE_CONF)
+    try:
+        with RCLONE_LOCK:
+            if os.path.exists(RCLONE_CONF):
+                parser.read(RCLONE_CONF)
 
-        if parser.has_section(remote_name):
-            parser.remove_section(remote_name)
-            write_ini_atomically(parser, RCLONE_CONF)
+            if parser.has_section(remote_name):
+                parser.remove_section(remote_name)
+                write_ini_atomically(parser, RCLONE_CONF)
+    except Exception as e:
+        raise_operation_error(500, "Delete rclone remote", e, "Check that the rclone config file is writable.")
     return {"message": "Remote deleted"}
 
 # --- 5. OCI Explorer (VMs & Buckets) ---
 @app.get("/list-vms/{profile}")
 async def list_vms(profile: str):
-    config = oci.config.from_file(CONFIG_PATH, profile)
-    compute = oci.core.ComputeClient(config)
-    comp_id = config.get("compartment", config.get("tenancy"))
-    res = compute.list_instances(compartment_id=comp_id)
-    return [{"id": i.id, "name": i.display_name, "state": i.lifecycle_state} for i in res.data if i.lifecycle_state != "TERMINATED"]
+    try:
+        config = oci.config.from_file(CONFIG_PATH, profile)
+        compute = oci.core.ComputeClient(config)
+        comp_id = config.get("compartment", config.get("tenancy"))
+        res = compute.list_instances(compartment_id=comp_id)
+        return [{"id": i.id, "name": i.display_name, "state": i.lifecycle_state} for i in res.data if i.lifecycle_state != "TERMINATED"]
+    except Exception as e:
+        raise_operation_error(500, "List VMs", e, "Check the OCI profile, compartment OCID, region, and API key.")
 
 @app.get("/list-buckets/{profile}")
 async def list_buckets(profile: str):
-    config = oci.config.from_file(CONFIG_PATH, profile)
-    os_client = oci.object_storage.ObjectStorageClient(config)
-    ns = os_client.get_namespace().data
-    comp = config.get("storage_compartment", config.get("compartment"))
-    buckets = os_client.list_buckets(ns, comp).data
-    return [{"name": b.name} for b in buckets]
+    try:
+        config = oci.config.from_file(CONFIG_PATH, profile)
+        os_client = oci.object_storage.ObjectStorageClient(config)
+        ns = os_client.get_namespace().data
+        comp = config.get("storage_compartment", config.get("compartment"))
+        buckets = os_client.list_buckets(ns, comp).data
+        return [{"name": b.name} for b in buckets]
+    except Exception as e:
+        raise_operation_error(500, "List buckets", e, "Check storage compartment access for this OCI profile.")
 
 @app.get("/list-objects/{profile_name}/{bucket_name}")
 async def list_objects(profile_name: str, bucket_name: str):
@@ -818,7 +1090,7 @@ async def list_objects(profile_name: str, bucket_name: str):
         ]
         return object_list
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_operation_error(500, "List objects", e, "Check bucket name and object storage permissions.")
 
 # Skapa Bucket
 @app.post("/create-bucket")
@@ -836,7 +1108,7 @@ async def create_bucket(req: CreateBucketReq):
         os_client.create_bucket(namespace, details)
         return {"message": f"Bucket '{req.bucket_name}' created"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_operation_error(500, "Create bucket", e, "Check that the bucket name is unique and the profile has permission.")
 
 # Skapa Mapp
 @app.post("/create-folder")
@@ -851,7 +1123,7 @@ async def create_folder(req: CreateFolderReq):
         
         return {"message": f"Folder '{folder_path}' created"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_operation_error(500, "Create folder", e, "Check bucket write permission.")
 
 # Ta bort fil/objekt
 @app.delete("/delete-object/{profile_name}/{bucket_name}/{object_name:path}")
@@ -864,7 +1136,7 @@ async def delete_object(profile_name: str, bucket_name: str, object_name: str):
         os_client.delete_object(namespace, bucket_name, object_name)
         return {"message": "Object deleted"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_operation_error(500, "Delete object", e, "Check object path and delete permission.")
 
 # --- 6. VM Migration Tasks & Progress ---
 @app.post("/start-bulk-migration")
@@ -875,18 +1147,48 @@ async def start_bulk_migration(job: BulkMigrationJob):
         dest_comp = config.get("compartment", config.get("tenancy"))
 
         for vm_id in job.vm_ids:
-            task = migrate_single_vm.delay(
-                job.source_profile, job.dest_profile, vm_id, dest_comp, job.bucket_name
+            run_id = str(uuid.uuid4())
+            upsert_job_run(
+                {
+                    "id": run_id,
+                    "kind": "vm_migration",
+                    "job_name": f"VM migration {vm_id}",
+                    "status": "queued",
+                    "trigger": "manual",
+                    "source_profile": job.source_profile,
+                    "dest_profile": job.dest_profile,
+                    "dest_bucket": job.bucket_name,
+                    "vm_id": vm_id,
+                    "details": "Queued for worker.",
+                }
             )
-            tasks.append({"vm_id": vm_id, "task_id": task.id})
+            try:
+                task = migrate_single_vm.apply_async(
+                    args=[job.source_profile, job.dest_profile, vm_id, dest_comp, job.bucket_name],
+                    task_id=run_id,
+                )
+            except Exception as e:
+                upsert_job_run(
+                    {
+                        "id": run_id,
+                        "status": "failed",
+                        "details": "Unable to queue worker task.",
+                        "error": str(e),
+                    }
+                )
+                raise
+            tasks.append({"vm_id": vm_id, "task_id": task.id, "run_id": run_id})
         
         return {"message": f"Started migration for {len(job.vm_ids)} VMs", "tasks": tasks}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise_operation_error(500, "Start VM migration", e, "Check Redis, Celery worker, and the destination profile.")
 
 @app.get("/migration-status/{task_id}")
 async def get_migration_status(task_id: str):
     task_result = AsyncResult(task_id)
+    history_run = get_job_run(task_id)
     response = {"task_id": task_id, "status": task_result.status}
     
     if task_result.state == 'PROGRESS':
@@ -895,6 +1197,9 @@ async def get_migration_status(task_id: str):
         response["details"] = task_result.get()
     elif task_result.state == 'FAILURE':
         response["details"] = str(task_result.info)
+    elif history_run:
+        response["status"] = history_status_for_api(history_run)
+        response["details"] = history_run.get("details") or history_run.get("error") or response["status"]
         
     return response
 

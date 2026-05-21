@@ -1,12 +1,19 @@
 import json
 import os
+import re
+import uuid
 from datetime import datetime
+from job_store import upsert_job_run
 from worker import rclone_sync_task
 
 # Här sparar vi alla jobb framöver
 JOBS_FILE = os.path.expanduser("~/.oci/jobs.json")
 LOCK_FILE = os.path.expanduser("~/.oci/run_backups.lock")
 STATE_FILE = os.path.expanduser("~/.oci/run_backups_state.json")
+
+
+def normalize_job_name(job_name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]", "_", job_name.strip()) or "default"
 
 
 def load_state() -> dict:
@@ -74,6 +81,7 @@ def main():
                 # Om stjärnorna står rätt, tryck in jobbet i kön!
                 if should_run:
                     job_name = job.get("name", "default")
+                    safe_job_name = normalize_job_name(job_name)
                     # Deduplicera per minut per jobbnamn
                     state_key = f"{job_name}::{now.strftime('%Y-%m-%d %H:%M')}"
                     if state.get(state_key):
@@ -81,18 +89,48 @@ def main():
                     state[state_key] = True
 
                     print(f"Triggering scheduled job: {job.get('name')}")
-                    rclone_sync_task.delay(
-                        job["source_remote"],
-                        job["dest_profile"],
-                        job["dest_bucket"],
-                        job.get("sync_mode", "copy"),
-                        # Rclone tuning-parametrar skickas med (med säkra standardvärden ifall de saknas)
-                        job.get("transfers", 4),
-                        job.get("checkers", 8),
-                        job.get("buffer_size", "16M"),
-                        # Viktigt: så att schemalagda jobb får sin egen loggfil
-                        job_name.replace(' ', '_')
+                    run_id = str(uuid.uuid4())
+                    destination = f"{job['dest_profile']}_rclone:{job['dest_bucket']}"
+                    upsert_job_run(
+                        {
+                            "id": run_id,
+                            "kind": "data_sync",
+                            "job_name": job_name,
+                            "status": "queued",
+                            "trigger": "scheduled",
+                            "source": job["source_remote"],
+                            "destination": destination,
+                            "details": "Queued by scheduler.",
+                            "log_file": f"/tmp/rclone_{safe_job_name}.log",
+                        }
                     )
+                    try:
+                        rclone_sync_task.apply_async(
+                            args=[
+                                job["source_remote"],
+                                job["dest_profile"],
+                                job["dest_bucket"],
+                                job.get("sync_mode", "copy"),
+                                # Rclone tuning-parametrar skickas med (med säkra standardvärden ifall de saknas)
+                                job.get("transfers", 4),
+                                job.get("checkers", 8),
+                                job.get("buffer_size", "16M"),
+                                # Viktigt: så att schemalagda jobb får sin egen loggfil
+                                safe_job_name,
+                                run_id,
+                                "scheduled",
+                            ],
+                            task_id=run_id,
+                        )
+                    except Exception as exc:
+                        upsert_job_run(
+                            {
+                                "id": run_id,
+                                "status": "failed",
+                                "details": "Scheduler could not queue worker task.",
+                                "error": str(exc),
+                            }
+                        )
 
         # Håll state liten: endast senaste ~2 dagar
         cutoff = datetime.now().timestamp() - (2 * 24 * 3600)
