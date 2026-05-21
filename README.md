@@ -92,6 +92,7 @@ The built frontend is served by the backend, so each install only needs one app/
 - `~/.oci-migrator.env`
 - `venv/`
 - `frontend/dist/`
+- `/var/lib/oci-migrator/local/`
 
 The backend service also serves the built frontend from `frontend/dist`. Backend dependencies use `backend/requirements.lock` when present.
 

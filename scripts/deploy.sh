@@ -10,6 +10,7 @@ SSH_KEY="${SSH_KEY:-}"
 REMOTE_DIR="${REMOTE_DIR:-/opt/oci-migrator}"
 PUBLIC_HOST="${PUBLIC_HOST:-}"
 API_PORT="${API_PORT:-8000}"
+LOCAL_DATA_ROOT="${OCI_MIGRATOR_LOCAL_DATA_ROOT:-}"
 SERVICE_PREFIX="${SERVICE_PREFIX:-migrator}"
 CELERY_CONCURRENCY="${CELERY_CONCURRENCY:-2}"
 OPEN_FIREWALL="${OPEN_FIREWALL:-0}"
@@ -78,6 +79,9 @@ rsync -az --progress \
 remote_cmd="cd $(quote "$REMOTE_DIR") && chmod +x install.sh && "
 remote_cmd+="PUBLIC_HOST=$(quote "$PUBLIC_HOST") "
 remote_cmd+="API_PORT=$(quote "$API_PORT") "
+if [ -n "$LOCAL_DATA_ROOT" ]; then
+  remote_cmd+="OCI_MIGRATOR_LOCAL_DATA_ROOT=$(quote "$LOCAL_DATA_ROOT") "
+fi
 remote_cmd+="SERVICE_PREFIX=$(quote "$SERVICE_PREFIX") "
 remote_cmd+="CELERY_CONCURRENCY=$(quote "$CELERY_CONCURRENCY") "
 remote_cmd+="OPEN_FIREWALL=$(quote "$OPEN_FIREWALL") "

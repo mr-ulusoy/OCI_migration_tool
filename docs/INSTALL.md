@@ -37,6 +37,7 @@ cd OCI_migration_tool
 ./install.sh --public-host <server-ip-or-dns> --admin-password-file /path/to/password.txt
 ./install.sh --public-host migrator.example.com --open-firewall
 ./install.sh --api-port 8001
+./install.sh --local-data-root /srv/oci-migrator/local
 ./install.sh --stop-legacy-processes
 ```
 

@@ -53,6 +53,15 @@ After logging in, use the download button in the top bar to export a zip backup.
 
 The archive can contain secrets. Store it securely.
 
+## Local Sources
+
+Local remotes have two modes:
+
+- Server local folders are created under `/var/lib/oci-migrator/local`.
+- Mounted external shares must already exist, for example under `/mnt/customer-share`.
+
+The installer creates `/var/lib/oci-migrator/local` for the service user. Use `--local-data-root PATH` to choose another managed root.
+
 ## Runtime Files
 
 ```text
@@ -61,6 +70,7 @@ The archive can contain secrets. Store it securely.
 ~/.oci/jobs.json
 ~/.oci/job_history.json
 ~/.config/rclone/rclone.conf
+/var/lib/oci-migrator/local
 /tmp/rclone_<job>.log
 ```
 

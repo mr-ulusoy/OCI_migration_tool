@@ -6,6 +6,7 @@ APP_NAME="${APP_NAME:-oci-migrator}"
 SERVICE_PREFIX="${SERVICE_PREFIX:-migrator}"
 API_HOST="${API_HOST:-0.0.0.0}"
 API_PORT="${API_PORT:-8000}"
+LOCAL_DATA_ROOT="${OCI_MIGRATOR_LOCAL_DATA_ROOT:-/var/lib/oci-migrator/local}"
 CELERY_CONCURRENCY="${CELERY_CONCURRENCY:-2}"
 OPEN_FIREWALL="${OPEN_FIREWALL:-0}"
 STOP_LEGACY_PROCESSES="${STOP_LEGACY_PROCESSES:-0}"
@@ -56,6 +57,7 @@ Options:
   --service-prefix NAME       systemd service prefix. Default: $SERVICE_PREFIX
   --run-user USER             Linux user that runs services. Default: current sudo user.
   --env-file PATH             Runtime env file. Default: ~/.oci-migrator.env for the run user.
+  --local-data-root PATH      Managed server-local source folder root. Default: $LOCAL_DATA_ROOT
   --celery-concurrency N      Celery worker concurrency. Default: $CELERY_CONCURRENCY
   --open-firewall             Open local firewall ports with ufw/iptables when possible.
   --stop-legacy-processes     Stop old manual uvicorn/vite processes from this project path.
@@ -67,7 +69,7 @@ Options:
   -h, --help                  Show this help.
 
 Environment variables with the same names are also supported:
-  PUBLIC_HOST, API_PORT, SERVICE_PREFIX, RUN_USER,
+  PUBLIC_HOST, API_PORT, SERVICE_PREFIX, RUN_USER, OCI_MIGRATOR_LOCAL_DATA_ROOT,
   OCI_MIGRATOR_ENV_FILE, OPEN_FIREWALL, STOP_LEGACY_PROCESSES,
   CELERY_CONCURRENCY, PRINT_TOKEN,
   OCI_MIGRATOR_ADMIN_USERNAME, OCI_MIGRATOR_ADMIN_PASSWORD,
@@ -100,6 +102,10 @@ parse_args() {
         ;;
       --env-file)
         OCI_MIGRATOR_ENV_FILE="$2"
+        shift 2
+        ;;
+      --local-data-root)
+        LOCAL_DATA_ROOT="$2"
         shift 2
         ;;
       --celery-concurrency)
@@ -369,6 +375,7 @@ ensure_env_file() {
       printf 'OCI_MIGRATOR_REDIS_URL=redis://localhost:6379/0\n'
       printf 'OCI_MIGRATOR_LOG_LEVEL=INFO\n'
       printf 'OCI_MIGRATOR_RCLONE_TIMEOUT_SECONDS=7200\n'
+      printf 'OCI_MIGRATOR_LOCAL_DATA_ROOT=%s\n' "$LOCAL_DATA_ROOT"
     } > "$temp_file"
 
     "${SUDO[@]}" install -o "$RUN_USER" -g "$RUN_USER" -m 600 "$temp_file" "$ENV_FILE"
@@ -382,6 +389,7 @@ ensure_env_file() {
     grep -q '^OCI_MIGRATOR_REDIS_URL=' "$ENV_FILE" || printf 'OCI_MIGRATOR_REDIS_URL=redis://localhost:6379/0\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_LOG_LEVEL=' "$ENV_FILE" || printf 'OCI_MIGRATOR_LOG_LEVEL=INFO\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_RCLONE_TIMEOUT_SECONDS=' "$ENV_FILE" || printf 'OCI_MIGRATOR_RCLONE_TIMEOUT_SECONDS=7200\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_LOCAL_DATA_ROOT=' "$ENV_FILE" || printf 'OCI_MIGRATOR_LOCAL_DATA_ROOT=%s\n' "$LOCAL_DATA_ROOT" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
 
     if [ "$ADMIN_USERNAME_PROVIDED" = "1" ] || ! grep -q '^OCI_MIGRATOR_ADMIN_USERNAME=' "$ENV_FILE"; then
       set_env_value "OCI_MIGRATOR_ADMIN_USERNAME" "$ADMIN_USERNAME"
@@ -403,6 +411,11 @@ ensure_env_file() {
   if [ -n "$configured_admin_username" ]; then
     ADMIN_USERNAME="$configured_admin_username"
   fi
+}
+
+ensure_local_data_root() {
+  log "Preparing managed local data root"
+  "${SUDO[@]}" install -d -o "$RUN_USER" -g "$RUN_USER" -m 775 "$LOCAL_DATA_ROOT"
 }
 
 install_backend() {
@@ -617,6 +630,7 @@ main() {
   install_node
   install_rclone
   ensure_env_file
+  ensure_local_data_root
   install_backend
   install_frontend
   stop_services

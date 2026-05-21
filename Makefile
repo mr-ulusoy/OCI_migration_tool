@@ -2,6 +2,7 @@ SHELL := /usr/bin/env bash
 
 PUBLIC_HOST ?=
 API_PORT ?= 8000
+LOCAL_DATA_ROOT ?=
 SERVICE_PREFIX ?= migrator
 ADMIN_PASSWORD ?=
 PROMPT_ADMIN_PASSWORD ?= 0
@@ -21,13 +22,13 @@ help:
 	@printf '  make package              Create a source tar.gz in dist-packages/\n'
 	@printf '  make uninstall            Remove systemd services, preserve data\n\n'
 	@printf 'Common variables:\n'
-	@printf '  PUBLIC_HOST=<server-ip-or-dns> API_PORT=8000 SERVICE_PREFIX=migrator PROMPT_ADMIN_PASSWORD=1\n'
+	@printf '  PUBLIC_HOST=<server-ip-or-dns> API_PORT=8000 LOCAL_DATA_ROOT=/srv/oci-migrator/local SERVICE_PREFIX=migrator PROMPT_ADMIN_PASSWORD=1\n'
 
 install:
-	./install.sh --api-port "$(API_PORT)" --service-prefix "$(SERVICE_PREFIX)" $(if $(PUBLIC_HOST),--public-host "$(PUBLIC_HOST)") $(ADMIN_ARGS)
+	./install.sh --api-port "$(API_PORT)" --service-prefix "$(SERVICE_PREFIX)" $(if $(LOCAL_DATA_ROOT),--local-data-root "$(LOCAL_DATA_ROOT)") $(if $(PUBLIC_HOST),--public-host "$(PUBLIC_HOST)") $(ADMIN_ARGS)
 
 install-print-token:
-	./install.sh --api-port "$(API_PORT)" --service-prefix "$(SERVICE_PREFIX)" --print-token $(if $(PUBLIC_HOST),--public-host "$(PUBLIC_HOST)") $(ADMIN_ARGS)
+	./install.sh --api-port "$(API_PORT)" --service-prefix "$(SERVICE_PREFIX)" --print-token $(if $(LOCAL_DATA_ROOT),--local-data-root "$(LOCAL_DATA_ROOT)") $(if $(PUBLIC_HOST),--public-host "$(PUBLIC_HOST)") $(ADMIN_ARGS)
 
 deploy:
 	./scripts/deploy.sh

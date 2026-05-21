@@ -14,6 +14,21 @@ const API_BASE = import.meta.env.VITE_API_BASE || (
 );
 const SESSION_TOKEN_KEY = 'OCI_MIGRATOR_SESSION_TOKEN';
 const SESSION_USERNAME_KEY = 'OCI_MIGRATOR_SESSION_USERNAME';
+const DEFAULT_REMOTE_CONFIG = {
+  name: '',
+  provider: 'oci',
+  accessKey: '',
+  secretKey: '',
+  region: 'eu-stockholm-1',
+  accountName: '',
+  accountKey: '',
+  gcpObjectAcl: 'bucketOwnerFullControl',
+  gcpBucketAcl: 'private',
+  gcpLocation: 'us-west3',
+  localMode: 'server_folder',
+  localFolderName: '',
+  localMountPath: ''
+};
 
 function getLegacyApiToken() {
   return import.meta.env.VITE_API_TOKEN || localStorage.getItem('OCI_MIGRATOR_API_TOKEN') || '';
@@ -131,10 +146,7 @@ export default function App() {
   });
   
   // Add Remote State (Combined OCI + Big 5)
-  const [remoteConfig, setRemoteConfig] = useState({
-    name: '', provider: 'oci', accessKey: '', secretKey: '', region: 'eu-stockholm-1', accountName: '', accountKey: '',
-    gcpObjectAcl: 'bucketOwnerFullControl', gcpBucketAcl: 'private', gcpLocation: 'us-west3'
-  });
+  const [remoteConfig, setRemoteConfig] = useState(DEFAULT_REMOTE_CONFIG);
   const [gcpKeyFile, setGcpKeyFile] = useState(null);
 
   // Rclone / Data Sync State
@@ -362,6 +374,14 @@ export default function App() {
       setNotice({ type: 'error', title: 'Missing remote name', message: 'Please provide a name for the remote.' });
       return;
     }
+    if (remoteConfig.provider === 'local' && remoteConfig.localMode === 'server_folder' && !remoteConfig.localFolderName) {
+      setNotice({ type: 'error', title: 'Missing folder name', message: 'Folder name is required for server local folders.' });
+      return;
+    }
+    if (remoteConfig.provider === 'local' && remoteConfig.localMode === 'mounted_share' && !remoteConfig.localMountPath) {
+      setNotice({ type: 'error', title: 'Missing mount path', message: 'Mount path is required for mounted external shares.' });
+      return;
+    }
     setLoading(true);
     try {
       const rData = new FormData();
@@ -379,11 +399,15 @@ export default function App() {
         rData.append("gcp_bucket_acl", remoteConfig.gcpBucketAcl);
         rData.append("gcp_location", remoteConfig.gcpLocation);
         if (gcpKeyFile) rData.append("gcp_file", gcpKeyFile);
+      } else if (remoteConfig.provider === 'local') {
+        rData.append("local_mode", remoteConfig.localMode);
+        rData.append("local_folder_name", remoteConfig.localFolderName);
+        rData.append("local_mount_path", remoteConfig.localMountPath);
       }
-      await api.post(`/save-remote`, rData);
+      const res = await api.post(`/save-remote`, rData);
       fetchRemotes();
-      showSuccess('Cloud remote saved.');
-      setRemoteConfig({ name: '', provider: 'oci', accessKey: '', secretKey: '', region: 'eu-west-1', accountName: '', accountKey: '', gcpObjectAcl: 'bucketOwnerFullControl', gcpBucketAcl: 'private', gcpLocation: 'us-west3' });
+      showSuccess(res.data.local_path ? `Remote saved: ${res.data.local_path}` : 'Remote saved.');
+      setRemoteConfig(DEFAULT_REMOTE_CONFIG);
       setGcpKeyFile(null);
     } catch (err) { showError('Failed to save rclone remote', err); }
     setLoading(false);
@@ -712,7 +736,7 @@ export default function App() {
                           <option value="s3">AWS S3 (or S3 Clone)</option>
                           <option value="azureblob">Azure Blob Storage</option>
                           <option value="google cloud storage">Google Cloud Storage</option>
-                          <option value="local">Local Directory</option>
+                          <option value="local">Local / Mounted Share</option>
                         </select>
                       </div>
 
@@ -803,6 +827,29 @@ export default function App() {
                                <input value={remoteConfig.gcpBucketAcl} onChange={e => setRemoteConfig({...remoteConfig, gcpBucketAcl: e.target.value})} placeholder="Bucket ACL" className="w-full bg-white border border-gray-200 p-2 rounded-md text-xs focus:outline-none focus:border-[#9c3029]" />
                                <input value={remoteConfig.gcpLocation} onChange={e => setRemoteConfig({...remoteConfig, gcpLocation: e.target.value})} placeholder="Location" className="w-full bg-white border border-gray-200 p-2 rounded-md text-xs focus:outline-none focus:border-[#9c3029]" />
                                <input type="file" accept=".json" onChange={e => setGcpKeyFile(e.target.files[0])} className="text-xs" />
+                            </div>
+                          )}
+                          {remoteConfig.provider === 'local' && (
+                            <div className="space-y-3 p-3 bg-gray-50 rounded-md border border-gray-200">
+                              <div>
+                                <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Local Type</label>
+                                <select value={remoteConfig.localMode} onChange={e => setRemoteConfig({...remoteConfig, localMode: e.target.value})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
+                                  <option value="server_folder">Server Local Folder</option>
+                                  <option value="mounted_share">Mounted External Share</option>
+                                </select>
+                              </div>
+                              {remoteConfig.localMode === 'server_folder' && (
+                                <div>
+                                  <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Folder Name</label>
+                                  <input value={remoteConfig.localFolderName} onChange={e => setRemoteConfig({...remoteConfig, localFolderName: e.target.value})} placeholder="customer-a" className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
+                                </div>
+                              )}
+                              {remoteConfig.localMode === 'mounted_share' && (
+                                <div>
+                                  <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Mount Path</label>
+                                  <input value={remoteConfig.localMountPath} onChange={e => setRemoteConfig({...remoteConfig, localMountPath: e.target.value})} placeholder="/mnt/customer-share" className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]" />
+                                </div>
+                              )}
                             </div>
                           )}
                         </>
@@ -948,7 +995,9 @@ export default function App() {
                       setSyncJob(prev => ({...prev, source_remote: r}));
                       try {
                         const res = await api.get(`/list-remote-buckets/${r}`);
-                        setSourceBuckets(res.data.buckets);
+                        setSourceBuckets((res.data.buckets || []).map(item => (
+                          typeof item === 'string' ? { name: item, value: item } : item
+                        )));
                       } catch (err) {
                         showError('Failed to list buckets for remote', err);
                         setSourceBuckets([]);
@@ -965,7 +1014,7 @@ export default function App() {
                       });
                     }} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" disabled={!sourceBuckets.length}>
                       <option value="">Select Bucket/Folder...</option>
-                      {sourceBuckets.map(b => <option key={b} value={b}>{b}</option>)}
+                      {sourceBuckets.map(b => <option key={b.value} value={b.value}>{b.name}</option>)}
                     </select>
                   </div>
                   <div className="space-y-3 text-left">

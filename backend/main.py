@@ -338,6 +338,7 @@ OCI_DIR = os.path.expanduser("~/.oci")
 CONFIG_PATH = os.path.join(OCI_DIR, "config")
 RCLONE_CONF = os.path.expanduser("~/.config/rclone/rclone.conf")
 JOBS_FILE = os.path.join(OCI_DIR, "jobs.json")
+LOCAL_DATA_ROOT = Path(os.getenv("OCI_MIGRATOR_LOCAL_DATA_ROOT", "/var/lib/oci-migrator/local")).resolve()
 
 # Säkerställ att mappar finns
 os.makedirs(os.path.dirname(RCLONE_CONF), exist_ok=True)
@@ -408,6 +409,90 @@ def sanitize_filename(filename: str, default_name: str) -> str:
 
 def normalize_job_name(job_name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "_", job_name.strip()) or "default"
+
+
+def normalize_local_folder_name(folder_name: str) -> str:
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", folder_name.strip()).strip("._-")
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="Local folder name is required.")
+    return safe_name
+
+
+def local_path_is_under_root(path: Path) -> bool:
+    try:
+        path.relative_to(LOCAL_DATA_ROOT)
+        return True
+    except ValueError:
+        return False
+
+
+def create_server_local_folder(folder_name: str) -> Path:
+    safe_name = normalize_local_folder_name(folder_name)
+    target = (LOCAL_DATA_ROOT / safe_name).resolve()
+    if not local_path_is_under_root(target):
+        raise HTTPException(status_code=400, detail="Local folder path is outside the managed data root.")
+
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise_operation_error(
+            500,
+            "Create local folder",
+            exc,
+            f"Check write permissions for {LOCAL_DATA_ROOT}.",
+        )
+    return target
+
+
+def validate_external_mount_path(raw_path: str) -> Path:
+    if not raw_path.strip():
+        raise HTTPException(status_code=400, detail="Mount path is required.")
+
+    path = Path(raw_path.strip()).expanduser()
+    if not path.is_absolute():
+        raise HTTPException(status_code=400, detail="Mount path must be absolute.")
+
+    resolved = path.resolve()
+    blocked_paths = {
+        Path("/"),
+        Path("/bin"),
+        Path("/boot"),
+        Path("/dev"),
+        Path("/etc"),
+        Path("/home"),
+        Path("/lib"),
+        Path("/lib64"),
+        Path("/opt"),
+        Path("/proc"),
+        Path("/root"),
+        Path("/run"),
+        Path("/sbin"),
+        Path("/sys"),
+        Path("/tmp"),
+        Path("/usr"),
+        Path("/var"),
+    }
+    if resolved in blocked_paths:
+        raise HTTPException(status_code=400, detail="Choose a specific mounted share path, not a system directory.")
+    if not resolved.is_dir():
+        raise HTTPException(status_code=400, detail="Mount path does not exist or is not a directory.")
+    return resolved
+
+
+def list_local_source_entries(base_path: Path) -> list[dict]:
+    if not base_path.is_dir():
+        raise HTTPException(status_code=404, detail="Local source path does not exist.")
+
+    entries = [{"name": f"This folder ({base_path})", "value": str(base_path)}]
+    try:
+        children = sorted(base_path.iterdir(), key=lambda child: child.name.lower())
+    except OSError as exc:
+        raise_operation_error(500, "List local folder", exc, "Check read permissions for this folder.")
+
+    for child in children:
+        if child.is_dir():
+            entries.append({"name": f"{child.name}/", "value": str(child.resolve())})
+    return entries
 
 
 def write_ini_atomically(parser: configparser.ConfigParser, path: str) -> None:
@@ -921,6 +1006,27 @@ async def list_remotes():
 @app.get("/list-remote-buckets/{remote_name}")
 async def list_remote_buckets(remote_name: str):
     try:
+        parser = configparser.ConfigParser()
+        if os.path.exists(RCLONE_CONF):
+            parser.read(RCLONE_CONF)
+
+        if not parser.has_section(remote_name):
+            raise HTTPException(status_code=404, detail="Remote not found.")
+
+        if parser.get(remote_name, "type", fallback="") == "local":
+            local_path_raw = parser.get(remote_name, "oci_migrator_local_path", fallback="")
+            if not local_path_raw:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Local remote is missing its managed path. Recreate the remote.",
+                )
+            local_path = Path(local_path_raw).expanduser().resolve()
+            return {
+                "remote_type": "local",
+                "base_path": str(local_path),
+                "buckets": list_local_source_entries(local_path),
+            }
+
         command = ["rclone", "lsf", f"{remote_name}:", "--max-depth", "1"]
         result = subprocess.run(command, capture_output=True, text=True, timeout=10)
         if result.returncode != 0:
@@ -987,9 +1093,13 @@ async def save_remote(
     gcp_object_acl: str = Form(""),
     gcp_bucket_acl: str = Form(""),
     gcp_location: str = Form(""),
+    local_mode: str = Form("server_folder"),
+    local_folder_name: str = Form(""),
+    local_mount_path: str = Form(""),
     gcp_file: Optional[UploadFile] = File(None)
 ):
     parser = configparser.ConfigParser()
+    saved_local_path = None
     try:
         with RCLONE_LOCK:
             if os.path.exists(RCLONE_CONF):
@@ -1021,7 +1131,21 @@ async def save_remote(
                     os.chmod(file_path, 0o600)
                     parser.set(name, 'service_account_file', file_path)
             elif provider == 'local':
+                if local_mode not in {"server_folder", "mounted_share"}:
+                    raise HTTPException(status_code=400, detail="Unsupported local source type.")
+
+                if local_mode == "server_folder":
+                    local_path = create_server_local_folder(local_folder_name or name)
+                    display_name = normalize_local_folder_name(local_folder_name or name)
+                else:
+                    local_path = validate_external_mount_path(local_mount_path)
+                    display_name = local_path.name or str(local_path)
+
                 parser.set(name, 'type', 'local')
+                parser.set(name, 'oci_migrator_local_mode', local_mode)
+                parser.set(name, 'oci_migrator_local_path', str(local_path))
+                parser.set(name, 'oci_migrator_local_display_name', display_name)
+                saved_local_path = str(local_path)
             else:
                 raise HTTPException(status_code=400, detail="Unsupported remote provider")
 
@@ -1031,7 +1155,10 @@ async def save_remote(
     except Exception as e:
         raise_operation_error(500, "Save rclone remote", e, "Check that the rclone config directory is writable.")
         
-    return {"message": "Remote saved successfully"}
+    response = {"message": "Remote saved successfully"}
+    if saved_local_path:
+        response["local_path"] = saved_local_path
+    return response
 
 # NYTT: Ta bort Remote
 @app.delete("/delete-remote/{remote_name}")
