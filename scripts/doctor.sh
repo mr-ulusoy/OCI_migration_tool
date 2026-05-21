@@ -96,6 +96,7 @@ check_command npm "npm --version"
 check_command rclone "rclone version"
 check_command redis-server "redis-server --version"
 check_command curl "curl --version"
+check_command logrotate "logrotate --version"
 
 if [ -f "$ENV_FILE" ]; then
   ok "Env file exists: $ENV_FILE"
@@ -116,6 +117,17 @@ if [ -f "$ENV_FILE" ]; then
     ok "OCI_MIGRATOR_ADMIN_PASSWORD_HASH is configured"
   else
     fail_check "OCI_MIGRATOR_ADMIN_PASSWORD_HASH is missing"
+  fi
+
+  job_log_dir="$(read_env_value OCI_MIGRATOR_JOB_LOG_DIR || true)"
+  if [ -n "$job_log_dir" ]; then
+    if [ -d "$job_log_dir" ]; then
+      ok "Job log directory exists: $job_log_dir"
+    else
+      fail_check "Job log directory is missing: $job_log_dir"
+    fi
+  else
+    warn "OCI_MIGRATOR_JOB_LOG_DIR is not configured"
   fi
 else
   fail_check "Env file missing: $ENV_FILE"

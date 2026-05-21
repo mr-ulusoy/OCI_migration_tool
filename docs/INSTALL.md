@@ -39,9 +39,13 @@ cd OCI_migration_tool
 ./install.sh --public-host migrator.example.com --open-firewall
 ./install.sh --api-port 8001
 ./install.sh --local-data-root /srv/oci-migrator/local
+./install.sh --job-log-dir /var/log/oci-migrator/jobs
+./install.sh --job-log-max-size 10M
 ./install.sh --local-share-helper /usr/local/sbin/oci-migrator-local-share
 ./install.sh --stop-legacy-processes
 ```
+
+`--job-log-max-size` controls the `maxsize` value written to logrotate. The default is `10M`.
 
 ## Optional SMB Sharing
 

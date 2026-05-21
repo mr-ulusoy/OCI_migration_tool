@@ -182,6 +182,8 @@ export default function App() {
   const [vmTasks, setVmTasks] = useState({});
   const [activeLogJob, setActiveLogJob] = useState(null);
   const [liveLogData, setLiveLogData] = useState("");
+  const [activeRunLogId, setActiveRunLogId] = useState(null);
+  const [runLogData, setRunLogData] = useState("");
 
   // Common UI State
   const [keyInputMode, setKeyInputMode] = useState('upload');
@@ -263,6 +265,25 @@ export default function App() {
     setExportingConfig(false);
   };
 
+  const handleDownloadRunLog = async (run) => {
+    try {
+      const res = await api.get(`/job-history/${encodeURIComponent(run.id)}/log/download`, { responseType: 'blob' });
+      const blobUrl = window.URL.createObjectURL(new Blob([res.data], { type: 'text/plain' }));
+      const link = document.createElement('a');
+      const disposition = res.headers['content-disposition'] || '';
+      const fileNameMatch = disposition.match(/filename="?([^"]+)"?/);
+      const fallbackName = `${run.job_name || run.kind || 'job'}-${run.id}.log`.replace(/[^A-Za-z0-9._-]/g, '_');
+      link.href = blobUrl;
+      link.download = fileNameMatch?.[1] || fallbackName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      showError('Failed to download job log', err);
+    }
+  };
+
   useEffect(() => {
     if (!isAuthenticated) return;
     fetchProfiles();
@@ -291,6 +312,28 @@ export default function App() {
     return () => clearInterval(interval);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeLogJob]);
+
+  useEffect(() => {
+    if (!activeRunLogId) {
+      setRunLogData("");
+      return;
+    }
+
+    const fetchRunLog = async () => {
+      try {
+        const res = await api.get(`/job-history/${encodeURIComponent(activeRunLogId)}/log`);
+        setRunLogData(res.data.log || "No log output yet.");
+        fetchJobRuns();
+      } catch (err) {
+        setRunLogData(formatApiError(err, 'Failed to load job log.'));
+      }
+    };
+
+    fetchRunLog();
+    const interval = setInterval(fetchRunLog, 5000);
+    return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRunLogId, api]);
 
   useEffect(() => {
     const taskIds = Object.keys(vmTasks);
@@ -1032,20 +1075,54 @@ export default function App() {
                   </button>
                 </div>
                 <div className="divide-y divide-gray-100">
-                  {jobRuns.slice(0, 12).map(run => (
-                    <div key={run.id} className="p-4 flex items-start justify-between gap-4 text-left">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase ${runStatusClass(run.status)}`}>{run.status}</span>
-                          <span className="font-semibold text-sm text-gray-800 truncate">{run.job_name || run.kind}</span>
-                          <span className="text-[11px] text-gray-400 uppercase">{run.trigger || 'manual'}</span>
+                  {jobRuns.slice(0, 12).map(run => {
+                    const isDataSyncRun = run.kind === 'data_sync';
+                    return (
+                      <div key={run.id}>
+                        <div className="p-4 flex items-start justify-between gap-4 text-left">
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase ${runStatusClass(run.status)}`}>{run.status}</span>
+                              <span className="font-semibold text-sm text-gray-800 truncate">{run.job_name || run.kind}</span>
+                              <span className="text-[11px] text-gray-400 uppercase">{run.trigger || 'manual'}</span>
+                            </div>
+                            <div className="mt-1 text-xs text-gray-500 truncate">{run.error || run.details || `${run.source || ''} -> ${run.destination || ''}`}</div>
+                            <div className="mt-1 text-[10px] text-gray-400 font-mono truncate">{run.id}</div>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            {isDataSyncRun && (
+                              <>
+                                <button
+                                  type="button"
+                                  onClick={() => setActiveRunLogId(activeRunLogId === run.id ? null : run.id)}
+                                  className={`p-1.5 border rounded-md ${activeRunLogId === run.id ? 'bg-gray-100 text-gray-800 border-gray-300' : 'text-gray-500 border-gray-200 hover:text-[#9c3029] hover:bg-gray-50'}`}
+                                  title="View job log"
+                                >
+                                  <Terminal size={14} />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDownloadRunLog(run)}
+                                  className="p-1.5 border border-gray-200 rounded-md text-gray-500 hover:text-[#9c3029] hover:bg-gray-50"
+                                  title="Download job log"
+                                >
+                                  <Download size={14} />
+                                </button>
+                              </>
+                            )}
+                            <div className="text-[11px] text-gray-500 whitespace-nowrap">{formatTimestamp(run.updated_at || run.created_at)}</div>
+                          </div>
                         </div>
-                        <div className="mt-1 text-xs text-gray-500 truncate">{run.error || run.details || `${run.source || ''} -> ${run.destination || ''}`}</div>
-                        <div className="mt-1 text-[10px] text-gray-400 font-mono truncate">{run.id}</div>
+                        {activeRunLogId === run.id && (
+                          <div className="px-4 pb-4">
+                            <div className="bg-gray-900 border border-gray-800 rounded-md p-4 shadow-inner">
+                              <pre className="text-[11px] font-mono text-gray-300 h-44 overflow-y-auto text-left whitespace-pre-wrap">{runLogData || "Loading log..."}</pre>
+                            </div>
+                          </div>
+                        )}
                       </div>
-                      <div className="text-[11px] text-gray-500 whitespace-nowrap">{formatTimestamp(run.updated_at || run.created_at)}</div>
-                    </div>
-                  ))}
+                    );
+                  })}
                   {jobRuns.length === 0 && <div className="p-8 text-center text-sm text-gray-500">No run history yet.</div>}
                 </div>
               </div>

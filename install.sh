@@ -7,8 +7,18 @@ SERVICE_PREFIX="${SERVICE_PREFIX:-migrator}"
 API_HOST="${API_HOST:-0.0.0.0}"
 API_PORT="${API_PORT:-8000}"
 LOCAL_DATA_ROOT="${OCI_MIGRATOR_LOCAL_DATA_ROOT:-/var/lib/oci-migrator/local}"
+JOB_LOG_DIR="${OCI_MIGRATOR_JOB_LOG_DIR:-/var/log/oci-migrator/jobs}"
+JOB_LOG_MAX_SIZE="${OCI_MIGRATOR_JOB_LOG_MAX_SIZE:-10M}"
 LOCAL_SHARE_HELPER="${OCI_MIGRATOR_LOCAL_SHARE_HELPER:-/usr/local/sbin/oci-migrator-local-share}"
 LOCAL_SHARE_CONFIG="/etc/oci-migrator/local-share.conf"
+JOB_LOG_DIR_PROVIDED=0
+JOB_LOG_MAX_SIZE_PROVIDED=0
+if [ -n "${OCI_MIGRATOR_JOB_LOG_DIR:-}" ]; then
+  JOB_LOG_DIR_PROVIDED=1
+fi
+if [ -n "${OCI_MIGRATOR_JOB_LOG_MAX_SIZE:-}" ]; then
+  JOB_LOG_MAX_SIZE_PROVIDED=1
+fi
 CELERY_CONCURRENCY="${CELERY_CONCURRENCY:-2}"
 OPEN_FIREWALL="${OPEN_FIREWALL:-0}"
 STOP_LEGACY_PROCESSES="${STOP_LEGACY_PROCESSES:-0}"
@@ -60,6 +70,8 @@ Options:
   --run-user USER             Linux user that runs services. Default: current sudo user.
   --env-file PATH             Runtime env file. Default: ~/.oci-migrator.env for the run user.
   --local-data-root PATH      Managed server-local source folder root. Default: $LOCAL_DATA_ROOT
+  --job-log-dir PATH          Persistent rclone job log directory. Default: $JOB_LOG_DIR
+  --job-log-max-size SIZE     logrotate maxsize for job logs. Default: $JOB_LOG_MAX_SIZE
   --local-share-helper PATH   Root helper used by the UI for optional SMB shares. Default: $LOCAL_SHARE_HELPER
   --celery-concurrency N      Celery worker concurrency. Default: $CELERY_CONCURRENCY
   --open-firewall             Open local firewall ports with ufw/iptables when possible.
@@ -73,6 +85,7 @@ Options:
 
 Environment variables with the same names are also supported:
   PUBLIC_HOST, API_PORT, SERVICE_PREFIX, RUN_USER, OCI_MIGRATOR_LOCAL_DATA_ROOT,
+  OCI_MIGRATOR_JOB_LOG_DIR, OCI_MIGRATOR_JOB_LOG_MAX_SIZE,
   OCI_MIGRATOR_LOCAL_SHARE_HELPER, OCI_MIGRATOR_ENV_FILE, OPEN_FIREWALL, STOP_LEGACY_PROCESSES,
   CELERY_CONCURRENCY, PRINT_TOKEN,
   OCI_MIGRATOR_ADMIN_USERNAME, OCI_MIGRATOR_ADMIN_PASSWORD,
@@ -109,6 +122,16 @@ parse_args() {
         ;;
       --local-data-root)
         LOCAL_DATA_ROOT="$2"
+        shift 2
+        ;;
+      --job-log-dir)
+        JOB_LOG_DIR="$2"
+        JOB_LOG_DIR_PROVIDED=1
+        shift 2
+        ;;
+      --job-log-max-size)
+        JOB_LOG_MAX_SIZE="$2"
+        JOB_LOG_MAX_SIZE_PROVIDED=1
         shift 2
         ;;
       --local-share-helper)
@@ -176,6 +199,20 @@ initialize_runtime_paths() {
   [ -n "$USER_HOME" ] || fail "Unable to find home directory for run user: $RUN_USER"
 
   ENV_FILE="${OCI_MIGRATOR_ENV_FILE:-$USER_HOME/.oci-migrator.env}"
+}
+
+validate_job_log_settings() {
+  case "$JOB_LOG_DIR" in
+    /*)
+      ;;
+    *)
+      fail "--job-log-dir must be an absolute path."
+      ;;
+  esac
+
+  if ! [[ "$JOB_LOG_MAX_SIZE" =~ ^[0-9]+[KkMmGg]?$ ]]; then
+    fail "--job-log-max-size must look like 10M, 512K, or 1G."
+  fi
 }
 
 run_as_user() {
@@ -314,6 +351,7 @@ install_system_dependencies() {
     curl \
     gnupg \
     iptables \
+    logrotate \
     openssl \
     python3 \
     python3-pip \
@@ -384,6 +422,8 @@ ensure_env_file() {
       printf 'OCI_MIGRATOR_LOG_LEVEL=INFO\n'
       printf 'OCI_MIGRATOR_RCLONE_TIMEOUT_SECONDS=7200\n'
       printf 'OCI_MIGRATOR_LOCAL_DATA_ROOT=%s\n' "$LOCAL_DATA_ROOT"
+      printf 'OCI_MIGRATOR_JOB_LOG_DIR=%s\n' "$JOB_LOG_DIR"
+      printf 'OCI_MIGRATOR_JOB_LOG_MAX_SIZE=%s\n' "$JOB_LOG_MAX_SIZE"
       printf 'OCI_MIGRATOR_LOCAL_SHARE_HELPER=%s\n' "$LOCAL_SHARE_HELPER"
       printf 'OCI_MIGRATOR_LOCAL_SHARE_TIMEOUT_SECONDS=300\n'
     } > "$temp_file"
@@ -400,11 +440,19 @@ ensure_env_file() {
     grep -q '^OCI_MIGRATOR_LOG_LEVEL=' "$ENV_FILE" || printf 'OCI_MIGRATOR_LOG_LEVEL=INFO\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_RCLONE_TIMEOUT_SECONDS=' "$ENV_FILE" || printf 'OCI_MIGRATOR_RCLONE_TIMEOUT_SECONDS=7200\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_LOCAL_DATA_ROOT=' "$ENV_FILE" || printf 'OCI_MIGRATOR_LOCAL_DATA_ROOT=%s\n' "$LOCAL_DATA_ROOT" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_JOB_LOG_DIR=' "$ENV_FILE" || printf 'OCI_MIGRATOR_JOB_LOG_DIR=%s\n' "$JOB_LOG_DIR" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_JOB_LOG_MAX_SIZE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_JOB_LOG_MAX_SIZE=%s\n' "$JOB_LOG_MAX_SIZE" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_LOCAL_SHARE_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_LOCAL_SHARE_HELPER=%s\n' "$LOCAL_SHARE_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_LOCAL_SHARE_TIMEOUT_SECONDS=' "$ENV_FILE" || printf 'OCI_MIGRATOR_LOCAL_SHARE_TIMEOUT_SECONDS=300\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
 
     if [ "$ADMIN_USERNAME_PROVIDED" = "1" ] || ! grep -q '^OCI_MIGRATOR_ADMIN_USERNAME=' "$ENV_FILE"; then
       set_env_value "OCI_MIGRATOR_ADMIN_USERNAME" "$ADMIN_USERNAME"
+    fi
+    if [ "$JOB_LOG_DIR_PROVIDED" = "1" ]; then
+      set_env_value "OCI_MIGRATOR_JOB_LOG_DIR" "$JOB_LOG_DIR"
+    fi
+    if [ "$JOB_LOG_MAX_SIZE_PROVIDED" = "1" ]; then
+      set_env_value "OCI_MIGRATOR_JOB_LOG_MAX_SIZE" "$JOB_LOG_MAX_SIZE"
     fi
     grep -q '^OCI_MIGRATOR_SESSION_TTL_SECONDS=' "$ENV_FILE" || set_env_value "OCI_MIGRATOR_SESSION_TTL_SECONDS" "43200"
 
@@ -425,9 +473,55 @@ ensure_env_file() {
   fi
 }
 
+load_job_log_settings_from_env() {
+  [ -f "$ENV_FILE" ] || return 0
+
+  local configured_job_log_dir configured_job_log_max_size
+  configured_job_log_dir="$(grep '^OCI_MIGRATOR_JOB_LOG_DIR=' "$ENV_FILE" | tail -1 | cut -d= -f2- || true)"
+  configured_job_log_max_size="$(grep '^OCI_MIGRATOR_JOB_LOG_MAX_SIZE=' "$ENV_FILE" | tail -1 | cut -d= -f2- || true)"
+
+  if [ "$JOB_LOG_DIR_PROVIDED" = "0" ] && [ -n "$configured_job_log_dir" ]; then
+    JOB_LOG_DIR="$configured_job_log_dir"
+  fi
+  if [ "$JOB_LOG_MAX_SIZE_PROVIDED" = "0" ] && [ -n "$configured_job_log_max_size" ]; then
+    JOB_LOG_MAX_SIZE="$configured_job_log_max_size"
+  fi
+}
+
 ensure_local_data_root() {
   log "Preparing managed local data root"
   "${SUDO[@]}" install -d -o "$RUN_USER" -g "$RUN_USER" -m 775 "$LOCAL_DATA_ROOT"
+}
+
+ensure_job_log_dir() {
+  log "Preparing persistent job log directory"
+  "${SUDO[@]}" install -d -o "$RUN_USER" -g "$RUN_USER" -m 750 "$JOB_LOG_DIR"
+}
+
+install_job_logrotate_config() {
+  log "Installing job log rotation"
+
+  local logrotate_file temp_file
+  logrotate_file="/etc/logrotate.d/$SERVICE_PREFIX-job-logs"
+  temp_file="$(mktemp)"
+  {
+    printf '%s/*.log {\n' "$JOB_LOG_DIR"
+    printf '    daily\n'
+    printf '    rotate 14\n'
+    printf '    maxsize %s\n' "$JOB_LOG_MAX_SIZE"
+    printf '    compress\n'
+    printf '    delaycompress\n'
+    printf '    missingok\n'
+    printf '    notifempty\n'
+    printf '    copytruncate\n'
+    printf '    su %s %s\n' "$RUN_USER" "$RUN_USER"
+    printf '    create 0640 %s %s\n' "$RUN_USER" "$RUN_USER"
+    printf '}\n'
+  } > "$temp_file"
+
+  "${SUDO[@]}" logrotate -d "$temp_file" >/dev/null
+  "${SUDO[@]}" install -o root -g root -m 644 "$temp_file" "$logrotate_file"
+  rm -f "$temp_file"
 }
 
 install_local_share_helper() {
@@ -654,6 +748,7 @@ print_summary() {
   printf 'App:      http://%s:%s\n' "${PUBLIC_HOST:-localhost}" "$API_PORT"
   printf 'API:      http://%s:%s\n' "${PUBLIC_HOST:-localhost}" "$API_PORT"
   printf 'Env file: %s\n' "$ENV_FILE"
+  printf 'Job logs: %s (logrotate maxsize %s)\n' "$JOB_LOG_DIR" "$JOB_LOG_MAX_SIZE"
   printf 'Admin username: %s\n' "$ADMIN_USERNAME"
   if [ -n "$GENERATED_ADMIN_PASSWORD" ]; then
     printf 'Generated admin password: %s\n' "$GENERATED_ADMIN_PASSWORD"
@@ -682,8 +777,13 @@ main() {
   load_admin_password_input
   install_node
   install_rclone
+  validate_job_log_settings
   ensure_env_file
+  load_job_log_settings_from_env
+  validate_job_log_settings
   ensure_local_data_root
+  ensure_job_log_dir
+  install_job_logrotate_config
   install_local_share_helper
   install_backend
   install_frontend

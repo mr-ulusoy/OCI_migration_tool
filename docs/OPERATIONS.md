@@ -47,6 +47,29 @@ Authenticated API access:
 curl -H "X-API-Token: <token>" http://127.0.0.1:8000/job-history
 ```
 
+Each rclone run writes a persistent log file under:
+
+```text
+/var/log/oci-migrator/jobs/
+```
+
+In the Job Dashboard, use `Recent Runs` -> terminal button to view the log tail, or the download button to download the full log file for that run.
+
+Log rotation is installed at:
+
+```text
+/etc/logrotate.d/migrator-job-logs
+```
+
+Default policy:
+
+- daily rotation
+- keep 14 rotated logs
+- compress old logs
+- `maxsize 10M`
+
+Change the size with `./install.sh --job-log-max-size 25M` or edit the logrotate file directly.
+
 ## Runtime Config Export
 
 After logging in, use the download button in the top bar to export a zip backup. It includes the runtime env file, OCI config, job definitions/history, rclone config, and referenced key files when present.
@@ -79,9 +102,10 @@ The SMB password is not stored in the app config. Samba stores its own password 
 ~/.oci/job_history.json
 ~/.config/rclone/rclone.conf
 /var/lib/oci-migrator/local
+/var/log/oci-migrator/jobs
+/etc/logrotate.d/migrator-job-logs
 /usr/local/sbin/oci-migrator-local-share
 /etc/oci-migrator/local-share.conf
-/tmp/rclone_<job>.log
 ```
 
 ## Admin Password

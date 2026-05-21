@@ -6,6 +6,7 @@ import time
 from datetime import datetime, timedelta
 from celery import Celery
 import oci
+from job_logs import ensure_job_log_dir, job_log_path, tail_file
 from job_store import update_job_run
 
 logging.basicConfig(level=os.getenv("OCI_MIGRATOR_LOG_LEVEL", "INFO"))
@@ -26,13 +27,6 @@ def rclone_timeout_seconds() -> int:
     except ValueError:
         return 7200
 
-
-def tail_file(path: str, max_lines: int = 12) -> str:
-    try:
-        with open(path, "r", encoding="utf-8", errors="replace") as handle:
-            return "".join(handle.readlines()[-max_lines:]).strip()
-    except OSError:
-        return ""
 
 celery_app = Celery('tasks', broker=redis_url(), backend=redis_url())
 
@@ -112,7 +106,8 @@ def migrate_single_vm(self, src_p, dst_p, vm_id, dst_comp, bucket):
 def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", transfers=4, checkers=8, buffer_size="16M", job_name="default", run_id=None, trigger="manual"):
     run_id = run_id or self.request.id
     dest = f"{dest_profile}_rclone:{dest_bucket}"
-    log_file = f"/tmp/rclone_{job_name}.log"
+    ensure_job_log_dir()
+    log_file = job_log_path(job_name, run_id)
     update_job_run(
         run_id,
         kind="data_sync",
@@ -121,20 +116,22 @@ def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", trans
         source=source,
         destination=dest,
         details="rclone is running.",
-        log_file=log_file,
+        log_file=str(log_file),
         started_at=datetime.utcnow().isoformat() + "Z",
     )
     
     # Rensa gammal logg om den finns för att börja om på ny kula
-    if os.path.exists(log_file):
-        os.remove(log_file)
+    if log_file.exists():
+        log_file.unlink()
+    log_file.touch(mode=0o640)
+    os.chmod(log_file, 0o640)
 
     cmd = [
         "rclone", mode, source, dest,
         "--transfers", str(transfers), 
         "--checkers", str(checkers), 
         "--buffer-size", buffer_size,
-        "--log-file", log_file,          # Skriver loggen till fil för backend-läsning
+        "--log-file", str(log_file),     # Skriver loggen till fil för backend-läsning
         "--log-level", "INFO",
         "--stats", "2s",                 # Uppdaterar hastighet/procent varannan sekund
         "--stats-one-line",
@@ -171,7 +168,7 @@ def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", trans
         return {"status": "timeout", "code": None, "timeout_seconds": timeout}
 
     status = "success" if process.returncode == 0 else "failed"
-    log_tail = tail_file(log_file)
+    log_tail = tail_file(log_file, max_lines=12)
     details = "rclone completed successfully." if process.returncode == 0 else f"rclone failed with exit code {process.returncode}."
     update_job_run(
         run_id,

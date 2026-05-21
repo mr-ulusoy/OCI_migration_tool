@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import List, Optional
+from job_logs import JOB_LOG_DIR, job_log_path, legacy_job_log_path, resolve_readable_log_path, tail_file
 from job_store import JOB_HISTORY_FILE, get_job_run, list_job_runs, upsert_job_run
 from worker import migrate_single_vm, rclone_sync_task
 from celery.result import AsyncResult 
@@ -847,6 +848,7 @@ async def health():
     rclone_config_exists = os.path.isfile(RCLONE_CONF)
     rclone_installed = bool(shutil.which("rclone"))
     frontend_build_exists = (FRONTEND_DIST_DIR / "index.html").is_file()
+    job_log_dir_exists = JOB_LOG_DIR.is_dir()
 
     checks = {
         "admin_password": health_check_item(
@@ -872,6 +874,10 @@ async def health():
         "frontend_build": health_check_item(
             "ok" if frontend_build_exists else "warn",
             "Frontend build is present." if frontend_build_exists else "Frontend build not found. Run npm run build.",
+        ),
+        "job_log_dir": health_check_item(
+            "ok" if job_log_dir_exists else "warn",
+            f"Job log directory exists: {JOB_LOG_DIR}" if job_log_dir_exists else f"Job log directory does not exist yet: {JOB_LOG_DIR}",
         ),
     }
 
@@ -910,6 +916,62 @@ async def job_history_item(run_id: str):
     if not run:
         raise HTTPException(status_code=404, detail="Job run not found.")
     return run
+
+
+def log_path_for_run(run: dict) -> Path | None:
+    configured_path = resolve_readable_log_path(str(run.get("log_file", "")))
+    if configured_path:
+        return configured_path
+
+    job_name = str(run.get("job_name") or run.get("kind") or "default")
+    run_id = str(run.get("id") or "")
+    fallback_path = job_log_path(job_name, run_id)
+    if fallback_path.exists():
+        return fallback_path
+
+    legacy_path = legacy_job_log_path(job_name)
+    if legacy_path.exists():
+        return legacy_path
+
+    return configured_path or fallback_path
+
+
+def job_run_log_payload(run: dict, max_lines: int = 500) -> dict:
+    path = log_path_for_run(run)
+    if not path or not path.exists():
+        return {
+            "log": "Waiting for rclone to start reporting...",
+            "exists": False,
+            "log_file": str(path) if path else "",
+        }
+
+    return {
+        "log": tail_file(path, max_lines=max_lines),
+        "exists": True,
+        "log_file": str(path),
+    }
+
+
+@app.get("/job-history/{run_id}/log")
+async def job_history_log(run_id: str, lines: int = Query(default=500, ge=20, le=2000)):
+    run = get_job_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Job run not found.")
+    return job_run_log_payload(run, max_lines=lines)
+
+
+@app.get("/job-history/{run_id}/log/download")
+async def download_job_history_log(run_id: str):
+    run = get_job_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Job run not found.")
+
+    path = log_path_for_run(run)
+    if not path or not path.exists():
+        raise HTTPException(status_code=404, detail="Job log file not found yet.")
+
+    file_name = f"{normalize_job_name(str(run.get('job_name') or run.get('kind') or 'job'))}_{normalize_job_name(run_id)}.log"
+    return FileResponse(path, media_type="text/plain", filename=file_name)
 
 
 @app.get("/runtime-config/export")
@@ -1113,17 +1175,22 @@ async def delete_job(job_name: str):
 # --- 3. Live Logs ---
 @app.get("/job-log/{job_name}")
 async def get_job_log(job_name: str):
-    log_file = f"/tmp/rclone_{normalize_job_name(job_name)}.log"
-    if not os.path.exists(log_file):
-        return {"log": "Waiting for Rclone to start reporting..."}
-    
-    try:
-        with open(log_file, "r") as f:
-            lines = f.readlines()
-            last_lines = lines[-15:] if len(lines) > 15 else lines
-            return {"log": "".join(last_lines)}
-    except Exception as e:
-        return {"log": f"Error reading log: {str(e)}"}
+    latest_run = next(
+        (
+            run
+            for run in list_job_runs(300)
+            if run.get("kind") == "data_sync" and run.get("job_name") == job_name
+        ),
+        None,
+    )
+    if latest_run:
+        return job_run_log_payload(latest_run, max_lines=500)
+
+    legacy_path = legacy_job_log_path(job_name)
+    if not legacy_path.exists():
+        return {"log": "Waiting for rclone to start reporting...", "exists": False, "log_file": str(legacy_path)}
+
+    return {"log": tail_file(legacy_path, max_lines=500), "exists": True, "log_file": str(legacy_path)}
 
 # --- 4. Rclone Remotes & Buckets ---
 @app.get("/list-remotes")
@@ -1198,7 +1265,7 @@ async def start_sync_manual(job: DataSyncJob):
             "source": job.source_remote,
             "destination": destination,
             "details": "Queued for worker.",
-            "log_file": f"/tmp/rclone_{safe_job_name}.log",
+            "log_file": str(job_log_path(safe_job_name, run_id)),
         }
     )
     try:

@@ -3,6 +3,7 @@ import os
 import re
 import uuid
 from datetime import datetime
+from job_logs import job_log_path
 from job_store import upsert_job_run
 from worker import rclone_sync_task
 
@@ -101,7 +102,7 @@ def main():
                             "source": job["source_remote"],
                             "destination": destination,
                             "details": "Queued by scheduler.",
-                            "log_file": f"/tmp/rclone_{safe_job_name}.log",
+                            "log_file": str(job_log_path(safe_job_name, run_id)),
                         }
                     )
                     try:
