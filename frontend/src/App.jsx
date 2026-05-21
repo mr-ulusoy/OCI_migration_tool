@@ -1252,66 +1252,89 @@ export default function App() {
                   <span>{jobLogSettings?.logrotate_file || '/etc/logrotate.d/migrator-job-logs'}</span>
                 </div>
               </form>
-              <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-                {jobs.map(job => {
-                  const latestRun = latestRunByJob[job.name];
-                  const latestMessage = cleanJobMessage(latestRun?.error || latestRun?.details || '');
-                  const scheduleText = (() => {
-                    const schedule = job.schedule || {};
-                    if (schedule.frequency === 'none') return 'manual';
-                    if (schedule.frequency === 'weekly') return `weekly ${schedule.day_of_week || 'monday'} @ ${schedule.time || '02:00'}`;
-                    if (schedule.frequency === 'monthly') return `monthly day ${schedule.day_of_month || '1'} @ ${schedule.time || '02:00'}`;
-                    return `${schedule.frequency || 'manual'} @ ${schedule.time || '02:00'}`;
-                  })();
+              <div className="bg-white border border-gray-200 rounded-md shadow-sm overflow-hidden">
+                <div className="hidden xl:grid grid-cols-[minmax(150px,1fr)_minmax(230px,1.5fr)_minmax(170px,1fr)_minmax(150px,0.9fr)_80px_minmax(190px,1.1fr)_170px] gap-4 px-4 py-3 bg-gray-50 border-b border-gray-100 text-[10px] uppercase font-bold tracking-wider text-gray-400">
+                  <div>Job</div>
+                  <div>Source</div>
+                  <div>Destination</div>
+                  <div>Schedule</div>
+                  <div>Mode</div>
+                  <div>Last Run</div>
+                  <div className="text-right">Actions</div>
+                </div>
+                <div className="divide-y divide-gray-100">
+                  {jobs.map(job => {
+                    const latestRun = latestRunByJob[job.name];
+                    const latestMessage = cleanJobMessage(latestRun?.error || latestRun?.details || '');
+                    const scheduleText = (() => {
+                      const schedule = job.schedule || {};
+                      if (schedule.frequency === 'none') return 'manual';
+                      if (schedule.frequency === 'weekly') return `weekly ${schedule.day_of_week || 'monday'} @ ${schedule.time || '02:00'}`;
+                      if (schedule.frequency === 'monthly') return `monthly day ${schedule.day_of_month || '1'} @ ${schedule.time || '02:00'}`;
+                      return `${schedule.frequency || 'manual'} @ ${schedule.time || '02:00'}`;
+                    })();
+                    const destination = `${job.dest_profile || ''}${job.dest_profile ? ':' : ''}${job.dest_bucket || ''}`;
 
-                  return (
-                    <div key={job.name} className="flex flex-col gap-2">
-                      <div className="bg-white border border-gray-200 p-3 rounded-md shadow-sm">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex items-start gap-3 text-left min-w-0">
-                            <div className="bg-gray-50 border border-gray-100 p-2 rounded-md shrink-0"><RefreshCw className="text-[#9c3029]" size={16} /></div>
+                    return (
+                      <div key={job.name}>
+                        <div className="grid grid-cols-1 xl:grid-cols-[minmax(150px,1fr)_minmax(230px,1.5fr)_minmax(170px,1fr)_minmax(150px,0.9fr)_80px_minmax(190px,1.1fr)_170px] gap-3 xl:gap-4 items-center p-4 text-left">
+                          <div className="flex items-start gap-3 min-w-0">
+                            <RefreshCw className="text-[#9c3029] mt-0.5 shrink-0" size={16} />
                             <div className="min-w-0">
-                              <div className="flex items-center gap-2 min-w-0">
-                                <h3 className="font-bold text-sm text-gray-800 truncate">{job.name}</h3>
-                                {latestRun && (
-                                  <span className={`text-[9px] px-2 py-0.5 rounded-full border font-bold uppercase shrink-0 ${runStatusClass(latestRun.status)}`}>
-                                    {latestRun.status}
-                                  </span>
-                                )}
-                              </div>
-                              <div className="flex items-center gap-2 text-[11px] text-gray-500 font-mono mt-1 min-w-0">
-                                <span className="truncate" title={job.source_remote}>{job.source_remote}</span>
-                                <ArrowRight size={10} className="text-gray-400 shrink-0" />
-                                <span className="text-gray-700 font-semibold truncate" title={job.dest_bucket}>{job.dest_bucket}</span>
-                              </div>
-                              <div className="mt-2 text-[10px] text-gray-500 uppercase font-bold tracking-wider flex gap-3">
-                                <span className="flex items-center gap-1"><Clock size={11}/> {scheduleText}</span>
-                                <span>{job.sync_mode || 'copy'}</span>
-                              </div>
-                              {latestRun && (
-                                <div className="mt-1 text-[11px] text-gray-500 truncate max-w-xl">
-                                  {latestMessage || formatTimestamp(latestRun.updated_at)}
-                                </div>
-                              )}
+                              <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Job</div>
+                              <h3 className="font-bold text-sm text-gray-800 truncate">{job.name}</h3>
                             </div>
                           </div>
-                          <div className="flex gap-1 shrink-0">
+                          <div className="min-w-0 font-mono">
+                            <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5 font-sans">Source</div>
+                            <div className="text-xs text-gray-600 truncate" title={job.source_remote}>{job.source_remote}</div>
+                          </div>
+                          <div className="min-w-0 font-mono">
+                            <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5 font-sans">Destination</div>
+                            <div className="text-xs text-gray-700 font-semibold truncate" title={destination}>{destination}</div>
+                          </div>
+                          <div className="min-w-0">
+                            <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Schedule</div>
+                            <div className="text-xs text-gray-600 truncate flex items-center gap-1" title={scheduleText}><Clock size={12} className="shrink-0" />{scheduleText}</div>
+                          </div>
+                          <div>
+                            <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Mode</div>
+                            <span className="text-[10px] px-2 py-0.5 rounded-full border border-gray-200 bg-gray-50 text-gray-600 font-bold uppercase">{job.sync_mode || 'copy'}</span>
+                          </div>
+                          <div className="min-w-0">
+                            <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Last Run</div>
+                            {latestRun ? (
+                              <div className="min-w-0">
+                                <span className={`text-[9px] px-2 py-0.5 rounded-full border font-bold uppercase ${runStatusClass(latestRun.status)}`}>
+                                  {latestRun.status}
+                                </span>
+                                <div className="mt-1 text-[11px] text-gray-500 truncate" title={latestMessage || formatTimestamp(latestRun.updated_at)}>
+                                  {latestMessage || formatTimestamp(latestRun.updated_at)}
+                                </div>
+                              </div>
+                            ) : (
+                              <span className="text-xs text-gray-400">Never</span>
+                            )}
+                          </div>
+                          <div className="flex gap-1 xl:justify-end">
                             <button onClick={() => handleEditJob(job)} className="p-1.5 bg-white border border-gray-200 text-gray-500 rounded-md hover:text-[#9c3029] hover:bg-gray-50" title="Edit job"><Edit size={14}/></button>
                             <button onClick={() => activeLogJob === job.name ? setActiveLogJob(null) : setActiveLogJob(job.name)} className={`p-1.5 rounded-md transition-colors ${activeLogJob === job.name ? 'bg-gray-100 text-gray-800 border border-gray-300' : 'bg-white border border-gray-200 text-gray-500 hover:bg-gray-50'}`} title="View latest log"><Terminal size={14}/></button>
                             <button onClick={() => handleRunManual(job)} className="px-2.5 py-1.5 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#a63d2e]">Run</button>
                             <button onClick={() => handleDeleteJob(job.name)} className="p-1.5 bg-white border border-gray-200 text-gray-500 rounded-md hover:text-[#9c3029] hover:bg-gray-50" title="Delete job"><Trash2 size={14}/></button>
                           </div>
                         </div>
+                        {activeLogJob === job.name && (
+                          <div className="px-4 pb-4">
+                            <div className="bg-gray-900 border border-gray-800 rounded-md p-4 relative animate-in slide-in-from-top-2 shadow-inner">
+                              <pre className="text-[11px] font-mono text-gray-300 h-32 overflow-y-auto text-left">{liveLogData || "Awaiting process..."}</pre>
+                            </div>
+                          </div>
+                        )}
                       </div>
-                      {activeLogJob === job.name && (
-                        <div className="bg-gray-900 border border-gray-800 rounded-md p-4 relative animate-in slide-in-from-top-2 shadow-inner">
-                          <pre className="text-[11px] font-mono text-gray-300 h-32 overflow-y-auto text-left">{liveLogData || "Awaiting process..."}</pre>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-                {jobs.length === 0 && <div className="text-center p-12 bg-white border border-gray-200 rounded-md text-gray-500 shadow-sm">No jobs saved.</div>}
+                    );
+                  })}
+                  {jobs.length === 0 && <div className="text-center p-12 text-gray-500">No jobs saved.</div>}
+                </div>
               </div>
               <div className="bg-white border border-gray-200 rounded-md shadow-sm overflow-hidden">
                 <div className="flex items-center justify-between p-4 border-b border-gray-100">
