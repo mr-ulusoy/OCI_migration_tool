@@ -1516,7 +1516,7 @@ export default function App() {
 
           {/* VIEW: VM EXPLORER */}
           {view === 'explorer' && (
-             <div className="space-y-6 animate-in slide-in-from-right-4 max-w-7xl mx-auto">
+             <div className="space-y-6 animate-in slide-in-from-right-4 max-w-none">
                 <div className="bg-white p-4 rounded-md border border-gray-200 shadow-sm">
                   <div className="grid grid-cols-1 lg:grid-cols-[minmax(220px,320px)_minmax(240px,420px)_1fr] gap-4 items-end">
                     <div className="min-w-0">
@@ -1558,13 +1558,11 @@ export default function App() {
                   loading ? ( <div className="flex justify-center p-20"><Loader2 className="animate-spin text-gray-400" size={40} /></div>
                   ) : (
                     <div className="bg-white border border-gray-200 rounded-md shadow-sm overflow-hidden">
-                      <div className="hidden xl:grid grid-cols-[minmax(260px,1.7fr)_minmax(170px,1fr)_minmax(170px,1fr)_minmax(105px,0.65fr)_minmax(135px,0.8fr)_minmax(135px,0.8fr)_100px] gap-4 px-4 py-3 bg-gray-50 border-b border-gray-100 text-[10px] uppercase font-bold tracking-wider text-gray-400">
+                      <div className="hidden xl:grid grid-cols-[minmax(360px,1.7fr)_minmax(330px,1.35fr)_minmax(110px,0.55fr)_minmax(180px,0.8fr)_110px] gap-4 px-4 py-3 bg-gray-50 border-b border-gray-100 text-[10px] uppercase font-bold tracking-wider text-gray-400">
                         <div>VM</div>
-                        <div>OS</div>
-                        <div>Shape</div>
+                        <div>OS / Shape</div>
                         <div>OCPU/RAM</div>
-                        <div>Private IP</div>
-                        <div>Public IP</div>
+                        <div>IPs</div>
                         <div className="text-right">State</div>
                       </div>
                       <div className="divide-y divide-gray-100">
@@ -1581,12 +1579,12 @@ export default function App() {
                             <div
                               key={vm.id}
                               onClick={() => { if (!isMigrating) setSelectedVms(prev => prev.includes(vm.id) ? prev.filter(i => i !== vm.id) : [...prev, vm.id]); }}
-                              className={`grid grid-cols-1 xl:grid-cols-[minmax(260px,1.7fr)_minmax(170px,1fr)_minmax(170px,1fr)_minmax(105px,0.65fr)_minmax(135px,0.8fr)_minmax(135px,0.8fr)_100px] gap-3 xl:gap-4 items-center p-4 transition-colors ${isSelected ? 'bg-red-50' : 'bg-white hover:bg-gray-50'} ${isMigrating ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'}`}
+                              className={`grid grid-cols-1 xl:grid-cols-[minmax(360px,1.7fr)_minmax(330px,1.35fr)_minmax(110px,0.55fr)_minmax(180px,0.8fr)_110px] gap-3 xl:gap-4 items-start p-4 transition-colors ${isSelected ? 'bg-red-50' : 'bg-white hover:bg-gray-50'} ${isMigrating ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'}`}
                             >
                               <div className="flex items-start gap-3 min-w-0">
                                 <Cloud className={`mt-0.5 shrink-0 ${isSelected ? 'text-[#9c3029]' : 'text-gray-400'}`} size={18}/>
                                 <div className="min-w-0">
-                                  <h4 className="font-bold text-gray-800 truncate text-sm">{vm.name}</h4>
+                                  <h4 className="font-bold text-gray-800 text-sm leading-snug break-words">{vm.name}</h4>
                                   <p className="text-[10px] text-gray-500 font-mono mt-1 truncate">{vm.id}</p>
                                   {taskData && (
                                     <div className={`mt-2 text-[10px] uppercase font-bold tracking-wider truncate ${getStatusColor(taskData.status)}`}>
@@ -1596,25 +1594,35 @@ export default function App() {
                                   )}
                                 </div>
                               </div>
-                              <div className="min-w-0 text-left">
-                                <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">OS</div>
-                                <div className="text-xs text-gray-700 truncate" title={vm.os || 'Unknown'}>{vm.os || 'Unknown'}</div>
+                              <div className="min-w-0 text-left space-y-1">
+                                <div>
+                                  <div className="text-[9px] uppercase font-bold text-gray-400 mb-0.5">OS</div>
+                                  <div className="text-xs text-gray-700 leading-snug break-words" title={vm.os || 'Unknown'}>{vm.os || 'Unknown'}</div>
+                                </div>
+                                <div>
+                                  <div className="text-[9px] uppercase font-bold text-gray-400 mb-0.5">Shape</div>
+                                  <div className="text-xs text-gray-700 leading-snug break-words" title={vm.shape || 'Unknown'}>{vm.shape || 'Unknown'}</div>
+                                </div>
                               </div>
-                              <div className="min-w-0 text-left">
-                                <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Shape</div>
-                                <div className="text-xs text-gray-700 truncate" title={vm.shape || 'Unknown'}>{vm.shape || 'Unknown'}</div>
+                              <div className="text-left space-y-1">
+                                <div>
+                                  <div className="text-[9px] uppercase font-bold text-gray-400 mb-0.5">OCPU</div>
+                                  <div className="text-xs text-gray-700">{vm.ocpus ?? '-'}</div>
+                                </div>
+                                <div>
+                                  <div className="text-[9px] uppercase font-bold text-gray-400 mb-0.5">RAM</div>
+                                  <div className="text-xs text-gray-700">{vm.memory_gb ? `${vm.memory_gb} GB` : '-'}</div>
+                                </div>
                               </div>
-                              <div className="text-left">
-                                <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">OCPU/RAM</div>
-                                <div className="text-xs text-gray-700">{vm.ocpus ?? '-'} / {vm.memory_gb ? `${vm.memory_gb} GB` : '-'}</div>
-                              </div>
-                              <div className="min-w-0 text-left font-mono">
-                                <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5 font-sans">Private IP</div>
-                                <div className="text-xs text-gray-700 truncate" title={vm.private_ip || '-'}>{vm.private_ip || '-'}</div>
-                              </div>
-                              <div className="min-w-0 text-left font-mono">
-                                <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5 font-sans">Public IP</div>
-                                <div className="text-xs text-gray-700 truncate" title={vm.public_ip || '-'}>{vm.public_ip || '-'}</div>
+                              <div className="min-w-0 text-left font-mono space-y-1">
+                                <div>
+                                  <div className="text-[9px] uppercase font-bold text-gray-400 mb-0.5 font-sans">Private</div>
+                                  <div className="text-xs text-gray-700 truncate" title={vm.private_ip || '-'}>{vm.private_ip || '-'}</div>
+                                </div>
+                                <div>
+                                  <div className="text-[9px] uppercase font-bold text-gray-400 mb-0.5 font-sans">Public</div>
+                                  <div className="text-xs text-gray-700 truncate" title={vm.public_ip || '-'}>{vm.public_ip || '-'}</div>
+                                </div>
                               </div>
                               <div className="flex xl:justify-end">
                                 <span className={`text-[9px] px-2 py-0.5 rounded-full border font-bold uppercase ${stateClass}`}>
