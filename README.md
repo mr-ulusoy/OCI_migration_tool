@@ -56,6 +56,15 @@ Health endpoint:
 http://<server-ip-or-dns>:8000/health
 ```
 
+Monitoring endpoints for same-network pull monitoring:
+
+```text
+GET /monitoring/status
+GET /metrics
+```
+
+Both require an admin session or `X-API-Token`. See [Operations](docs/OPERATIONS.md#monitoring).
+
 ## Manual Install
 
 ```bash

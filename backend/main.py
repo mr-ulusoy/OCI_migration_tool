@@ -22,7 +22,7 @@ from threading import Lock
 import oci
 import uvicorn
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List, Optional
@@ -431,6 +431,7 @@ UPGRADE_STATUS_FILE = Path(
 ).resolve()
 UPGRADE_LOG_FILE = Path(os.getenv("OCI_MIGRATOR_UPGRADE_LOG_FILE", "/var/log/oci-migrator/upgrade.log")).resolve()
 UPGRADE_LOCK_DIR = UPGRADE_STATUS_FILE.parent / "upgrade.lock"
+SERVICE_PREFIX = os.getenv("OCI_MIGRATOR_SERVICE_PREFIX", "migrator")
 EXPECTED_TIMEZONE = os.getenv("OCI_MIGRATOR_TIMEZONE", "Europe/Stockholm")
 NTP_SERVERS = os.getenv(
     "OCI_MIGRATOR_NTP_SERVERS",
@@ -861,6 +862,52 @@ def raise_operation_error(
 
 def health_check_item(state: str, message: str) -> dict:
     return {"status": state, "message": message}
+
+
+def status_rank(value: str) -> int:
+    return {"ok": 0, "warn": 1, "error": 2}.get(str(value or "").lower(), 1)
+
+
+def worst_status(*statuses: str) -> str:
+    ranked = sorted((str(status or "warn").lower() for status in statuses), key=status_rank, reverse=True)
+    return ranked[0] if ranked else "ok"
+
+
+def parse_iso_timestamp(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def iso_to_unix_seconds(value: str) -> float:
+    parsed = parse_iso_timestamp(value)
+    return parsed.timestamp() if parsed else 0.0
+
+
+def systemd_unit_state(unit_name: str) -> dict:
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        return {"status": "warn", "state": "unknown", "message": "systemctl is not available."}
+
+    try:
+        result = subprocess.run(
+            [systemctl, "is-active", unit_name],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        state = (result.stdout or result.stderr or "").strip() or "unknown"
+        status_value = "ok" if result.returncode == 0 and state == "active" else "error"
+        return {"status": status_value, "state": state, "message": f"{unit_name} is {state}."}
+    except Exception as exc:
+        return {"status": "warn", "state": "unknown", "message": f"Unable to read {unit_name}: {truncate_text(str(exc), 300)}"}
+
+
+def prometheus_escape_label(value: object) -> str:
+    return str(value or "").replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
 
 
 def timedatectl_value(property_name: str) -> str:
@@ -2128,8 +2175,7 @@ async def change_password(data: ChangePasswordRequest):
 
 
 # --- 0.5. Operations ---
-@app.get("/health")
-async def health():
+def build_health_payload() -> dict:
     runtime_config = get_runtime_config()
     admin_password_configured = bool(runtime_config.get("admin_password_hash"))
     env_file_exists = os.path.isfile(ENV_FILE_PATH)
@@ -2215,6 +2261,220 @@ async def health():
         "timezone": configured_timezone or expected_timezone,
         "checks": checks,
     }
+
+
+@app.get("/health")
+async def health():
+    return build_health_payload()
+
+
+def backup_run_timestamp(run: dict) -> str:
+    return str(run.get("finished_at") or run.get("updated_at") or run.get("started_at") or run.get("created_at") or "")
+
+
+def backup_monitoring_summary() -> dict:
+    jobs = [job for job in load_jobs() if job.get("is_active", True)]
+    runs = [run for run in list_job_runs(300) if run.get("kind") == "data_sync"]
+    latest_by_job: dict[str, dict] = {}
+    successes: list[dict] = []
+    failures: list[dict] = []
+
+    for run in runs:
+        job_name = str(run.get("job_name") or "").strip()
+        status_value = str(run.get("status") or "").lower()
+        if job_name and job_name not in latest_by_job:
+            latest_by_job[job_name] = run
+        if status_value == "success":
+            successes.append(run)
+        elif status_value in {"failed", "timeout"}:
+            failures.append(run)
+
+    job_items = []
+    failed_jobs = []
+    never_run_jobs = []
+    running_jobs = []
+
+    for job in jobs:
+        job_name = str(job.get("name") or "").strip()
+        latest = latest_by_job.get(job_name)
+        if latest:
+            last_status = str(latest.get("status") or "unknown").lower()
+            last_run_at = backup_run_timestamp(latest)
+            item = {
+                "name": job_name,
+                "last_status": last_status,
+                "last_run_at": last_run_at,
+                "last_success_at": "",
+                "last_failure_at": "",
+                "message": latest.get("details") or latest.get("error") or "",
+                "run_id": latest.get("id", ""),
+            }
+
+            latest_success = next((run for run in runs if run.get("job_name") == job_name and run.get("status") == "success"), None)
+            latest_failure = next((run for run in runs if run.get("job_name") == job_name and str(run.get("status", "")).lower() in {"failed", "timeout"}), None)
+            if latest_success:
+                item["last_success_at"] = backup_run_timestamp(latest_success)
+            if latest_failure:
+                item["last_failure_at"] = backup_run_timestamp(latest_failure)
+        else:
+            last_status = "never_run"
+            item = {
+                "name": job_name,
+                "last_status": last_status,
+                "last_run_at": "",
+                "last_success_at": "",
+                "last_failure_at": "",
+                "message": "No run history found for this active backup job.",
+                "run_id": "",
+            }
+
+        if last_status in {"failed", "timeout"}:
+            failed_jobs.append(item)
+        elif last_status == "never_run":
+            never_run_jobs.append(item)
+        elif last_status in {"running", "queued", "retrying"}:
+            running_jobs.append(item)
+
+        job_items.append(item)
+
+    backup_status = "ok"
+    if failed_jobs:
+        backup_status = "error"
+    elif never_run_jobs:
+        backup_status = "warn"
+
+    last_success = max((backup_run_timestamp(run) for run in successes), default="")
+    last_failure = max((backup_run_timestamp(run) for run in failures), default="")
+
+    return {
+        "status": backup_status,
+        "jobs_total": len(jobs),
+        "jobs_failed": len(failed_jobs),
+        "jobs_never_run": len(never_run_jobs),
+        "jobs_running": len(running_jobs),
+        "last_success_at": last_success,
+        "last_failure_at": last_failure,
+        "failed_jobs": failed_jobs,
+        "never_run_jobs": never_run_jobs,
+        "running_jobs": running_jobs,
+        "jobs": job_items,
+    }
+
+
+def build_monitoring_status() -> dict:
+    health_payload = build_health_payload()
+    checks = health_payload.get("checks", {})
+    worker_state = systemd_unit_state(f"{SERVICE_PREFIX}-worker.service")
+    scheduler_state = systemd_unit_state(f"{SERVICE_PREFIX}-scheduler.timer")
+    backup_summary = backup_monitoring_summary()
+
+    services = {
+        "api": {"status": "ok", "message": "API is responding."},
+        "worker": worker_state,
+        "scheduler": scheduler_state,
+        "redis": checks.get("redis", health_check_item("warn", "Redis status is unavailable.")),
+        "rclone": checks.get("rclone_binary", health_check_item("warn", "rclone status is unavailable.")),
+        "ntp": health_check_item(
+            worst_status(
+                checks.get("time_sync", {}).get("status", "warn"),
+                checks.get("ntp_service", {}).get("status", "warn"),
+            ),
+            f"{checks.get('time_sync', {}).get('message', '')} {checks.get('ntp_service', {}).get('message', '')}".strip(),
+        ),
+        "timezone": checks.get("timezone", health_check_item("warn", "Timezone status is unavailable.")),
+    }
+
+    service_status = worst_status(*(item.get("status", "warn") for item in services.values()))
+    overall_status = worst_status(health_payload.get("status", "warn"), service_status, backup_summary["status"])
+
+    return {
+        "status": overall_status,
+        "service": "oci-migrator",
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "service_prefix": SERVICE_PREFIX,
+        "services": services,
+        "health": {
+            "status": health_payload.get("status", "warn"),
+            "checks": checks,
+        },
+        "backups": backup_summary,
+    }
+
+
+@app.get("/monitoring/status")
+async def monitoring_status():
+    return build_monitoring_status()
+
+
+def prometheus_metrics_payload(status_payload: dict) -> str:
+    lines = [
+        "# HELP oci_migrator_up Whether the OCI Migrator API is responding.",
+        "# TYPE oci_migrator_up gauge",
+        "oci_migrator_up 1",
+        "# HELP oci_migrator_component_ok Component health status, 1 means ok.",
+        "# TYPE oci_migrator_component_ok gauge",
+    ]
+
+    services = status_payload.get("services", {})
+    for component, item in services.items():
+        value = 1 if item.get("status") == "ok" else 0
+        lines.append(f'oci_migrator_component_ok{{component="{prometheus_escape_label(component)}"}} {value}')
+
+    backups = status_payload.get("backups", {})
+    lines.extend(
+        [
+            "# HELP oci_migrator_backup_jobs Number of active backup jobs.",
+            "# TYPE oci_migrator_backup_jobs gauge",
+            f"oci_migrator_backup_jobs {int(backups.get('jobs_total', 0))}",
+            "# HELP oci_migrator_backup_jobs_failed Number of active backup jobs whose latest run failed.",
+            "# TYPE oci_migrator_backup_jobs_failed gauge",
+            f"oci_migrator_backup_jobs_failed {int(backups.get('jobs_failed', 0))}",
+            "# HELP oci_migrator_backup_jobs_never_run Number of active backup jobs without run history.",
+            "# TYPE oci_migrator_backup_jobs_never_run gauge",
+            f"oci_migrator_backup_jobs_never_run {int(backups.get('jobs_never_run', 0))}",
+            "# HELP oci_migrator_backup_jobs_running Number of active backup jobs currently queued or running.",
+            "# TYPE oci_migrator_backup_jobs_running gauge",
+            f"oci_migrator_backup_jobs_running {int(backups.get('jobs_running', 0))}",
+            "# HELP oci_migrator_backup_last_success_timestamp Unix timestamp for the latest successful backup run.",
+            "# TYPE oci_migrator_backup_last_success_timestamp gauge",
+            f"oci_migrator_backup_last_success_timestamp {iso_to_unix_seconds(backups.get('last_success_at', '')):.0f}",
+            "# HELP oci_migrator_backup_last_failure_timestamp Unix timestamp for the latest failed backup run.",
+            "# TYPE oci_migrator_backup_last_failure_timestamp gauge",
+            f"oci_migrator_backup_last_failure_timestamp {iso_to_unix_seconds(backups.get('last_failure_at', '')):.0f}",
+            "# HELP oci_migrator_backup_job_last_run_timestamp Unix timestamp for each active backup job's latest run.",
+            "# TYPE oci_migrator_backup_job_last_run_timestamp gauge",
+        ]
+    )
+
+    for job in backups.get("jobs", []):
+        job_label = prometheus_escape_label(job.get("name", ""))
+        status_label = prometheus_escape_label(job.get("last_status", "unknown"))
+        lines.append(
+            f'oci_migrator_backup_job_last_run_timestamp{{job="{job_label}",status="{status_label}"}} '
+            f"{iso_to_unix_seconds(job.get('last_run_at', '')):.0f}"
+        )
+
+    lines.append("# HELP oci_migrator_backup_job_last_status Last status for each active backup job as a one-hot gauge.")
+    lines.append("# TYPE oci_migrator_backup_job_last_status gauge")
+    for job in backups.get("jobs", []):
+        job_label = prometheus_escape_label(job.get("name", ""))
+        current_status = str(job.get("last_status") or "unknown").lower()
+        for status_value in ("success", "failed", "timeout", "running", "queued", "never_run", "unknown"):
+            value = 1 if current_status == status_value else 0
+            lines.append(
+                f'oci_migrator_backup_job_last_status{{job="{job_label}",status="{status_value}"}} {value}'
+            )
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+@app.get("/metrics")
+async def prometheus_metrics():
+    return Response(
+        content=prometheus_metrics_payload(build_monitoring_status()),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 @app.get("/job-history")

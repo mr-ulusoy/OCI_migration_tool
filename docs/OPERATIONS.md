@@ -48,6 +48,52 @@ The doctor checks:
 - authenticated backend response
 - server timezone and NTP synchronization
 
+## Monitoring
+
+Monitoring is pull-based when the monitoring system can reach the OCI Migrator server on the same network.
+
+Open unauthenticated health check:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
+Authenticated JSON status for generic monitoring tools:
+
+```bash
+curl -H "X-API-Token: <token>" http://127.0.0.1:8000/monitoring/status
+```
+
+The JSON status includes component status, Redis/rclone/NTP checks, active backup job counts, latest success/failure timestamps, failed jobs, running jobs, and jobs that have never run.
+
+Prometheus metrics endpoint:
+
+```bash
+curl -H "X-API-Token: <token>" http://127.0.0.1:8000/metrics
+```
+
+Example Prometheus scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: oci-migrator
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      - targets: ["oci-migrator.example.internal:8000"]
+    authorization:
+      credentials: "<token>"
+```
+
+The metrics endpoint exposes component health and backup gauges such as:
+
+```text
+oci_migrator_component_ok{component="redis"} 1
+oci_migrator_backup_jobs 8
+oci_migrator_backup_jobs_failed 1
+oci_migrator_backup_job_last_run_timestamp{job="CustomerA",status="success"} 1779473400
+```
+
 ## Job History
 
 The UI shows recent runs in the Job Dashboard. The backend persists run history in:

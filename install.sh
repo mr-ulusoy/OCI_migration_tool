@@ -548,6 +548,7 @@ ensure_env_file() {
     temp_file="$(mktemp)"
     {
       printf 'OCI_MIGRATOR_API_TOKEN=%s\n' "$token"
+      printf 'OCI_MIGRATOR_SERVICE_PREFIX=%s\n' "$SERVICE_PREFIX"
       printf 'OCI_MIGRATOR_ADMIN_USERNAME=%s\n' "$ADMIN_USERNAME"
       printf 'OCI_MIGRATOR_ADMIN_PASSWORD_HASH=%s\n' "$admin_password_hash"
       printf 'OCI_MIGRATOR_SESSION_TTL_SECONDS=43200\n'
@@ -579,6 +580,7 @@ ensure_env_file() {
     "${SUDO[@]}" chown "$RUN_USER:$RUN_USER" "$ENV_FILE" || true
 
     grep -q '^OCI_MIGRATOR_ALLOWED_ORIGINS=' "$ENV_FILE" || printf 'OCI_MIGRATOR_ALLOWED_ORIGINS=%s\n' "$allowed_origins" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_SERVICE_PREFIX=' "$ENV_FILE" || printf 'OCI_MIGRATOR_SERVICE_PREFIX=%s\n' "$SERVICE_PREFIX" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_REDIS_URL=' "$ENV_FILE" || printf 'OCI_MIGRATOR_REDIS_URL=redis://localhost:6379/0\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_LOG_LEVEL=' "$ENV_FILE" || printf 'OCI_MIGRATOR_LOG_LEVEL=INFO\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_RCLONE_TIMEOUT_SECONDS=' "$ENV_FILE" || printf 'OCI_MIGRATOR_RCLONE_TIMEOUT_SECONDS=7200\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
