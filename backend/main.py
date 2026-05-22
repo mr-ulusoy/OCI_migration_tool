@@ -344,6 +344,7 @@ PUBLIC_PATHS = {
     "/auth/login",
     "/docs",
     "/favicon.ico",
+    "/favicon.svg",
     "/openapi.json",
     "/redoc",
     "/vite.svg",
@@ -2173,7 +2174,7 @@ async def serve_frontend_root():
 
 @app.get("/{full_path:path}", include_in_schema=False)
 async def serve_frontend(full_path: str):
-    if full_path in {"index.html", "vite.svg", "favicon.ico"} or full_path.startswith("assets/"):
+    if full_path in {"index.html", "vite.svg", "favicon.ico", "favicon.svg"} or full_path.startswith("assets/"):
         try:
             return frontend_file_response(full_path)
         except HTTPException:
