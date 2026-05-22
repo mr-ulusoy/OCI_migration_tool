@@ -1501,10 +1501,10 @@ export default function App() {
 
           {/* VIEW: JOB DASHBOARD */}
           {view === 'datasync' && (
-            <div className="max-w-7xl mx-auto space-y-6 animate-in fade-in">
+            <div className="max-w-[1500px] mx-auto space-y-6 animate-in fade-in">
               <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800"><Activity size={24} className="text-[#9c3029]"/> Active Sync Jobs</h2>
               <div className="bg-white border border-gray-200 rounded-md shadow-sm overflow-hidden">
-                <div className="hidden xl:grid grid-cols-[minmax(150px,1fr)_minmax(230px,1.5fr)_minmax(170px,1fr)_minmax(150px,0.9fr)_80px_minmax(190px,1.1fr)_170px] gap-4 px-4 py-3 bg-gray-50 border-b border-gray-100 text-[10px] uppercase font-bold tracking-wider text-gray-400">
+                <div className="hidden 2xl:grid grid-cols-[minmax(110px,0.8fr)_minmax(170px,1.2fr)_minmax(130px,0.9fr)_minmax(115px,0.8fr)_64px_minmax(135px,0.9fr)_230px] gap-2 px-3 py-3 bg-gray-50 border-b border-gray-100 text-[10px] uppercase font-bold tracking-wider text-gray-400">
                   <div>Job</div>
                   <div>Source</div>
                   <div>Destination</div>
@@ -1528,28 +1528,28 @@ export default function App() {
 
                     return (
                       <div key={job.name}>
-                        <div className="grid grid-cols-1 xl:grid-cols-[minmax(150px,1fr)_minmax(230px,1.5fr)_minmax(170px,1fr)_minmax(150px,0.9fr)_80px_minmax(190px,1.1fr)_170px] gap-3 xl:gap-4 items-center p-4 text-left">
+                        <div className="grid grid-cols-1 2xl:grid-cols-[minmax(110px,0.8fr)_minmax(170px,1.2fr)_minmax(130px,0.9fr)_minmax(115px,0.8fr)_64px_minmax(135px,0.9fr)_230px] gap-3 2xl:gap-2 items-center p-4 2xl:p-3 text-left">
                           <div className="flex items-start gap-3 min-w-0">
                             <RefreshCw className="text-[#9c3029] mt-0.5 shrink-0" size={16} />
                             <div className="min-w-0">
-                              <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Job</div>
+                              <div className="2xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Job</div>
                               <h3 className="font-bold text-sm text-gray-800 truncate">{job.name}</h3>
                             </div>
                           </div>
                           <div className="min-w-0 font-mono">
-                            <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5 font-sans">Source</div>
+                            <div className="2xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5 font-sans">Source</div>
                             <div className="text-xs text-gray-600 truncate" title={job.source_remote}>{job.source_remote}</div>
                           </div>
                           <div className="min-w-0 font-mono">
-                            <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5 font-sans">Destination</div>
+                            <div className="2xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5 font-sans">Destination</div>
                             <div className="text-xs text-gray-700 font-semibold truncate" title={destination}>{destination}</div>
                           </div>
                           <div className="min-w-0">
-                            <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Schedule</div>
+                            <div className="2xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Schedule</div>
                             <div className="text-xs text-gray-600 truncate flex items-center gap-1" title={scheduleText}><Clock size={12} className="shrink-0" />{scheduleText}</div>
                           </div>
                           <div>
-                            <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Mode</div>
+                            <div className="2xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Mode</div>
                             <span className="text-[10px] px-2 py-0.5 rounded-full border border-gray-200 bg-gray-50 text-gray-600 font-bold uppercase">{job.sync_mode || 'copy'}</span>
                             {Boolean(job.metadata_tags?.length) && (
                               <div className="mt-1 text-[10px] text-gray-400 flex items-center gap-1">
@@ -1558,7 +1558,7 @@ export default function App() {
                             )}
                           </div>
                           <div className="min-w-0">
-                            <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Last Run</div>
+                            <div className="2xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Last Run</div>
                             {latestRun ? (
                               <div className="min-w-0">
                                 <span className={`text-[9px] px-2 py-0.5 rounded-full border font-bold uppercase ${runStatusClass(latestRun.status)}`}>
@@ -1572,10 +1572,10 @@ export default function App() {
                               <span className="text-xs text-gray-400">Never</span>
                             )}
                           </div>
-                          <div className="flex gap-1 xl:justify-end">
-                            <button onClick={() => handleEditJob(job)} className="p-1.5 bg-white border border-gray-200 text-gray-500 rounded-md hover:text-[#9c3029] hover:bg-gray-50" title="Edit job"><Edit size={14}/></button>
-                            <button onClick={() => activeLogJob === job.name ? setActiveLogJob(null) : setActiveLogJob(job.name)} className={`p-1.5 rounded-md transition-colors ${activeLogJob === job.name ? 'bg-gray-100 text-gray-800 border border-gray-300' : 'bg-white border border-gray-200 text-gray-500 hover:bg-gray-50'}`} title="View latest log"><Terminal size={14}/></button>
-                            <button onClick={() => handleRunManual(job)} className="px-2.5 py-1.5 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#a63d2e]">Run</button>
+                          <div className="flex flex-wrap gap-2 2xl:justify-end">
+                            <button onClick={() => handleEditJob(job)} className="px-2.5 py-1.5 bg-white border border-gray-200 text-gray-600 rounded-md hover:text-[#9c3029] hover:bg-gray-50 text-xs font-semibold flex items-center gap-1.5" title="Edit job"><Edit size={14}/> Edit</button>
+                            <button onClick={() => handleRunManual(job)} className="px-2.5 py-1.5 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#a63d2e] flex items-center gap-1.5"><RefreshCw size={14} /> Run Now</button>
+                            <button onClick={() => activeLogJob === job.name ? setActiveLogJob(null) : setActiveLogJob(job.name)} className={`px-2.5 py-1.5 rounded-md transition-colors text-xs font-semibold flex items-center gap-1.5 ${activeLogJob === job.name ? 'bg-gray-100 text-gray-800 border border-gray-300' : 'bg-white border border-gray-200 text-gray-600 hover:text-[#9c3029] hover:bg-gray-50'}`} title="View latest log"><Terminal size={14}/> Log</button>
                             <button onClick={() => handleDeleteJob(job.name)} className="p-1.5 bg-white border border-gray-200 text-gray-500 rounded-md hover:text-[#9c3029] hover:bg-gray-50" title="Delete job"><Trash2 size={14}/></button>
                           </div>
                         </div>
