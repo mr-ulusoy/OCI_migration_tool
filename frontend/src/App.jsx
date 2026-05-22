@@ -1316,7 +1316,7 @@ export default function App() {
                       <span className="bg-gray-50 border border-gray-100 rounded-md px-2 py-1 font-mono truncate">~/.oci/config</span>
                       <span className="bg-gray-50 border border-gray-100 rounded-md px-2 py-1 font-mono truncate">~/.config/rclone/rclone.conf</span>
                     </div>
-                    <p className="mt-2 text-[11px] text-amber-700">ZIP-filen innehaller hemligheter och ska lagras skyddat.</p>
+                    <p className="mt-2 text-[11px] text-amber-700">The ZIP file contains secrets and should be stored securely.</p>
                   </div>
                   <button
                     type="button"
