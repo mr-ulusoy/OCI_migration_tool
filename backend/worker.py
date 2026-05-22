@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import time
+from pathlib import Path
 from datetime import datetime, timedelta
 from celery import Celery
 import oci
@@ -28,6 +29,8 @@ def rclone_timeout_seconds() -> int:
     except ValueError:
         return 7200
 
+
+LOCAL_DATA_ROOT = Path(os.getenv("OCI_MIGRATOR_LOCAL_DATA_ROOT", "/var/lib/oci-migrator/local")).resolve()
 
 celery_app = Celery('tasks', broker=redis_url(), backend=redis_url())
 
@@ -126,11 +129,146 @@ def normalize_metadata_tags(metadata_tags=None):
     return normalized_tags
 
 
+def format_bytes(size_bytes: int) -> str:
+    size = float(max(size_bytes, 0))
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{size_bytes} B"
+
+
+def normalize_local_retention(local_retention=None):
+    if not isinstance(local_retention, dict):
+        return {"enabled": False, "delete_after_days": 30, "min_file_age_hours": 24}
+
+    def safe_int(value, default, minimum, maximum):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = default
+        return max(minimum, min(maximum, parsed))
+
+    return {
+        "enabled": bool(local_retention.get("enabled")),
+        "delete_after_days": safe_int(local_retention.get("delete_after_days"), 30, 1, 3650),
+        "min_file_age_hours": safe_int(local_retention.get("min_file_age_hours"), 24, 1, 720),
+    }
+
+
+def local_cleanup_source_path(source: str) -> Path | None:
+    source_value = str(source or "")
+    separator_index = source_value.find(":")
+    if separator_index < 0:
+        return None
+
+    local_target = source_value[separator_index + 1 :]
+    if not local_target.startswith("/"):
+        return None
+
+    source_path = Path(local_target).expanduser().resolve()
+    try:
+        source_path.relative_to(LOCAL_DATA_ROOT)
+    except ValueError:
+        return None
+
+    return source_path if source_path.is_dir() else None
+
+
+def run_local_retention_cleanup(source: str, local_retention=None, log_file: Path | None = None) -> dict:
+    policy = normalize_local_retention(local_retention)
+    if not policy["enabled"]:
+        return {"enabled": False, "status": "skipped"}
+
+    source_path = local_cleanup_source_path(source)
+    if not source_path:
+        return {
+            "enabled": True,
+            "status": "skipped",
+            "reason": "Source is not a managed server local folder.",
+        }
+
+    now = time.time()
+    cutoff_days = now - (policy["delete_after_days"] * 24 * 3600)
+    cutoff_recent = now - (policy["min_file_age_hours"] * 3600)
+    cutoff = min(cutoff_days, cutoff_recent)
+    deleted_files = 0
+    deleted_bytes = 0
+    skipped_recent = 0
+    errors = []
+
+    def append_log(line: str) -> None:
+        if not log_file:
+            return
+        try:
+            with open(log_file, "a", encoding="utf-8") as handle:
+                handle.write(f"{line}\n")
+        except OSError:
+            pass
+
+    append_log("")
+    append_log(
+        "Local cleanup: enabled "
+        f"(delete after {policy['delete_after_days']} days, "
+        f"ignore modified in last {policy['min_file_age_hours']} hours)."
+    )
+
+    for root, _dirs, files in os.walk(source_path, topdown=False):
+        root_path = Path(root)
+        for file_name in files:
+            file_path = root_path / file_name
+            try:
+                stat_result = file_path.stat()
+                if stat_result.st_mtime > cutoff:
+                    skipped_recent += 1
+                    continue
+                file_size = stat_result.st_size
+                file_path.unlink()
+                deleted_files += 1
+                deleted_bytes += file_size
+            except OSError as exc:
+                if len(errors) < 5:
+                    errors.append(f"{file_path}: {exc}")
+
+        if root_path == source_path:
+            continue
+        try:
+            root_path.rmdir()
+        except OSError:
+            pass
+
+    result = {
+        "enabled": True,
+        "status": "success" if not errors else "warning",
+        "source_path": str(source_path),
+        "delete_after_days": policy["delete_after_days"],
+        "min_file_age_hours": policy["min_file_age_hours"],
+        "deleted_files": deleted_files,
+        "deleted_bytes": deleted_bytes,
+        "deleted_size": format_bytes(deleted_bytes),
+        "skipped_recent": skipped_recent,
+        "errors": errors,
+    }
+
+    append_log(
+        "Local cleanup: "
+        f"deleted {deleted_files} files ({format_bytes(deleted_bytes)}), "
+        f"skipped {skipped_recent} recent files."
+    )
+    if errors:
+        append_log("Local cleanup warnings:")
+        for error in errors:
+            append_log(f"  {error}")
+
+    return result
+
+
 @celery_app.task(bind=True, name="worker.rclone_sync_task")
-def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", transfers=4, checkers=8, buffer_size="16M", job_name="default", run_id=None, trigger="manual", metadata_tags=None):
+def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", transfers=4, checkers=8, buffer_size="16M", job_name="default", run_id=None, trigger="manual", metadata_tags=None, local_retention=None):
     run_id = run_id or self.request.id
     dest = f"{dest_profile}_rclone:{dest_bucket}"
     metadata_tags = normalize_metadata_tags(metadata_tags)
+    local_retention = normalize_local_retention(local_retention)
     ensure_job_log_dir()
     log_file = job_log_path(job_name, run_id)
     update_job_run(
@@ -141,6 +279,7 @@ def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", trans
         source=source,
         destination=dest,
         metadata_tags=metadata_tags,
+        local_retention=local_retention,
         details="Job is running.",
         log_file=str(log_file),
         started_at=datetime.utcnow().isoformat() + "Z",
@@ -199,12 +338,40 @@ def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", trans
 
     status = "success" if process.returncode == 0 else "failed"
     log_tail = tail_file(log_file, max_lines=12)
-    details = "Completed successfully." if process.returncode == 0 else f"Failed with exit code {process.returncode}."
+    local_cleanup_result = {"enabled": local_retention.get("enabled", False), "status": "skipped"}
+    if process.returncode == 0:
+        try:
+            local_cleanup_result = run_local_retention_cleanup(source, local_retention, log_file)
+        except Exception as exc:
+            logger.exception("Local cleanup failed after successful backup (job=%s)", job_name)
+            local_cleanup_result = {
+                "enabled": local_retention.get("enabled", False),
+                "status": "warning",
+                "reason": str(exc),
+            }
+        if local_cleanup_result.get("status") == "warning":
+            status = "warning"
+
+    if process.returncode == 0:
+        if local_cleanup_result.get("enabled") and local_cleanup_result.get("status") == "success":
+            details = (
+                "Backup succeeded. Local cleanup deleted "
+                f"{local_cleanup_result.get('deleted_files', 0)} files "
+                f"({local_cleanup_result.get('deleted_size', '0 B')})."
+            )
+        elif local_cleanup_result.get("status") == "warning":
+            details = "Backup succeeded. Local cleanup finished with warnings."
+        else:
+            details = "Backup succeeded."
+    else:
+        details = f"Failed with exit code {process.returncode}."
+
     update_job_run(
         run_id,
         status=status,
         details=details,
         error="" if process.returncode == 0 else (log_tail or details),
+        local_cleanup=local_cleanup_result,
         finished_at=datetime.utcnow().isoformat() + "Z",
     )
 

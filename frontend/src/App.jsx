@@ -4,7 +4,7 @@ import {
   Cloud, Shield, Database, Search, Key, Loader2, CheckCircle,
   ArrowRight, FileText, Archive, Edit, Trash2,
   Folder, Plus, RefreshCw, Globe, Cpu, Clock, Activity, Terminal,
-  Lock, LogOut, Download, Upload, HeartPulse, AlertCircle, X, Settings, Save, Tags
+  Lock, LogOut, Download, Upload, HeartPulse, AlertCircle, X, Settings, Save, Tags, HardDrive
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (
@@ -35,6 +35,11 @@ const DEFAULT_REMOTE_CONFIG = {
   localNfsEnabled: false,
   localNfsClients: ''
 };
+const DEFAULT_LOCAL_RETENTION = {
+  enabled: false,
+  delete_after_days: 30,
+  min_file_age_hours: 24
+};
 const createDefaultSyncJob = () => ({
   name: '',
   source_remote: '',
@@ -45,6 +50,7 @@ const createDefaultSyncJob = () => ({
   checkers: 32,
   buffer_size: '128M',
   metadata_tags: [],
+  local_retention: { ...DEFAULT_LOCAL_RETENTION },
   schedule: { frequency: 'none', time: '02:00', day_of_week: 'monday', day_of_month: '1' }
 });
 const createDefaultLifecyclePolicy = () => ({
@@ -121,6 +127,19 @@ function formatTimestamp(value) {
   return date.toLocaleString();
 }
 
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let size = bytes;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  return `${unitIndex === 0 ? Math.round(size) : size.toFixed(1)} ${units[unitIndex]}`;
+}
+
 function cleanJobMessage(value = '') {
   const message = String(value || '').replace(/^rclone\s+/i, '').trim();
   return message ? `${message.charAt(0).toUpperCase()}${message.slice(1)}` : '';
@@ -159,6 +178,14 @@ function normalizeLifecycleDays(value) {
   if (value === '' || value === null || value === undefined) return null;
   const days = Number(value);
   return Number.isInteger(days) && days > 0 ? days : Number.NaN;
+}
+
+function normalizeLocalRetention(policy = {}) {
+  return {
+    enabled: Boolean(policy.enabled),
+    delete_after_days: Number(policy.delete_after_days || DEFAULT_LOCAL_RETENTION.delete_after_days),
+    min_file_age_hours: Number(policy.min_file_age_hours || DEFAULT_LOCAL_RETENTION.min_file_age_hours)
+  };
 }
 
 function normalizeLifecycleFilters(policy = {}) {
@@ -205,6 +232,9 @@ export default function App() {
   const [jobLogSettings, setJobLogSettings] = useState(null);
   const [jobLogSettingsForm, setJobLogSettingsForm] = useState({ retentionDays: 14, maxSize: '10M' });
   const [savingJobLogSettings, setSavingJobLogSettings] = useState(false);
+  const [localDiskSettings, setLocalDiskSettings] = useState(null);
+  const [localDiskSettingsForm, setLocalDiskSettingsForm] = useState({ warningPercent: 80, criticalPercent: 90 });
+  const [savingLocalDiskSettings, setSavingLocalDiskSettings] = useState(false);
   const [timeSettings, setTimeSettings] = useState(null);
   const [timeSettingsForm, setTimeSettingsForm] = useState({ timezone: 'UTC', ntpServers: '0.pool.ntp.org 1.pool.ntp.org' });
   const [savingTimeSettings, setSavingTimeSettings] = useState(false);
@@ -290,6 +320,14 @@ export default function App() {
   const externalRemotes = visibleRemoteDetails.filter((remote) => remote.type !== 'local');
   const selectedSyncRemoteName = remoteNameFromPath(syncJob.source_remote);
   const selectedSyncSourceValue = remoteTargetFromPath(syncJob.source_remote);
+  const selectedSyncRemoteDetail = visibleRemoteDetails.find((remote) => remote.name === selectedSyncRemoteName);
+  const selectedSyncSourceIsManagedLocal = selectedSyncRemoteDetail?.type === 'local' && selectedSyncSourceValue.startsWith('/');
+  const selectedSyncRetentionConflict = jobs.find((job) => (
+    job.name !== editingJobName &&
+    job.name !== syncJob.name &&
+    job.source_remote === syncJob.source_remote &&
+    job.local_retention?.enabled
+  ));
 
   // VM Migration Panel State
   const [vmMigrationConfig, setVmMigrationConfig] = useState({
@@ -374,6 +412,19 @@ export default function App() {
       setJobLogSettingsForm({
         retentionDays: res.data.retention_days || 14,
         maxSize: res.data.max_size || '10M'
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const fetchLocalDiskSettings = async () => {
+    try {
+      const res = await api.get('/local-disk-settings');
+      setLocalDiskSettings(res.data);
+      setLocalDiskSettingsForm({
+        warningPercent: res.data.warning_percent || 80,
+        criticalPercent: res.data.critical_percent || 90
       });
     } catch (err) {
       console.error(err);
@@ -566,6 +617,39 @@ export default function App() {
     setSavingJobLogSettings(false);
   };
 
+  const handleSaveLocalDiskSettings = async (event) => {
+    event.preventDefault();
+    const warningPercent = Number(localDiskSettingsForm.warningPercent);
+    const criticalPercent = Number(localDiskSettingsForm.criticalPercent);
+
+    if (!Number.isInteger(warningPercent) || warningPercent < 1 || warningPercent > 99) {
+      setNotice({ type: 'error', title: 'Invalid disk warning', message: 'Warning threshold must be between 1 and 99 percent.' });
+      return;
+    }
+    if (!Number.isInteger(criticalPercent) || criticalPercent < 2 || criticalPercent > 100 || criticalPercent <= warningPercent) {
+      setNotice({ type: 'error', title: 'Invalid disk critical', message: 'Critical threshold must be higher than warning and at most 100 percent.' });
+      return;
+    }
+
+    setSavingLocalDiskSettings(true);
+    try {
+      const res = await api.put('/local-disk-settings', {
+        warning_percent: warningPercent,
+        critical_percent: criticalPercent
+      });
+      setLocalDiskSettings(res.data);
+      setLocalDiskSettingsForm({
+        warningPercent: res.data.warning_percent,
+        criticalPercent: res.data.critical_percent
+      });
+      showSuccess('Local disk thresholds saved.');
+      fetchHealth();
+    } catch (err) {
+      showError('Failed to save local disk settings', err);
+    }
+    setSavingLocalDiskSettings(false);
+  };
+
   const handleSaveTimeSettings = async (event) => {
     event.preventDefault();
     const timezone = String(timeSettingsForm.timezone || '').trim();
@@ -613,6 +697,7 @@ export default function App() {
     fetchHealth();
     fetchJobRuns();
     fetchJobLogSettings();
+    fetchLocalDiskSettings();
     fetchTimeSettings();
     fetchUpgradeStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1080,9 +1165,28 @@ export default function App() {
         return;
       }
     }
+    const localRetention = normalizeLocalRetention(syncJob.local_retention);
+    if (localRetention.enabled) {
+      if (!selectedSyncSourceIsManagedLocal) {
+        setNotice({ type: 'error', title: 'Invalid local cleanup', message: 'Local cleanup can only be enabled for managed server local folders.' });
+        return;
+      }
+      if (!Number.isInteger(localRetention.delete_after_days) || localRetention.delete_after_days < 1 || localRetention.delete_after_days > 3650) {
+        setNotice({ type: 'error', title: 'Invalid local cleanup', message: 'Retention days must be between 1 and 3650.' });
+        return;
+      }
+      if (!Number.isInteger(localRetention.min_file_age_hours) || localRetention.min_file_age_hours < 1 || localRetention.min_file_age_hours > 720) {
+        setNotice({ type: 'error', title: 'Invalid local cleanup', message: 'Minimum file age must be between 1 and 720 hours.' });
+        return;
+      }
+      if (selectedSyncRetentionConflict) {
+        setNotice({ type: 'error', title: 'Local cleanup conflict', message: `Job "${selectedSyncRetentionConflict.name}" already has local cleanup enabled for this source.` });
+        return;
+      }
+    }
     setLoading(true);
     try {
-      await api.post(`/save-job`, { ...syncJob, metadata_tags: metadataTags, lifecycle_policy: createDefaultLifecyclePolicy() });
+      await api.post(`/save-job`, { ...syncJob, previous_name: editingJobName, metadata_tags: metadataTags, local_retention: localRetention, lifecycle_policy: createDefaultLifecyclePolicy() });
       if (editingJobName && editingJobName !== syncJob.name) {
         await api.delete(`/delete-job/${encodeURIComponent(editingJobName)}`);
       }
@@ -1101,7 +1205,11 @@ export default function App() {
         ...createDefaultSyncJob().schedule,
         ...(job.schedule || {})
       },
-      metadata_tags: normalizeMetadataTags(job.metadata_tags)
+      metadata_tags: normalizeMetadataTags(job.metadata_tags),
+      local_retention: {
+        ...DEFAULT_LOCAL_RETENTION,
+        ...(job.local_retention || {})
+      }
     };
     setEditingJobName(job.name);
     setSyncJob(normalizedJob);
@@ -1914,6 +2022,81 @@ export default function App() {
                   </div>
                 )}
               </form>
+              <form onSubmit={handleSaveLocalDiskSettings} className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
+                <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
+                  <div>
+                    <h3 className="font-bold text-sm text-gray-800 flex items-center gap-2">
+                      <HardDrive size={16} className="text-[#9c3029]" /> Local Disk Usage
+                    </h3>
+                    <p className="mt-1 text-[11px] text-gray-500 font-mono truncate">{localDiskSettings?.local_data_root || '/var/lib/oci-migrator/local'}</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={fetchLocalDiskSettings}
+                      className="px-3 py-2 bg-white border border-gray-200 text-gray-600 rounded-md font-semibold text-xs hover:text-[#9c3029] hover:bg-gray-50 flex items-center gap-2"
+                    >
+                      <RefreshCw size={14} />
+                      Refresh
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={savingLocalDiskSettings}
+                      className="px-3 py-2 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#7a2520] disabled:opacity-60 flex items-center gap-2"
+                    >
+                      {savingLocalDiskSettings ? <Loader2 className="animate-spin" size={14} /> : <Save size={14} />}
+                      Save Disk
+                    </button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-[1fr_120px_120px] gap-3 items-end">
+                  <div>
+                    <div className="grid grid-cols-3 gap-2 text-[11px] mb-3">
+                      <div className="bg-gray-50 border border-gray-100 rounded-md px-2 py-1">
+                        <span className="font-bold text-gray-400 uppercase">Used</span>
+                        <div className="font-semibold text-gray-800">{localDiskSettings?.used || formatBytes(localDiskSettings?.used_bytes)}</div>
+                      </div>
+                      <div className="bg-gray-50 border border-gray-100 rounded-md px-2 py-1">
+                        <span className="font-bold text-gray-400 uppercase">Free</span>
+                        <div className="font-semibold text-gray-800">{localDiskSettings?.free || formatBytes(localDiskSettings?.free_bytes)}</div>
+                      </div>
+                      <div className="bg-gray-50 border border-gray-100 rounded-md px-2 py-1">
+                        <span className="font-bold text-gray-400 uppercase">Total</span>
+                        <div className="font-semibold text-gray-800">{localDiskSettings?.total || formatBytes(localDiskSettings?.total_bytes)}</div>
+                      </div>
+                    </div>
+                    <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full ${localDiskSettings?.status === 'error' ? 'bg-red-500' : localDiskSettings?.status === 'warn' ? 'bg-amber-500' : 'bg-green-500'}`}
+                        style={{ width: `${Math.min(100, Math.max(0, Number(localDiskSettings?.used_percent || 0)))}%` }}
+                      />
+                    </div>
+                    <div className="mt-2 text-[11px] text-gray-500">{localDiskSettings?.message || 'Local disk usage has not been loaded yet.'}</div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Warning %</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="99"
+                      value={localDiskSettingsForm.warningPercent}
+                      onChange={e => setLocalDiskSettingsForm({...localDiskSettingsForm, warningPercent: e.target.value})}
+                      className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Critical %</label>
+                    <input
+                      type="number"
+                      min="2"
+                      max="100"
+                      value={localDiskSettingsForm.criticalPercent}
+                      onChange={e => setLocalDiskSettingsForm({...localDiskSettingsForm, criticalPercent: e.target.value})}
+                      className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                    />
+                  </div>
+                </div>
+              </form>
               <div className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
                 <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
                   <h3 className="font-bold text-sm text-gray-800 flex items-center gap-2">
@@ -2092,6 +2275,11 @@ export default function App() {
                                   <Tags size={11} /> {job.metadata_tags.length}
                                 </span>
                               )}
+                              {job.local_retention?.enabled && (
+                                <span className="text-[10px] px-2 py-0.5 rounded-full border border-amber-200 bg-amber-50 text-amber-700 font-bold uppercase">
+                                  cleanup {job.local_retention.delete_after_days || 30}d
+                                </span>
+                              )}
                             </div>
                           </div>
                           <div className="min-w-0">
@@ -2250,6 +2438,85 @@ export default function App() {
                       {destBuckets.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
                     </select>
                   </div>
+                </div>
+                <div className="mb-6 border border-gray-200 rounded-md overflow-hidden">
+                  <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 flex items-center justify-between gap-3">
+                    <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><HardDrive size={16}/> Local Cleanup</h4>
+                    <label className="flex items-center gap-2 text-xs font-semibold text-gray-600">
+                      <input
+                        type="checkbox"
+                        checked={!!syncJob.local_retention?.enabled}
+                        onChange={e => setSyncJob(prev => ({
+                          ...prev,
+                          local_retention: {
+                            ...DEFAULT_LOCAL_RETENTION,
+                            ...(prev.local_retention || {}),
+                            enabled: e.target.checked
+                          }
+                        }))}
+                        className="accent-[#9c3029]"
+                      />
+                      Enabled
+                    </label>
+                  </div>
+                  {syncJob.local_retention?.enabled ? (
+                    <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[10px] uppercase font-bold text-gray-500">Delete Files Older Than</label>
+                        <div className="mt-1 flex items-center gap-2">
+                          <input
+                            type="number"
+                            min="1"
+                            max="3650"
+                            value={syncJob.local_retention?.delete_after_days ?? DEFAULT_LOCAL_RETENTION.delete_after_days}
+                            onChange={e => setSyncJob(prev => ({
+                              ...prev,
+                              local_retention: {
+                                ...DEFAULT_LOCAL_RETENTION,
+                                ...(prev.local_retention || {}),
+                                delete_after_days: Number(e.target.value)
+                              }
+                            }))}
+                            className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                          />
+                          <span className="text-xs text-gray-500 font-semibold">days</span>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-[10px] uppercase font-bold text-gray-500">Ignore Modified In Last</label>
+                        <div className="mt-1 flex items-center gap-2">
+                          <input
+                            type="number"
+                            min="1"
+                            max="720"
+                            value={syncJob.local_retention?.min_file_age_hours ?? DEFAULT_LOCAL_RETENTION.min_file_age_hours}
+                            onChange={e => setSyncJob(prev => ({
+                              ...prev,
+                              local_retention: {
+                                ...DEFAULT_LOCAL_RETENTION,
+                                ...(prev.local_retention || {}),
+                                min_file_age_hours: Number(e.target.value)
+                              }
+                            }))}
+                            className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                          />
+                          <span className="text-xs text-gray-500 font-semibold">hours</span>
+                        </div>
+                      </div>
+                      {!selectedSyncSourceIsManagedLocal && (
+                        <div className="md:col-span-2 text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-md p-2">
+                          Select a managed server local folder as source before saving local cleanup.
+                        </div>
+                      )}
+                      {selectedSyncRetentionConflict && (
+                        <div className="md:col-span-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-md p-2">
+                          {selectedSyncRetentionConflict.name} already has local cleanup enabled for this source.
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="p-4 text-xs text-gray-400">Disabled for this backup job.</div>
+                  )}
                 </div>
                 <div className="mb-6 border border-gray-200 rounded-md overflow-hidden">
                   <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 flex items-center justify-between gap-3">

@@ -102,6 +102,7 @@ def main():
                             "source": job["source_remote"],
                             "destination": destination,
                             "metadata_tags": job.get("metadata_tags", []),
+                            "local_retention": job.get("local_retention", {}),
                             "details": "Queued by scheduler.",
                             "log_file": str(job_log_path(safe_job_name, run_id)),
                         }
@@ -122,6 +123,7 @@ def main():
                                 run_id,
                                 "scheduled",
                                 job.get("metadata_tags", []),
+                                job.get("local_retention", {}),
                             ],
                             task_id=run_id,
                         )

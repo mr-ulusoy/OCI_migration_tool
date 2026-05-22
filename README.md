@@ -121,6 +121,10 @@ Rclone job logs are persisted per run and visible/downloadable from Job Dashboar
 
 Timezone and NTP servers are visible and editable from Settings -> Time & NTP.
 
+Per-job local cleanup can be enabled for managed server local folder sources. Cleanup runs only after a successful backup, deletes files older than the configured retention, and always skips files modified within the configured safety window.
+
+Settings -> Local Disk Usage shows the managed local data disk usage and configurable warning/critical thresholds. The same status is exposed through `/health`, `/monitoring/status`, and `/metrics`.
+
 Server local folders can optionally be shared from the UI with SMB, NFSv4, or both. SMB can be opened as guest access or a named Samba user on TCP `445`. NFSv4 requires an allowed client IP/hostname/CIDR list and opens TCP `2049`. No share is enabled during installation; the installed root helper applies the share only when a user chooses it in `Add Remote`.
 
 ## Documentation

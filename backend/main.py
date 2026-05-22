@@ -497,8 +497,15 @@ class LifecyclePolicyConfig(BaseModel):
     previous_versions_delete_after_days: Optional[int] = None
 
 
+class LocalRetentionConfig(BaseModel):
+    enabled: bool = False
+    delete_after_days: int = 30
+    min_file_age_hours: int = 24
+
+
 class DataSyncJob(BaseModel):
     name: str
+    previous_name: str = ""
     source_remote: str
     dest_profile: str
     dest_bucket: str
@@ -509,6 +516,7 @@ class DataSyncJob(BaseModel):
     is_active: bool = True
     metadata_tags: List[MetadataTag] = Field(default_factory=list)
     lifecycle_policy: LifecyclePolicyConfig = Field(default_factory=LifecyclePolicyConfig)
+    local_retention: LocalRetentionConfig = Field(default_factory=LocalRetentionConfig)
     schedule: ScheduleSchema
 
 class BulkMigrationJob(BaseModel):
@@ -521,6 +529,11 @@ class BulkMigrationJob(BaseModel):
 class JobLogSettingsRequest(BaseModel):
     max_size: str
     retention_days: int
+
+
+class LocalDiskSettingsRequest(BaseModel):
+    warning_percent: int
+    critical_percent: int
 
 
 class TimeSettingsRequest(BaseModel):
@@ -1062,6 +1075,158 @@ def current_job_log_settings() -> dict:
         "retention_days": retention_days,
         "rotation_frequency": "daily",
         "logrotate_file": str(JOB_LOGROTATE_FILE),
+    }
+
+
+def validate_local_retention_config(local_retention: LocalRetentionConfig | dict | None) -> dict:
+    if isinstance(local_retention, LocalRetentionConfig):
+        raw_policy = local_retention.model_dump()
+    elif isinstance(local_retention, dict):
+        raw_policy = local_retention
+    else:
+        raw_policy = {}
+
+    enabled = bool(raw_policy.get("enabled", False))
+    try:
+        delete_after_days = int(raw_policy.get("delete_after_days", 30))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Local cleanup retention days must be a whole number.")
+    try:
+        min_file_age_hours = int(raw_policy.get("min_file_age_hours", 24))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Local cleanup minimum file age must be a whole number.")
+
+    if delete_after_days < 1 or delete_after_days > 3650:
+        raise HTTPException(status_code=400, detail="Local cleanup retention days must be between 1 and 3650.")
+    if min_file_age_hours < 1 or min_file_age_hours > 720:
+        raise HTTPException(status_code=400, detail="Local cleanup minimum file age must be between 1 and 720 hours.")
+
+    return {
+        "enabled": enabled,
+        "delete_after_days": delete_after_days,
+        "min_file_age_hours": min_file_age_hours,
+    }
+
+
+def source_remote_is_managed_local(source_remote: str) -> bool:
+    source_value = str(source_remote or "")
+    separator_index = source_value.find(":")
+    if separator_index < 0:
+        return False
+
+    local_target = source_value[separator_index + 1 :]
+    if not local_target.startswith("/"):
+        return False
+
+    try:
+        Path(local_target).expanduser().resolve().relative_to(LOCAL_DATA_ROOT)
+        return True
+    except ValueError:
+        return False
+
+
+def validate_local_retention_usage(job_name: str, previous_job_name: str, source_remote: str, local_retention: dict, jobs: list[dict]) -> None:
+    if not local_retention.get("enabled"):
+        return
+
+    if not source_remote_is_managed_local(source_remote):
+        raise HTTPException(
+            status_code=400,
+            detail="Local cleanup can only be enabled for managed server local folders.",
+        )
+
+    for existing_job in jobs:
+        if existing_job.get("name") in {job_name, previous_job_name}:
+            continue
+        existing_retention = validate_local_retention_config(existing_job.get("local_retention", {}))
+        if existing_retention.get("enabled") and existing_job.get("source_remote") == source_remote:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Local cleanup is already enabled for this source by job '{existing_job.get('name')}'.",
+            )
+
+
+def format_bytes(size_bytes: int) -> str:
+    size = float(max(int(size_bytes), 0))
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{size_bytes} B"
+
+
+def local_disk_thresholds() -> tuple[int, int]:
+    runtime_env = read_runtime_env()
+    try:
+        warning_percent = int(
+            runtime_env.get("OCI_MIGRATOR_LOCAL_DISK_WARNING_PERCENT")
+            or os.getenv("OCI_MIGRATOR_LOCAL_DISK_WARNING_PERCENT", "80")
+        )
+    except ValueError:
+        warning_percent = 80
+    try:
+        critical_percent = int(
+            runtime_env.get("OCI_MIGRATOR_LOCAL_DISK_CRITICAL_PERCENT")
+            or os.getenv("OCI_MIGRATOR_LOCAL_DISK_CRITICAL_PERCENT", "90")
+        )
+    except ValueError:
+        critical_percent = 90
+    warning_percent = max(1, min(99, warning_percent))
+    critical_percent = max(warning_percent + 1, min(100, critical_percent))
+    return warning_percent, critical_percent
+
+
+def validate_local_disk_thresholds(warning_percent: int, critical_percent: int) -> tuple[int, int]:
+    try:
+        warning = int(warning_percent)
+        critical = int(critical_percent)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Local disk thresholds must be whole numbers.")
+
+    if warning < 1 or warning > 99:
+        raise HTTPException(status_code=400, detail="Warning threshold must be between 1 and 99 percent.")
+    if critical < 2 or critical > 100:
+        raise HTTPException(status_code=400, detail="Critical threshold must be between 2 and 100 percent.")
+    if critical <= warning:
+        raise HTTPException(status_code=400, detail="Critical threshold must be higher than warning threshold.")
+    return warning, critical
+
+
+def current_local_disk_settings() -> dict:
+    warning_percent, critical_percent = local_disk_thresholds()
+    exists = LOCAL_DATA_ROOT.exists()
+    total = used = free = 0
+    used_percent = 0.0
+    status_value = "warn"
+    message = f"Local data root does not exist yet: {LOCAL_DATA_ROOT}"
+
+    if exists:
+        usage = shutil.disk_usage(LOCAL_DATA_ROOT)
+        total = usage.total
+        used = usage.used
+        free = usage.free
+        used_percent = round((used / total) * 100, 1) if total else 0.0
+        status_value = "ok"
+        if used_percent >= critical_percent:
+            status_value = "error"
+        elif used_percent >= warning_percent:
+            status_value = "warn"
+        message = f"Local data disk is {used_percent}% used."
+
+    return {
+        "local_data_root": str(LOCAL_DATA_ROOT),
+        "exists": exists,
+        "warning_percent": warning_percent,
+        "critical_percent": critical_percent,
+        "total_bytes": total,
+        "used_bytes": used,
+        "free_bytes": free,
+        "used_percent": used_percent,
+        "total": format_bytes(total),
+        "used": format_bytes(used),
+        "free": format_bytes(free),
+        "status": status_value,
+        "message": message,
     }
 
 
@@ -2230,6 +2395,7 @@ def build_health_payload() -> dict:
     frontend_build_exists = (FRONTEND_DIST_DIR / "index.html").is_file()
     job_log_dir_exists = JOB_LOG_DIR.is_dir()
     upgrade_helper_exists = UPGRADE_HELPER.is_file()
+    local_disk = current_local_disk_settings()
     expected_timezone, configured_ntp_servers = configured_time_settings()
     configured_timezone = timedatectl_value("Timezone")
     ntp_synchronized = timedatectl_value("NTPSynchronized")
@@ -2263,6 +2429,10 @@ def build_health_payload() -> dict:
         "job_log_dir": health_check_item(
             "ok" if job_log_dir_exists else "warn",
             f"Job log directory exists: {JOB_LOG_DIR}" if job_log_dir_exists else f"Job log directory does not exist yet: {JOB_LOG_DIR}",
+        ),
+        "local_disk": health_check_item(
+            local_disk.get("status", "warn"),
+            local_disk.get("message", "Local disk usage is unavailable."),
         ),
         "upgrade_helper": health_check_item(
             "ok" if upgrade_helper_exists else "warn",
@@ -2338,6 +2508,7 @@ def backup_monitoring_summary() -> dict:
     failed_jobs = []
     never_run_jobs = []
     running_jobs = []
+    warning_jobs = []
 
     for job in jobs:
         job_name = str(job.get("name") or "").strip()
@@ -2375,6 +2546,8 @@ def backup_monitoring_summary() -> dict:
 
         if last_status in {"failed", "timeout"}:
             failed_jobs.append(item)
+        elif last_status == "warning":
+            warning_jobs.append(item)
         elif last_status == "never_run":
             never_run_jobs.append(item)
         elif last_status in {"running", "queued", "retrying"}:
@@ -2385,6 +2558,8 @@ def backup_monitoring_summary() -> dict:
     backup_status = "ok"
     if failed_jobs:
         backup_status = "error"
+    elif warning_jobs:
+        backup_status = "warn"
     elif never_run_jobs:
         backup_status = "warn"
 
@@ -2395,11 +2570,13 @@ def backup_monitoring_summary() -> dict:
         "status": backup_status,
         "jobs_total": len(jobs),
         "jobs_failed": len(failed_jobs),
+        "jobs_warning": len(warning_jobs),
         "jobs_never_run": len(never_run_jobs),
         "jobs_running": len(running_jobs),
         "last_success_at": last_success,
         "last_failure_at": last_failure,
         "failed_jobs": failed_jobs,
+        "warning_jobs": warning_jobs,
         "never_run_jobs": never_run_jobs,
         "running_jobs": running_jobs,
         "jobs": job_items,
@@ -2419,6 +2596,7 @@ def build_monitoring_status() -> dict:
         "scheduler": scheduler_state,
         "redis": checks.get("redis", health_check_item("warn", "Redis status is unavailable.")),
         "rclone": checks.get("rclone_binary", health_check_item("warn", "rclone status is unavailable.")),
+        "local_disk": checks.get("local_disk", health_check_item("warn", "Local disk status is unavailable.")),
         "ntp": health_check_item(
             worst_status(
                 checks.get("time_sync", {}).get("status", "warn"),
@@ -2466,6 +2644,7 @@ def prometheus_metrics_payload(status_payload: dict) -> str:
         lines.append(f'oci_migrator_component_ok{{component="{prometheus_escape_label(component)}"}} {value}')
 
     backups = status_payload.get("backups", {})
+    local_disk = current_local_disk_settings()
     lines.extend(
         [
             "# HELP oci_migrator_backup_jobs Number of active backup jobs.",
@@ -2474,12 +2653,21 @@ def prometheus_metrics_payload(status_payload: dict) -> str:
             "# HELP oci_migrator_backup_jobs_failed Number of active backup jobs whose latest run failed.",
             "# TYPE oci_migrator_backup_jobs_failed gauge",
             f"oci_migrator_backup_jobs_failed {int(backups.get('jobs_failed', 0))}",
+            "# HELP oci_migrator_backup_jobs_warning Number of active backup jobs whose latest run completed with warnings.",
+            "# TYPE oci_migrator_backup_jobs_warning gauge",
+            f"oci_migrator_backup_jobs_warning {int(backups.get('jobs_warning', 0))}",
             "# HELP oci_migrator_backup_jobs_never_run Number of active backup jobs without run history.",
             "# TYPE oci_migrator_backup_jobs_never_run gauge",
             f"oci_migrator_backup_jobs_never_run {int(backups.get('jobs_never_run', 0))}",
             "# HELP oci_migrator_backup_jobs_running Number of active backup jobs currently queued or running.",
             "# TYPE oci_migrator_backup_jobs_running gauge",
             f"oci_migrator_backup_jobs_running {int(backups.get('jobs_running', 0))}",
+            "# HELP oci_migrator_local_disk_used_percent Local data disk used percent.",
+            "# TYPE oci_migrator_local_disk_used_percent gauge",
+            f"oci_migrator_local_disk_used_percent {float(local_disk.get('used_percent', 0))}",
+            "# HELP oci_migrator_local_disk_free_bytes Local data disk free bytes.",
+            "# TYPE oci_migrator_local_disk_free_bytes gauge",
+            f"oci_migrator_local_disk_free_bytes {int(local_disk.get('free_bytes', 0))}",
             "# HELP oci_migrator_backup_last_success_timestamp Unix timestamp for the latest successful backup run.",
             "# TYPE oci_migrator_backup_last_success_timestamp gauge",
             f"oci_migrator_backup_last_success_timestamp {iso_to_unix_seconds(backups.get('last_success_at', '')):.0f}",
@@ -2504,7 +2692,7 @@ def prometheus_metrics_payload(status_payload: dict) -> str:
     for job in backups.get("jobs", []):
         job_label = prometheus_escape_label(job.get("name", ""))
         current_status = str(job.get("last_status") or "unknown").lower()
-        for status_value in ("success", "failed", "timeout", "running", "queued", "never_run", "unknown"):
+        for status_value in ("success", "warning", "failed", "timeout", "running", "queued", "never_run", "unknown"):
             value = 1 if current_status == status_value else 0
             lines.append(
                 f'oci_migrator_backup_job_last_status{{job="{job_label}",status="{status_value}"}} {value}'
@@ -2530,6 +2718,11 @@ async def job_history(limit: int = Query(default=100, ge=1, le=300)):
 @app.get("/job-log-settings")
 async def get_job_log_settings():
     return current_job_log_settings()
+
+
+@app.get("/local-disk-settings")
+async def get_local_disk_settings():
+    return current_local_disk_settings()
 
 
 @app.get("/time-settings")
@@ -2574,6 +2767,24 @@ async def update_job_log_settings(settings: JobLogSettingsRequest):
         )
 
     return current_job_log_settings()
+
+
+@app.put("/local-disk-settings")
+async def update_local_disk_settings(settings: LocalDiskSettingsRequest):
+    warning_percent, critical_percent = validate_local_disk_thresholds(
+        settings.warning_percent,
+        settings.critical_percent,
+    )
+    _write_env_values(
+        ENV_FILE_PATH,
+        {
+            "OCI_MIGRATOR_LOCAL_DISK_WARNING_PERCENT": str(warning_percent),
+            "OCI_MIGRATOR_LOCAL_DISK_CRITICAL_PERCENT": str(critical_percent),
+        },
+    )
+    os.environ["OCI_MIGRATOR_LOCAL_DISK_WARNING_PERCENT"] = str(warning_percent)
+    os.environ["OCI_MIGRATOR_LOCAL_DISK_CRITICAL_PERCENT"] = str(critical_percent)
+    return current_local_disk_settings()
 
 
 @app.get("/upgrade/status")
@@ -2841,7 +3052,10 @@ async def delete_profile(profile_name: str):
 async def save_job(job: DataSyncJob):
     metadata_tags = normalize_metadata_tags(job.metadata_tags)
     lifecycle_policy = normalize_lifecycle_policy(job.lifecycle_policy)
-    existing_job = next((j for j in load_jobs() if j.get("name") == job.name), None)
+    local_retention = validate_local_retention_config(job.local_retention)
+    jobs_snapshot = load_jobs()
+    validate_local_retention_usage(job.name, job.previous_name, job.source_remote, local_retention, jobs_snapshot)
+    existing_job = next((j for j in jobs_snapshot if j.get("name") == job.name), None)
     existing_lifecycle_enabled = bool((existing_job or {}).get("lifecycle_policy", {}).get("enabled"))
     existing_destination_changed = bool(
         existing_job
@@ -2878,8 +3092,10 @@ async def save_job(job: DataSyncJob):
     with JOBS_LOCK:
         jobs = load_jobs()
         job_dict = job.model_dump()
+        job_dict.pop("previous_name", None)
         job_dict["metadata_tags"] = metadata_tags
         job_dict["lifecycle_policy"] = lifecycle_policy
+        job_dict["local_retention"] = local_retention
         existing = next((i for i, j in enumerate(jobs) if j['name'] == job.name), None)
 
         if existing is not None:
@@ -3005,6 +3221,7 @@ async def start_sync_manual(job: DataSyncJob):
     safe_job_name = normalize_job_name(job.name)
     destination = f"{job.dest_profile}_rclone:{job.dest_bucket}"
     metadata_tags = normalize_metadata_tags(job.metadata_tags)
+    local_retention = validate_local_retention_config(job.local_retention)
     upsert_job_run(
         {
             "id": run_id,
@@ -3015,6 +3232,7 @@ async def start_sync_manual(job: DataSyncJob):
             "source": job.source_remote,
             "destination": destination,
             "metadata_tags": metadata_tags,
+            "local_retention": local_retention,
             "details": "Queued for worker.",
             "log_file": str(job_log_path(safe_job_name, run_id)),
         }
@@ -3033,6 +3251,7 @@ async def start_sync_manual(job: DataSyncJob):
                 run_id,
                 "manual",
                 metadata_tags,
+                local_retention,
             ],
             task_id=run_id,
         )

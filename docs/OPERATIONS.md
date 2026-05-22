@@ -91,6 +91,8 @@ The metrics endpoint exposes component health and backup gauges such as:
 oci_migrator_component_ok{component="redis"} 1
 oci_migrator_backup_jobs 8
 oci_migrator_backup_jobs_failed 1
+oci_migrator_local_disk_used_percent 62.4
+oci_migrator_local_disk_free_bytes 41234567890
 oci_migrator_backup_job_last_run_timestamp{job="CustomerA",status="success"} 1779473400
 ```
 
@@ -155,6 +157,16 @@ When creating a server local folder in the UI, it can optionally be exposed as S
 - `Enable NFSv4 Share` exports the same local folder with `rw,sync,no_subtree_check,root_squash` and opens TCP `2049`. Add only trusted client IPs, hostnames, or CIDR ranges.
 
 The SMB password is not stored in the app config. Samba stores its own password hash. NFS access is controlled by the allowed client list saved with the remote. Deleting a remote that owns a managed share removes the Samba share block and/or NFS export block, but it does not delete the underlying local data folder.
+
+## Local Cleanup
+
+Local cleanup is configured per backup job. It is only supported when the source is a managed server local folder under `/var/lib/oci-migrator/local`.
+
+When enabled, cleanup runs after `rclone` exits successfully. It deletes files older than the configured retention window, skips files modified within the configured safety window, removes empty child directories, and records the result in the job history as `local_cleanup`.
+
+Only one active cleanup policy should own a given local source path. The UI and API block saving a second job with cleanup enabled on the same source.
+
+Settings -> Local Disk Usage controls warning and critical thresholds for the managed local data disk. The status appears in `/health`, `/monitoring/status`, and Prometheus `/metrics`.
 
 ## Runtime Files
 
