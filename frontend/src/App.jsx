@@ -439,6 +439,7 @@ export default function App() {
   const [newBucketConfig, setNewBucketConfig] = useState(DEFAULT_NEW_BUCKET_CONFIG);
   const [newFolderName, setNewFolderName] = useState('');
   const [bucketLifecycleForm, setBucketLifecycleForm] = useState(createDefaultLifecyclePolicy);
+  const [bucketLifecycleNotice, setBucketLifecycleNotice] = useState(null);
   const [savingBucketSettings, setSavingBucketSettings] = useState(false);
 
   const showError = (title, err) => {
@@ -1406,39 +1407,40 @@ export default function App() {
   };
   const handleSaveBucketLifecyclePolicy = async () => {
       if (!storageProfile || !selectedBucket) return;
+      setBucketLifecycleNotice(null);
       const lifecyclePolicy = normalizeLifecyclePolicy(bucketLifecycleForm);
       const lifecycleRules = lifecyclePolicy.rules || [];
       if (lifecyclePolicy.enabled && !lifecycleRules.length) {
-        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Create at least one lifecycle rule or disable lifecycle management.' });
+        setBucketLifecycleNotice({ type: 'error', message: 'Create at least one lifecycle rule or disable lifecycle management.' });
         return;
       }
       if (lifecycleRules.some(rule => !rule.name)) {
-        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Each lifecycle rule needs a name.' });
+        setBucketLifecycleNotice({ type: 'error', message: 'Each lifecycle rule needs a name.' });
         return;
       }
       const lifecycleRuleNames = lifecycleRules.map(rule => rule.name.toLowerCase());
       if (new Set(lifecycleRuleNames).size !== lifecycleRuleNames.length) {
-        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Lifecycle rule names must be unique.' });
+        setBucketLifecycleNotice({ type: 'error', message: 'Lifecycle rule names must be unique.' });
         return;
       }
       if (lifecycleRules.some(rule => Number.isNaN(rule.days))) {
-        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Lifecycle days must be positive whole numbers.' });
+        setBucketLifecycleNotice({ type: 'error', message: 'Lifecycle days must be positive whole numbers.' });
         return;
       }
       if (lifecycleRules.some(rule => !Number.isInteger(rule.days) || rule.days < 1 || rule.days > 36500)) {
-        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Lifecycle days must be between 1 and 36500.' });
+        setBucketLifecycleNotice({ type: 'error', message: 'Lifecycle days must be between 1 and 36500.' });
         return;
       }
       if (lifecycleRules.some(rule => normalizeLifecycleFilters(rule).length > 20)) {
-        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'OCI allows at most 20 object name filters per lifecycle rule.' });
+        setBucketLifecycleNotice({ type: 'error', message: 'OCI allows at most 20 object name filters per lifecycle rule.' });
         return;
       }
       if (lifecycleRules.some(rule => normalizeLifecycleFilters(rule).some(filter => !filter.value))) {
-        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Lifecycle object name filters need a value.' });
+        setBucketLifecycleNotice({ type: 'error', message: 'Lifecycle object name filters need a value.' });
         return;
       }
       if (lifecycleRules.some(rule => normalizeLifecycleFilters(rule).some(filter => filter.value.length > 1024 || /[\r\n\0]/.test(filter.value)))) {
-        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Lifecycle filter values must be single-line text up to 1024 characters.' });
+        setBucketLifecycleNotice({ type: 'error', message: 'Lifecycle filter values must be single-line text up to 1024 characters.' });
         return;
       }
       setSavingBucketSettings(true);
@@ -1448,10 +1450,13 @@ export default function App() {
           bucket_name: selectedBucket,
           lifecycle_policy: lifecyclePolicy
         });
-        showSuccess('Bucket lifecycle policy updated.');
+        setBucketLifecycleNotice({ type: 'success', message: 'Bucket lifecycle policy updated.' });
         await loadSelectedBucketSettings(storageProfile, selectedBucket);
       } catch (err) {
-        showError('Failed to update bucket lifecycle policy', err);
+        console.error(err);
+        if (err?.response?.status !== 401) {
+          setBucketLifecycleNotice({ type: 'error', message: formatApiError(err, 'Failed to update bucket lifecycle policy.') });
+        }
       } finally {
         setSavingBucketSettings(false);
       }
@@ -3153,6 +3158,15 @@ export default function App() {
                                </button>
                              </div>
                            </div>
+                           {bucketLifecycleNotice && (
+                             <div className={`mx-4 mt-4 rounded-md border px-3 py-2 text-xs font-semibold ${
+                               bucketLifecycleNotice.type === 'success'
+                                 ? 'border-green-200 bg-green-50 text-green-700'
+                                 : 'border-red-200 bg-red-50 text-red-700'
+                             }`}>
+                               {bucketLifecycleNotice.message}
+                             </div>
+                           )}
                            {bucketLifecycleForm.enabled ? (
                              <div className="p-4 space-y-3">
                                {(bucketLifecycleForm.rules || []).map((rule, ruleIndex) => {
