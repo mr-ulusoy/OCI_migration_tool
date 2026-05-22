@@ -275,6 +275,8 @@ PY
     fail "Generated Samba configuration did not pass testparm."
   fi
 
+  chown root:root "$SMB_CONF"
+  chmod 644 "$SMB_CONF"
   rm -f "$backup_file"
 }
 
@@ -315,6 +317,9 @@ PY
   if command -v testparm >/dev/null 2>&1; then
     testparm -s "$SMB_CONF" >/dev/null 2>&1 || fail "Samba configuration is invalid after removing share."
   fi
+
+  chown root:root "$SMB_CONF"
+  chmod 644 "$SMB_CONF"
 }
 
 write_nfs_exports() {
@@ -386,6 +391,8 @@ PY
     fail "Generated NFS exports configuration did not pass exportfs."
   fi
 
+  chown root:root "$NFS_EXPORTS_FILE"
+  chmod 644 "$NFS_EXPORTS_FILE"
   rm -f "$backup_file"
 }
 
@@ -424,6 +431,8 @@ shutil.move(tmp_name, exports_file)
 PY
 
   exportfs -ra >/dev/null 2>&1 || fail "NFS exports configuration is invalid after removing share."
+  chown root:root "$NFS_EXPORTS_FILE"
+  chmod 644 "$NFS_EXPORTS_FILE"
 }
 
 restart_samba() {

@@ -1469,6 +1469,11 @@ export default function App() {
     if (status === 'PROGRESS') return 'text-blue-500';
     return 'text-orange-500';
   };
+  const autoTieringBlockedByLifecycle = Boolean(
+    bucketProtection
+    && !bucketProtection.auto_tiering_enabled
+    && bucketProtection.has_infrequent_access_lifecycle_rule
+  );
 
   if (!isAuthenticated) {
     return (
@@ -2971,7 +2976,11 @@ export default function App() {
                              className="bg-white border border-gray-200 text-gray-600 py-2 rounded-md font-semibold hover:text-[#9c3029] hover:bg-gray-50 disabled:opacity-60 flex items-center justify-center gap-2 text-xs"
                            >
                              {bucketProtectionLoading ? <Loader2 className="animate-spin" size={14} /> : <Archive size={14} />}
-                             {bucketProtection?.auto_tiering_enabled ? 'Disable Auto-Tiering' : 'Enable Auto-Tiering'}
+                             {bucketProtection?.auto_tiering_enabled
+                               ? 'Disable Auto-Tiering'
+                               : autoTieringBlockedByLifecycle
+                                 ? 'Auto-Tiering Unavailable'
+                                 : 'Enable Auto-Tiering'}
                            </button>
                            <button
                              type="button"
@@ -2988,9 +2997,9 @@ export default function App() {
                            </button>
                          </div>
 
-                         {bucketProtection && !bucketProtection.can_enable_auto_tiering && !bucketProtection.auto_tiering_enabled && (
-                           <div className="text-[10px] text-amber-700 bg-amber-50 border border-amber-100 rounded-md p-2">
-                             Auto-Tiering cannot be enabled while a lifecycle rule moves objects to Infrequent Access.
+                         {autoTieringBlockedByLifecycle && (
+                           <div className="text-[10px] text-gray-600 bg-gray-50 border border-gray-200 rounded-md p-2">
+                             Auto-Tiering is currently off. It cannot be enabled while this bucket has a lifecycle rule that moves objects to Infrequent Access; lifecycle rules can still be saved.
                            </div>
                          )}
                          {bucketProtection && !bucketProtection.can_enable_versioning && !bucketProtection.versioning_enabled && (

@@ -1385,6 +1385,18 @@ def normalize_auto_tiering(value: str) -> str:
     return allowed[auto_tiering]
 
 
+def normalized_bucket_auto_tiering(value: object) -> str:
+    auto_tiering = str(value or "Disabled").strip()
+    if auto_tiering.replace("_", "").replace("-", "").lower() == "infrequentaccess":
+        return "InfrequentAccess"
+    return "Disabled"
+
+
+def is_infrequent_access_lifecycle_rule(rule) -> bool:
+    action = str(getattr(rule, "action", "") or "")
+    return action.replace("_", "").replace("-", "").lower() == "infrequentaccess"
+
+
 def normalize_lifecycle_policy(policy: LifecyclePolicyConfig | dict | None) -> dict:
     if policy is None:
         policy = LifecyclePolicyConfig()
@@ -1566,7 +1578,7 @@ def apply_job_lifecycle_policy(job_name: str, profile_name: str, destination: st
     _, client, namespace = object_storage_context(profile_name)
     bucket = get_bucket_with_auto_tiering(client, namespace, bucket_name)
     if policy.get("enabled") and policy.get("infrequent_access_after_days"):
-        auto_tiering = str(getattr(bucket, "auto_tiering", "") or "")
+        auto_tiering = normalized_bucket_auto_tiering(getattr(bucket, "auto_tiering", ""))
         if auto_tiering == "InfrequentAccess":
             raise HTTPException(
                 status_code=400,
@@ -3567,7 +3579,8 @@ async def bucket_protection(profile_name: str = Query(...), bucket_name: str = Q
 
         versioning = getattr(bucket, "versioning", "") or "Disabled"
         storage_tier = getattr(bucket, "storage_tier", "") or "Standard"
-        auto_tiering = getattr(bucket, "auto_tiering", "") or "Disabled"
+        auto_tiering = normalized_bucket_auto_tiering(getattr(bucket, "auto_tiering", ""))
+        has_infrequent_access_lifecycle_rule = any(is_infrequent_access_lifecycle_rule(rule) for rule in lifecycle_rules)
         retention_rule_details = [retention_rule_summary(rule) for rule in retention_rules]
         return {
             "profile_name": profile_name,
@@ -3575,6 +3588,7 @@ async def bucket_protection(profile_name: str = Query(...), bucket_name: str = Q
             "storage_tier": storage_tier,
             "auto_tiering": auto_tiering,
             "auto_tiering_enabled": auto_tiering == "InfrequentAccess",
+            "has_infrequent_access_lifecycle_rule": has_infrequent_access_lifecycle_rule,
             "versioning": versioning,
             "versioning_enabled": str(versioning).lower() == "enabled",
             "versioning_suspended": str(versioning).lower() == "suspended",
@@ -3590,9 +3604,7 @@ async def bucket_protection(profile_name: str = Query(...), bucket_name: str = Q
             "retention_rules": retention_rule_details,
             "can_enable_versioning": str(versioning).lower() != "enabled" and not retention_rule_details,
             "can_suspend_versioning": str(versioning).lower() == "enabled",
-            "can_enable_auto_tiering": not any(
-                getattr(rule, "action", "") == "INFREQUENT_ACCESS" for rule in lifecycle_rules
-            ),
+            "can_enable_auto_tiering": not has_infrequent_access_lifecycle_rule,
         }
     except HTTPException:
         raise
@@ -3650,9 +3662,7 @@ async def update_bucket_auto_tiering(req: BucketAutoTieringReq):
         auto_tiering = normalize_auto_tiering(req.auto_tiering)
         _, os_client, namespace = object_storage_context(req.profile_name)
         lifecycle_rules = get_lifecycle_rules(os_client, namespace, bucket_name)
-        if auto_tiering == "InfrequentAccess" and any(
-            getattr(rule, "action", "") == "INFREQUENT_ACCESS" for rule in lifecycle_rules
-        ):
+        if auto_tiering == "InfrequentAccess" and any(is_infrequent_access_lifecycle_rule(rule) for rule in lifecycle_rules):
             raise HTTPException(
                 status_code=400,
                 detail="OCI does not allow Auto-Tiering when a lifecycle rule moves objects to Infrequent Access.",
