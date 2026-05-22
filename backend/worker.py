@@ -102,10 +102,26 @@ def migrate_single_vm(self, src_p, dst_p, vm_id, dst_comp, bucket):
         raise self.retry(exc=e, countdown=60)
 
 # --- TASK 2: Rclone Sync ---
+def normalize_metadata_tags(metadata_tags=None):
+    normalized_tags = []
+    seen_keys = set()
+    for tag in metadata_tags or []:
+        if not isinstance(tag, dict):
+            continue
+        key = str(tag.get("key", "")).strip()
+        value = str(tag.get("value", "")).strip()
+        if not key or not value or key.lower() in seen_keys:
+            continue
+        seen_keys.add(key.lower())
+        normalized_tags.append({"key": key, "value": value})
+    return normalized_tags
+
+
 @celery_app.task(bind=True, name="worker.rclone_sync_task")
-def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", transfers=4, checkers=8, buffer_size="16M", job_name="default", run_id=None, trigger="manual"):
+def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", transfers=4, checkers=8, buffer_size="16M", job_name="default", run_id=None, trigger="manual", metadata_tags=None):
     run_id = run_id or self.request.id
     dest = f"{dest_profile}_rclone:{dest_bucket}"
+    metadata_tags = normalize_metadata_tags(metadata_tags)
     ensure_job_log_dir()
     log_file = job_log_path(job_name, run_id)
     update_job_run(
@@ -115,6 +131,7 @@ def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", trans
         trigger=trigger,
         source=source,
         destination=dest,
+        metadata_tags=metadata_tags,
         details="Job is running.",
         log_file=str(log_file),
         started_at=datetime.utcnow().isoformat() + "Z",
@@ -139,6 +156,8 @@ def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", trans
         "--retries", "10", 
         "--use-mmap"
     ]
+    for tag in metadata_tags:
+        cmd.extend(["--metadata-set", f"{tag['key']}={tag['value']}"])
     
     timeout = rclone_timeout_seconds()
 

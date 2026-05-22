@@ -101,6 +101,7 @@ def main():
                             "trigger": "scheduled",
                             "source": job["source_remote"],
                             "destination": destination,
+                            "metadata_tags": job.get("metadata_tags", []),
                             "details": "Queued by scheduler.",
                             "log_file": str(job_log_path(safe_job_name, run_id)),
                         }
@@ -120,6 +121,7 @@ def main():
                                 safe_job_name,
                                 run_id,
                                 "scheduled",
+                                job.get("metadata_tags", []),
                             ],
                             task_id=run_id,
                         )

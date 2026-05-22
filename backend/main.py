@@ -24,7 +24,7 @@ import uvicorn
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
 from job_logs import JOB_LOG_DIR, job_log_path, legacy_job_log_path, resolve_readable_log_path, tail_file
 from job_store import JOB_HISTORY_FILE, get_job_run, list_job_runs, upsert_job_run
@@ -393,6 +393,12 @@ class ScheduleSchema(BaseModel):
     day_of_week: Optional[str] = None
     day_of_month: Optional[str] = None
 
+
+class MetadataTag(BaseModel):
+    key: str
+    value: str
+
+
 class DataSyncJob(BaseModel):
     name: str
     source_remote: str
@@ -403,6 +409,7 @@ class DataSyncJob(BaseModel):
     checkers: int = 8
     buffer_size: str = "16M"
     is_active: bool = True
+    metadata_tags: List[MetadataTag] = Field(default_factory=list)
     schedule: ScheduleSchema
 
 class BulkMigrationJob(BaseModel):
@@ -790,6 +797,39 @@ def current_job_log_settings() -> dict:
         "rotation_frequency": "daily",
         "logrotate_file": str(JOB_LOGROTATE_FILE),
     }
+
+
+def normalize_metadata_tags(tags: list[MetadataTag | dict]) -> list[dict]:
+    normalized_tags = []
+    seen_keys = set()
+
+    for tag in tags or []:
+        raw_key = tag.key if isinstance(tag, MetadataTag) else str(tag.get("key", ""))
+        raw_value = tag.value if isinstance(tag, MetadataTag) else str(tag.get("value", ""))
+        key = raw_key.strip()
+        value = raw_value.strip()
+
+        if not key and not value:
+            continue
+        if not key or not value:
+            raise HTTPException(status_code=400, detail="Metadata tags need both a key and a value.")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", key):
+            raise HTTPException(
+                status_code=400,
+                detail="Metadata tag keys must start with a letter or number and may contain letters, numbers, dot, underscore, and dash.",
+            )
+        if key.lower() in seen_keys:
+            raise HTTPException(status_code=400, detail=f"Duplicate metadata tag key: {key}")
+        if len(value) > 1024 or any(char in value for char in "\r\n\0"):
+            raise HTTPException(status_code=400, detail="Metadata tag values must be single-line text up to 1024 characters.")
+
+        seen_keys.add(key.lower())
+        normalized_tags.append({"key": key, "value": value})
+
+    if len(normalized_tags) > 20:
+        raise HTTPException(status_code=400, detail="A sync job can have at most 20 metadata tags.")
+
+    return normalized_tags
 
 
 def job_log_helper_command() -> list[str]:
@@ -1517,7 +1557,8 @@ async def delete_profile(profile_name: str):
 async def save_job(job: DataSyncJob):
     with JOBS_LOCK:
         jobs = load_jobs()
-        job_dict = job.dict()
+        job_dict = job.model_dump()
+        job_dict["metadata_tags"] = normalize_metadata_tags(job.metadata_tags)
         existing = next((i for i, j in enumerate(jobs) if j['name'] == job.name), None)
 
         if existing is not None:
@@ -1624,6 +1665,7 @@ async def start_sync_manual(job: DataSyncJob):
     run_id = str(uuid.uuid4())
     safe_job_name = normalize_job_name(job.name)
     destination = f"{job.dest_profile}_rclone:{job.dest_bucket}"
+    metadata_tags = normalize_metadata_tags(job.metadata_tags)
     upsert_job_run(
         {
             "id": run_id,
@@ -1633,6 +1675,7 @@ async def start_sync_manual(job: DataSyncJob):
             "trigger": "manual",
             "source": job.source_remote,
             "destination": destination,
+            "metadata_tags": metadata_tags,
             "details": "Queued for worker.",
             "log_file": str(job_log_path(safe_job_name, run_id)),
         }
@@ -1650,6 +1693,7 @@ async def start_sync_manual(job: DataSyncJob):
                 safe_job_name,
                 run_id,
                 "manual",
+                metadata_tags,
             ],
             task_id=run_id,
         )

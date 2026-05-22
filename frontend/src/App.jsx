@@ -4,7 +4,7 @@ import {
   Cloud, Shield, Database, Search, Key, Loader2, CheckCircle,
   ArrowRight, FileText, Archive, Edit, Trash2,
   Folder, Plus, RefreshCw, Globe, Cpu, Clock, Activity, Terminal,
-  Lock, LogOut, Download, HeartPulse, AlertCircle, X, Settings, Save
+  Lock, LogOut, Download, HeartPulse, AlertCircle, X, Settings, Save, Tags
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (
@@ -42,6 +42,7 @@ const createDefaultSyncJob = () => ({
   transfers: 16,
   checkers: 32,
   buffer_size: '128M',
+  metadata_tags: [],
   schedule: { frequency: 'none', time: '02:00', day_of_week: 'monday', day_of_month: '1' }
 });
 
@@ -111,6 +112,15 @@ function remoteTargetFromPath(value = '') {
   const rawValue = String(value || '');
   const separatorIndex = rawValue.indexOf(':');
   return separatorIndex >= 0 ? rawValue.slice(separatorIndex + 1) : '';
+}
+
+function normalizeMetadataTags(tags = []) {
+  return tags
+    .map(tag => ({
+      key: String(tag?.key || '').trim(),
+      value: String(tag?.value || '').trim()
+    }))
+    .filter(tag => tag.key || tag.value);
 }
 
 export default function App() {
@@ -721,6 +731,25 @@ export default function App() {
       setNotice({ type: 'error', title: 'Missing job fields', message: 'Job name, source remote, and destination bucket are required.' });
       return;
     }
+
+    const metadataTags = normalizeMetadataTags(syncJob.metadata_tags);
+    if (metadataTags.some(tag => !tag.key || !tag.value)) {
+      setNotice({ type: 'error', title: 'Invalid metadata', message: 'Metadata tags need both a key and a value.' });
+      return;
+    }
+    if (metadataTags.some(tag => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(tag.key))) {
+      setNotice({ type: 'error', title: 'Invalid metadata', message: 'Metadata keys must start with a letter or number and may contain letters, numbers, dot, underscore, and dash.' });
+      return;
+    }
+    const metadataKeys = metadataTags.map(tag => tag.key.toLowerCase());
+    if (new Set(metadataKeys).size !== metadataKeys.length) {
+      setNotice({ type: 'error', title: 'Invalid metadata', message: 'Metadata tag keys must be unique.' });
+      return;
+    }
+    if (metadataTags.some(tag => tag.value.length > 1024 || /[\r\n\0]/.test(tag.value))) {
+      setNotice({ type: 'error', title: 'Invalid metadata', message: 'Metadata values must be single-line text up to 1024 characters.' });
+      return;
+    }
     if (syncJob.schedule.frequency === 'monthly') {
       const dayOfMonth = Number(syncJob.schedule.day_of_month);
       if (!Number.isInteger(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31) {
@@ -730,7 +759,7 @@ export default function App() {
     }
     setLoading(true);
     try {
-      await api.post(`/save-job`, syncJob);
+      await api.post(`/save-job`, { ...syncJob, metadata_tags: metadataTags });
       if (editingJobName && editingJobName !== syncJob.name) {
         await api.delete(`/delete-job/${encodeURIComponent(editingJobName)}`);
       }
@@ -748,7 +777,8 @@ export default function App() {
       schedule: {
         ...createDefaultSyncJob().schedule,
         ...(job.schedule || {})
-      }
+      },
+      metadata_tags: normalizeMetadataTags(job.metadata_tags)
     };
     setEditingJobName(job.name);
     setSyncJob(normalizedJob);
@@ -1436,6 +1466,11 @@ export default function App() {
                           <div>
                             <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Mode</div>
                             <span className="text-[10px] px-2 py-0.5 rounded-full border border-gray-200 bg-gray-50 text-gray-600 font-bold uppercase">{job.sync_mode || 'copy'}</span>
+                            {Boolean(job.metadata_tags?.length) && (
+                              <div className="mt-1 text-[10px] text-gray-400 flex items-center gap-1">
+                                <Tags size={11} /> {job.metadata_tags.length}
+                              </div>
+                            )}
                           </div>
                           <div className="min-w-0">
                             <div className="xl:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Last Run</div>
@@ -1589,6 +1624,62 @@ export default function App() {
                       {destBuckets.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
                     </select>
                   </div>
+                </div>
+                <div className="mb-6 border border-gray-200 rounded-md overflow-hidden">
+                  <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 flex items-center justify-between gap-3">
+                    <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Tags size={16}/> Metadata Tags</h4>
+                    <button
+                      type="button"
+                      onClick={() => setSyncJob(prev => ({
+                        ...prev,
+                        metadata_tags: [...(prev.metadata_tags || []), { key: '', value: '' }]
+                      }))}
+                      className="px-2.5 py-1.5 bg-white border border-gray-200 text-gray-600 rounded-md text-xs font-semibold hover:text-[#9c3029] hover:bg-gray-50 flex items-center gap-1"
+                    >
+                      <Plus size={13} /> Add
+                    </button>
+                  </div>
+                  {(syncJob.metadata_tags || []).length > 0 ? (
+                    <div className="divide-y divide-gray-100">
+                      {(syncJob.metadata_tags || []).map((tag, index) => (
+                        <div key={index} className="grid grid-cols-[1fr_1fr_34px] gap-3 p-3 items-center">
+                          <input
+                            value={tag.key}
+                            onChange={e => setSyncJob(prev => {
+                              const nextTags = [...(prev.metadata_tags || [])];
+                              nextTags[index] = { ...nextTags[index], key: e.target.value };
+                              return { ...prev, metadata_tags: nextTags };
+                            })}
+                            placeholder="key"
+                            className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                          />
+                          <input
+                            value={tag.value}
+                            onChange={e => setSyncJob(prev => {
+                              const nextTags = [...(prev.metadata_tags || [])];
+                              nextTags[index] = { ...nextTags[index], value: e.target.value };
+                              return { ...prev, metadata_tags: nextTags };
+                            })}
+                            placeholder="value"
+                            className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setSyncJob(prev => ({
+                              ...prev,
+                              metadata_tags: (prev.metadata_tags || []).filter((_, tagIndex) => tagIndex !== index)
+                            }))}
+                            className="p-2 bg-white border border-gray-200 text-gray-500 rounded-md hover:text-[#9c3029] hover:bg-gray-50"
+                            title="Remove metadata tag"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="p-4 text-xs text-gray-400">No metadata tags configured.</div>
+                  )}
                 </div>
                 
                 {/* SCHEMALÄGGNING & OPTIMERING (Transfers, Checkers, Buffer, Time) */}
