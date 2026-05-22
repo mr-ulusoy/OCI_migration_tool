@@ -1095,6 +1095,10 @@ def get_lifecycle_rules(client, namespace: str, bucket_name: str) -> list:
         raise
 
 
+def get_bucket_with_auto_tiering(client, namespace: str, bucket_name: str):
+    return client.get_bucket(namespace, bucket_name, fields=["autoTiering"]).data
+
+
 def build_lifecycle_rule(name: str, target: str, action: str, days: int, prefix: str):
     object_filter = None
     if prefix:
@@ -1169,7 +1173,7 @@ def put_lifecycle_rules(client, namespace: str, bucket_name: str, rules: list) -
 def apply_job_lifecycle_policy(job_name: str, profile_name: str, destination: str, policy: dict) -> int:
     bucket_name = destination_bucket_name(destination)
     _, client, namespace = object_storage_context(profile_name)
-    bucket = client.get_bucket(namespace, bucket_name).data
+    bucket = get_bucket_with_auto_tiering(client, namespace, bucket_name)
     if policy.get("enabled") and policy.get("infrequent_access_after_days"):
         auto_tiering = str(getattr(bucket, "auto_tiering", "") or "")
         if auto_tiering == "InfrequentAccess":
@@ -2750,7 +2754,7 @@ async def bucket_protection(profile_name: str = Query(...), bucket_name: str = Q
     try:
         bucket_name = destination_bucket_name(bucket_name)
         _, os_client, namespace = object_storage_context(profile_name)
-        bucket = os_client.get_bucket(namespace, bucket_name).data
+        bucket = get_bucket_with_auto_tiering(os_client, namespace, bucket_name)
         lifecycle_rules = get_lifecycle_rules(os_client, namespace, bucket_name)
         retention_rules = []
         try:
