@@ -349,6 +349,7 @@ UPGRADE_STATUS_FILE = Path(
     os.getenv("OCI_MIGRATOR_UPGRADE_STATUS_FILE", "/var/lib/oci-migrator/upgrade/status.json")
 ).resolve()
 UPGRADE_LOG_FILE = Path(os.getenv("OCI_MIGRATOR_UPGRADE_LOG_FILE", "/var/log/oci-migrator/upgrade.log")).resolve()
+UPGRADE_LOCK_DIR = UPGRADE_STATUS_FILE.parent / "upgrade.lock"
 EXPECTED_TIMEZONE = os.getenv("OCI_MIGRATOR_TIMEZONE", "Europe/Stockholm")
 NTP_SERVERS = os.getenv(
     "OCI_MIGRATOR_NTP_SERVERS",
@@ -967,6 +968,19 @@ def upgrade_helper_command() -> list[str]:
     return [sudo_path, "-n", str(UPGRADE_HELPER), "start"]
 
 
+def upgrade_process_is_running() -> bool:
+    pid_file = UPGRADE_LOCK_DIR / "pid"
+    try:
+        if pid_file.is_file():
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+            os.kill(pid, 0)
+            return True
+    except (ValueError, OSError):
+        return False
+
+    return False
+
+
 def history_status_for_api(run: dict) -> str:
     status_map = {
         "queued": "PENDING",
@@ -1220,7 +1234,7 @@ async def check_for_upgrade():
 async def start_upgrade():
     with UPGRADE_LOCK:
         current_status = read_upgrade_status_file()
-        if current_status.get("status") == "running":
+        if current_status.get("status") == "running" and upgrade_process_is_running():
             raise HTTPException(status_code=409, detail="Upgrade is already running.")
 
         command = upgrade_helper_command()

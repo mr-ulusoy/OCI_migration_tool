@@ -144,6 +144,32 @@ git_value() {
   sudo -H -u "$RUN_USER" git -C "$INSTALL_DIR" "$@" 2>/dev/null || true
 }
 
+upgrade_process_is_running() {
+  local lock_dir="$UPGRADE_STATE_DIR/upgrade.lock"
+  local pid_file="$lock_dir/pid"
+  if [ -f "$pid_file" ]; then
+    local pid
+    pid="$(cat "$pid_file" 2>/dev/null || true)"
+    if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+
+  pgrep -f -- "$UPGRADE_HELPER run" >/dev/null 2>&1
+}
+
+clear_stale_upgrade_lock() {
+  local lock_dir="$UPGRADE_STATE_DIR/upgrade.lock"
+  [ -d "$lock_dir" ] || return 0
+
+  if upgrade_process_is_running; then
+    return 1
+  fi
+
+  rm -rf "$lock_dir"
+  return 0
+}
+
 finish_failed() {
   local exit_code=$?
   if [ "$exit_code" -ne 0 ]; then
@@ -160,6 +186,7 @@ schedule_upgrade() {
   validate_config
   prepare_paths
 
+  clear_stale_upgrade_lock || true
   if [ -d "$UPGRADE_STATE_DIR/upgrade.lock" ]; then
     write_status "running" "Upgrade is already running." "$(git_value rev-parse HEAD)" "$(git_value rev-parse "origin/$BRANCH")"
     fail "Upgrade is already running."
@@ -185,10 +212,13 @@ run_upgrade() {
   validate_config
   prepare_paths
 
+  clear_stale_upgrade_lock || true
   if ! mkdir "$UPGRADE_STATE_DIR/upgrade.lock" 2>/dev/null; then
     write_status "running" "Upgrade is already running." "$(git_value rev-parse HEAD)" "$(git_value rev-parse "origin/$BRANCH")"
     fail "Upgrade is already running."
   fi
+  printf '%s\n' "$$" > "$UPGRADE_STATE_DIR/upgrade.lock/pid"
+  chown "$RUN_USER:$RUN_USER" "$UPGRADE_STATE_DIR/upgrade.lock/pid" 2>/dev/null || true
   trap finish_failed EXIT
 
   : > "$UPGRADE_LOG_FILE"
