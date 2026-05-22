@@ -43,6 +43,13 @@ const createDefaultSyncJob = () => ({
   checkers: 32,
   buffer_size: '128M',
   metadata_tags: [],
+  lifecycle_policy: {
+    enabled: false,
+    prefix: '',
+    archive_after_days: '',
+    delete_after_days: '',
+    previous_versions_delete_after_days: ''
+  },
   schedule: { frequency: 'none', time: '02:00', day_of_week: 'monday', day_of_month: '1' }
 });
 
@@ -114,6 +121,10 @@ function remoteTargetFromPath(value = '') {
   return separatorIndex >= 0 ? rawValue.slice(separatorIndex + 1) : '';
 }
 
+function bucketNameFromPath(value = '') {
+  return String(value || '').trim().split('/')[0] || '';
+}
+
 function normalizeObjectMetadataName(value = '') {
   const key = String(value || '').trim().toLowerCase();
   if (!key) return '';
@@ -127,6 +138,22 @@ function normalizeMetadataTags(tags = []) {
       value: String(tag?.value || '').trim()
     }))
     .filter(tag => tag.key || tag.value);
+}
+
+function normalizeLifecycleDays(value) {
+  if (value === '' || value === null || value === undefined) return null;
+  const days = Number(value);
+  return Number.isInteger(days) && days > 0 ? days : Number.NaN;
+}
+
+function normalizeLifecyclePolicy(policy = {}) {
+  return {
+    enabled: Boolean(policy.enabled),
+    prefix: String(policy.prefix || '').trim().replace(/^\/+/, ''),
+    archive_after_days: normalizeLifecycleDays(policy.archive_after_days),
+    delete_after_days: normalizeLifecycleDays(policy.delete_after_days),
+    previous_versions_delete_after_days: normalizeLifecycleDays(policy.previous_versions_delete_after_days)
+  };
 }
 
 export default function App() {
@@ -211,6 +238,8 @@ export default function App() {
   const [jobs, setJobs] = useState([]);
   const [sourceBuckets, setSourceBuckets] = useState([]);
   const [destBuckets, setDestBuckets] = useState([]);
+  const [bucketProtection, setBucketProtection] = useState(null);
+  const [bucketProtectionLoading, setBucketProtectionLoading] = useState(false);
 
   const [syncJob, setSyncJob] = useState(createDefaultSyncJob);
   const [editingJobName, setEditingJobName] = useState('');
@@ -751,6 +780,7 @@ export default function App() {
   const loadDestBuckets = async (profile) => {
     if (!profile) {
       setDestBuckets([]);
+      setBucketProtection(null);
       return [];
     }
 
@@ -765,11 +795,91 @@ export default function App() {
     }
   };
 
+  const fetchBucketProtection = async (profile, bucket) => {
+    const bucketName = bucketNameFromPath(bucket);
+    if (!profile || !bucketName) {
+      setBucketProtection(null);
+      return null;
+    }
+
+    setBucketProtectionLoading(true);
+    try {
+      const res = await api.get('/bucket-protection', {
+        params: { profile_name: profile, bucket_name: bucketName }
+      });
+      setBucketProtection(res.data);
+      return res.data;
+    } catch (err) {
+      showError('Failed to load bucket protection', err);
+      setBucketProtection(null);
+      return null;
+    } finally {
+      setBucketProtectionLoading(false);
+    }
+  };
+
+  const handleEnableBucketVersioning = async () => {
+    const bucketName = bucketNameFromPath(syncJob.dest_bucket);
+    if (!syncJob.dest_profile || !bucketName) return;
+    if (!window.confirm(`Enable Object Versioning on bucket '${bucketName}'? This is configured at bucket level in OCI.`)) {
+      return;
+    }
+
+    setBucketProtectionLoading(true);
+    try {
+      await api.post('/bucket-versioning/enable', {
+        profile_name: syncJob.dest_profile,
+        bucket_name: bucketName
+      });
+      showSuccess('Object Versioning enabled.');
+      await fetchBucketProtection(syncJob.dest_profile, bucketName);
+    } catch (err) {
+      showError('Failed to enable Object Versioning', err);
+    } finally {
+      setBucketProtectionLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (view !== 'builder') return;
+    const bucketName = bucketNameFromPath(syncJob.dest_bucket);
+    if (!syncJob.dest_profile || !bucketName) {
+      setBucketProtection(null);
+      return;
+    }
+
+    let cancelled = false;
+    setBucketProtectionLoading(true);
+    api.get('/bucket-protection', {
+      params: { profile_name: syncJob.dest_profile, bucket_name: bucketName }
+    })
+      .then(res => {
+        if (!cancelled) setBucketProtection(res.data);
+      })
+      .catch(err => {
+        console.error(err);
+        if (!cancelled) {
+          setBucketProtection(null);
+          if (err?.response?.status !== 401) {
+            setNotice({ type: 'error', title: 'Failed to load bucket protection', message: formatApiError(err, 'Failed to load bucket protection') });
+          }
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setBucketProtectionLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [api, view, syncJob.dest_profile, syncJob.dest_bucket]);
+
   const startNewSyncJob = () => {
     setEditingJobName('');
     setSyncJob(createDefaultSyncJob());
     setSourceBuckets([]);
     setDestBuckets([]);
+    setBucketProtection(null);
     setView('builder');
   };
 
@@ -798,6 +908,31 @@ export default function App() {
       setNotice({ type: 'error', title: 'Invalid metadata', message: 'Metadata values must be single-line text up to 1024 characters.' });
       return;
     }
+    const lifecyclePolicy = normalizeLifecyclePolicy(syncJob.lifecycle_policy);
+    if (
+      [lifecyclePolicy.archive_after_days, lifecyclePolicy.delete_after_days, lifecyclePolicy.previous_versions_delete_after_days]
+        .some(value => Number.isNaN(value))
+    ) {
+      setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Lifecycle days must be positive whole numbers.' });
+      return;
+    }
+    if (
+      lifecyclePolicy.enabled
+      && !lifecyclePolicy.archive_after_days
+      && !lifecyclePolicy.delete_after_days
+      && !lifecyclePolicy.previous_versions_delete_after_days
+    ) {
+      setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Enable at least one lifecycle action.' });
+      return;
+    }
+    if (
+      lifecyclePolicy.archive_after_days
+      && lifecyclePolicy.delete_after_days
+      && lifecyclePolicy.delete_after_days <= lifecyclePolicy.archive_after_days
+    ) {
+      setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Delete after days must be greater than archive after days.' });
+      return;
+    }
     if (syncJob.schedule.frequency === 'monthly') {
       const dayOfMonth = Number(syncJob.schedule.day_of_month);
       if (!Number.isInteger(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31) {
@@ -807,7 +942,7 @@ export default function App() {
     }
     setLoading(true);
     try {
-      await api.post(`/save-job`, { ...syncJob, metadata_tags: metadataTags });
+      await api.post(`/save-job`, { ...syncJob, metadata_tags: metadataTags, lifecycle_policy: lifecyclePolicy });
       if (editingJobName && editingJobName !== syncJob.name) {
         await api.delete(`/delete-job/${encodeURIComponent(editingJobName)}`);
       }
@@ -826,7 +961,11 @@ export default function App() {
         ...createDefaultSyncJob().schedule,
         ...(job.schedule || {})
       },
-      metadata_tags: normalizeMetadataTags(job.metadata_tags)
+      metadata_tags: normalizeMetadataTags(job.metadata_tags),
+      lifecycle_policy: {
+        ...createDefaultSyncJob().lifecycle_policy,
+        ...(job.lifecycle_policy || {})
+      }
     };
     setEditingJobName(job.name);
     setSyncJob(normalizedJob);
@@ -1573,6 +1712,11 @@ export default function App() {
                                   <Tags size={11} /> {job.metadata_tags.length}
                                 </span>
                               )}
+                              {job.lifecycle_policy?.enabled && (
+                                <span className="text-[10px] text-gray-400 flex items-center gap-1">
+                                  <Archive size={11} /> retention
+                                </span>
+                              )}
                             </div>
                           </div>
                           <div className="min-w-0">
@@ -1730,6 +1874,63 @@ export default function App() {
                       <option value="">Select Target Bucket...</option>
                       {destBuckets.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
                     </select>
+                    {syncJob.dest_profile && syncJob.dest_bucket && (
+                      <div className="mt-3 bg-white border border-gray-200 rounded-md p-3 text-xs">
+                        <div className="flex items-center justify-between gap-2 mb-2">
+                          <div className="font-bold text-gray-800 flex items-center gap-1.5">
+                            <Shield size={14} className="text-[#9c3029]" />
+                            Bucket Protection
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => fetchBucketProtection(syncJob.dest_profile, syncJob.dest_bucket)}
+                            className="text-[10px] font-semibold text-gray-500 hover:text-[#9c3029]"
+                          >
+                            {bucketProtectionLoading ? 'Checking...' : 'Refresh'}
+                          </button>
+                        </div>
+                        {bucketProtection ? (
+                          <div className="space-y-2">
+                            <div className="grid grid-cols-3 gap-2">
+                              <div>
+                                <div className="text-[9px] uppercase font-bold text-gray-400">Versioning</div>
+                                <div className={`mt-1 inline-flex px-2 py-0.5 rounded-full border font-bold uppercase ${bucketProtection.versioning_enabled ? 'text-green-700 bg-green-50 border-green-200' : 'text-amber-700 bg-amber-50 border-amber-200'}`}>
+                                  {bucketProtection.versioning || 'Disabled'}
+                                </div>
+                              </div>
+                              <div>
+                                <div className="text-[9px] uppercase font-bold text-gray-400">Lifecycle</div>
+                                <div className="mt-1 font-semibold text-gray-700">{bucketProtection.lifecycle_rule_count || 0} rules</div>
+                              </div>
+                              <div>
+                                <div className="text-[9px] uppercase font-bold text-gray-400">WORM</div>
+                                <div className="mt-1 font-semibold text-gray-700">{bucketProtection.retention_rule_count || 0} rules</div>
+                              </div>
+                            </div>
+                            {!bucketProtection.versioning_enabled && bucketProtection.can_enable_versioning && (
+                              <button
+                                type="button"
+                                onClick={handleEnableBucketVersioning}
+                                disabled={bucketProtectionLoading}
+                                className="w-full mt-1 bg-[#9c3029] text-white py-2 rounded-md font-semibold hover:bg-[#7a2520] disabled:opacity-60 flex items-center justify-center gap-2"
+                              >
+                                {bucketProtectionLoading ? <Loader2 className="animate-spin" size={14} /> : <Shield size={14} />}
+                                Enable Object Versioning
+                              </button>
+                            )}
+                            {!bucketProtection.can_enable_versioning && !bucketProtection.versioning_enabled && (
+                              <div className="text-[10px] text-amber-700 bg-amber-50 border border-amber-100 rounded-md p-2">
+                                Object Versioning cannot be enabled while OCI retention rules are active on this bucket.
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="text-[11px] text-gray-400">
+                            {bucketProtectionLoading ? 'Loading bucket protection...' : 'Protection status is not loaded.'}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
                 <div className="mb-6 border border-gray-200 rounded-md overflow-hidden">
@@ -1786,6 +1987,94 @@ export default function App() {
                     </div>
                   ) : (
                     <div className="p-4 text-xs text-gray-400">No object metadata configured. Enter names like site or ticket-id; OCI stores them as opc-meta-site and opc-meta-ticket-id.</div>
+                  )}
+                </div>
+
+                <div className="mb-6 border border-gray-200 rounded-md overflow-hidden">
+                  <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 flex items-center justify-between gap-3">
+                    <div>
+                      <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Archive size={16}/> OCI Lifecycle Retention</h4>
+                      <p className="mt-1 text-[11px] text-gray-500">Creates managed OCI lifecycle rules on the destination bucket. Empty prefix means the whole bucket.</p>
+                    </div>
+                    <label className="flex items-center gap-2 text-xs font-semibold text-gray-600">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(syncJob.lifecycle_policy?.enabled)}
+                        onChange={e => setSyncJob(prev => ({
+                          ...prev,
+                          lifecycle_policy: {
+                            ...createDefaultSyncJob().lifecycle_policy,
+                            ...(prev.lifecycle_policy || {}),
+                            enabled: e.target.checked
+                          }
+                        }))}
+                        className="accent-[#9c3029]"
+                      />
+                      Manage in OCI
+                    </label>
+                  </div>
+                  {syncJob.lifecycle_policy?.enabled ? (
+                    <div className="p-4 grid grid-cols-1 md:grid-cols-4 gap-3">
+                      <div className="md:col-span-4">
+                        <label className="text-[10px] uppercase font-bold text-gray-500">Object Prefix / Folder</label>
+                        <input
+                          value={syncJob.lifecycle_policy?.prefix || ''}
+                          onChange={e => setSyncJob(prev => ({
+                            ...prev,
+                            lifecycle_policy: { ...prev.lifecycle_policy, prefix: e.target.value }
+                          }))}
+                          placeholder="backup/customer-a/"
+                          className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] uppercase font-bold text-gray-500">Archive After</label>
+                        <input
+                          type="number"
+                          min="1"
+                          value={syncJob.lifecycle_policy?.archive_after_days ?? ''}
+                          onChange={e => setSyncJob(prev => ({
+                            ...prev,
+                            lifecycle_policy: { ...prev.lifecycle_policy, archive_after_days: e.target.value }
+                          }))}
+                          placeholder="30"
+                          className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] uppercase font-bold text-gray-500">Delete After</label>
+                        <input
+                          type="number"
+                          min="1"
+                          value={syncJob.lifecycle_policy?.delete_after_days ?? ''}
+                          onChange={e => setSyncJob(prev => ({
+                            ...prev,
+                            lifecycle_policy: { ...prev.lifecycle_policy, delete_after_days: e.target.value }
+                          }))}
+                          placeholder="365"
+                          className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                        />
+                      </div>
+                      <div className="md:col-span-2">
+                        <label className="text-[10px] uppercase font-bold text-gray-500">Delete Previous Versions After</label>
+                        <input
+                          type="number"
+                          min="1"
+                          value={syncJob.lifecycle_policy?.previous_versions_delete_after_days ?? ''}
+                          onChange={e => setSyncJob(prev => ({
+                            ...prev,
+                            lifecycle_policy: { ...prev.lifecycle_policy, previous_versions_delete_after_days: e.target.value }
+                          }))}
+                          placeholder="90"
+                          className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                        />
+                      </div>
+                      <div className="md:col-span-4 text-[10px] text-gray-500">
+                        These rules are named with an oci-migrator prefix and existing customer-managed OCI lifecycle rules are preserved.
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-4 text-xs text-gray-400">Lifecycle retention is off for this sync job.</div>
                   )}
                 </div>
                 

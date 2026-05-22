@@ -478,6 +478,14 @@ class MetadataTag(BaseModel):
     value: str
 
 
+class LifecyclePolicyConfig(BaseModel):
+    enabled: bool = False
+    prefix: str = ""
+    archive_after_days: Optional[int] = None
+    delete_after_days: Optional[int] = None
+    previous_versions_delete_after_days: Optional[int] = None
+
+
 class DataSyncJob(BaseModel):
     name: str
     source_remote: str
@@ -489,6 +497,7 @@ class DataSyncJob(BaseModel):
     buffer_size: str = "16M"
     is_active: bool = True
     metadata_tags: List[MetadataTag] = Field(default_factory=list)
+    lifecycle_policy: LifecyclePolicyConfig = Field(default_factory=LifecyclePolicyConfig)
     schedule: ScheduleSchema
 
 class BulkMigrationJob(BaseModel):
@@ -512,6 +521,11 @@ class CreateFolderReq(BaseModel):
     profile_name: str
     bucket_name: str
     folder_name: str
+
+
+class BucketProtectionReq(BaseModel):
+    profile_name: str
+    bucket_name: str
 
 # --- Helpers ---
 
@@ -915,6 +929,193 @@ def normalize_metadata_tags(tags: list[MetadataTag | dict]) -> list[dict]:
         raise HTTPException(status_code=400, detail="A sync job can have at most 20 metadata tags.")
 
     return normalized_tags
+
+
+def destination_bucket_name(value: str) -> str:
+    bucket_name = str(value or "").strip().split("/", 1)[0]
+    if not bucket_name:
+        raise HTTPException(status_code=400, detail="Destination bucket is required.")
+    return bucket_name
+
+
+def normalize_lifecycle_prefix(value: str) -> str:
+    prefix = str(value or "").strip().lstrip("/")
+    if len(prefix) > 1024 or any(char in prefix for char in "\r\n\0"):
+        raise HTTPException(status_code=400, detail="Lifecycle prefix must be single-line text up to 1024 characters.")
+    return prefix
+
+
+def normalize_lifecycle_days(value: Optional[int], field_name: str) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a number of days.")
+    if days < 1 or days > 36500:
+        raise HTTPException(status_code=400, detail=f"{field_name} must be between 1 and 36500 days.")
+    return days
+
+
+def normalize_lifecycle_policy(policy: LifecyclePolicyConfig | dict | None) -> dict:
+    if policy is None:
+        policy = LifecyclePolicyConfig()
+    if isinstance(policy, LifecyclePolicyConfig):
+        policy_data = policy.model_dump()
+    else:
+        policy_data = dict(policy)
+
+    normalized = {
+        "enabled": bool(policy_data.get("enabled", False)),
+        "prefix": normalize_lifecycle_prefix(policy_data.get("prefix", "")),
+        "archive_after_days": normalize_lifecycle_days(policy_data.get("archive_after_days"), "Archive after"),
+        "delete_after_days": normalize_lifecycle_days(policy_data.get("delete_after_days"), "Delete after"),
+        "previous_versions_delete_after_days": normalize_lifecycle_days(
+            policy_data.get("previous_versions_delete_after_days"),
+            "Delete previous versions after",
+        ),
+    }
+
+    if normalized["enabled"]:
+        if not any(
+            normalized[key]
+            for key in ("archive_after_days", "delete_after_days", "previous_versions_delete_after_days")
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Enable at least one lifecycle action: archive, delete, or delete previous versions.",
+            )
+        if (
+            normalized["archive_after_days"]
+            and normalized["delete_after_days"]
+            and normalized["delete_after_days"] <= normalized["archive_after_days"]
+        ):
+            raise HTTPException(status_code=400, detail="Delete after days must be greater than archive after days.")
+
+    return normalized
+
+
+def lifecycle_managed_rule_names(job_name: str) -> set[str]:
+    safe_job_name = normalize_job_name(job_name).lower()
+    return {
+        f"oci-migrator-{safe_job_name}-archive",
+        f"oci-migrator-{safe_job_name}-delete",
+        f"oci-migrator-{safe_job_name}-delete-previous",
+    }
+
+
+def object_storage_context(profile_name: str):
+    config = oci.config.from_file(CONFIG_PATH, profile_name)
+    client = oci.object_storage.ObjectStorageClient(config)
+    namespace = client.get_namespace().data
+    return config, client, namespace
+
+
+def get_lifecycle_rules(client, namespace: str, bucket_name: str) -> list:
+    try:
+        policy = client.get_object_lifecycle_policy(namespace, bucket_name).data
+        return list(getattr(policy, "items", None) or [])
+    except oci.exceptions.ServiceError as exc:
+        if exc.status == 404:
+            return []
+        raise
+
+
+def build_lifecycle_rule(name: str, target: str, action: str, days: int, prefix: str):
+    object_filter = None
+    if prefix:
+        object_filter = oci.object_storage.models.ObjectNameFilter(
+            inclusion_prefixes=[prefix],
+            inclusion_patterns=[],
+            exclusion_patterns=[],
+        )
+    return oci.object_storage.models.ObjectLifecycleRule(
+        name=name,
+        target=target,
+        action=action,
+        time_amount=days,
+        time_unit=oci.object_storage.models.ObjectLifecycleRule.TIME_UNIT_DAYS,
+        is_enabled=True,
+        object_name_filter=object_filter,
+    )
+
+
+def desired_lifecycle_rules(job_name: str, policy: dict) -> list:
+    prefix = policy.get("prefix", "")
+    safe_job_name = normalize_job_name(job_name).lower()
+    rules = []
+    if policy.get("archive_after_days"):
+        rules.append(
+            build_lifecycle_rule(
+                f"oci-migrator-{safe_job_name}-archive",
+                "objects",
+                "ARCHIVE",
+                policy["archive_after_days"],
+                prefix,
+            )
+        )
+    if policy.get("delete_after_days"):
+        rules.append(
+            build_lifecycle_rule(
+                f"oci-migrator-{safe_job_name}-delete",
+                "objects",
+                "DELETE",
+                policy["delete_after_days"],
+                prefix,
+            )
+        )
+    if policy.get("previous_versions_delete_after_days"):
+        rules.append(
+            build_lifecycle_rule(
+                f"oci-migrator-{safe_job_name}-delete-previous",
+                "previous-object-versions",
+                "DELETE",
+                policy["previous_versions_delete_after_days"],
+                prefix,
+            )
+        )
+    return rules
+
+
+def put_lifecycle_rules(client, namespace: str, bucket_name: str, rules: list) -> None:
+    details = oci.object_storage.models.PutObjectLifecyclePolicyDetails(items=rules)
+    client.put_object_lifecycle_policy(namespace, bucket_name, details)
+
+
+def apply_job_lifecycle_policy(job_name: str, profile_name: str, destination: str, policy: dict) -> int:
+    bucket_name = destination_bucket_name(destination)
+    _, client, namespace = object_storage_context(profile_name)
+    managed_names = lifecycle_managed_rule_names(job_name)
+    existing_rules = [
+        rule
+        for rule in get_lifecycle_rules(client, namespace, bucket_name)
+        if getattr(rule, "name", "") not in managed_names
+    ]
+    new_rules = desired_lifecycle_rules(job_name, policy) if policy.get("enabled") else []
+    put_lifecycle_rules(client, namespace, bucket_name, [*existing_rules, *new_rules])
+    return len(new_rules)
+
+
+def remove_job_lifecycle_policy(job_name: str, profile_name: str, destination: str) -> None:
+    bucket_name = destination_bucket_name(destination)
+    _, client, namespace = object_storage_context(profile_name)
+    managed_names = lifecycle_managed_rule_names(job_name)
+    existing_rules = get_lifecycle_rules(client, namespace, bucket_name)
+    next_rules = [rule for rule in existing_rules if getattr(rule, "name", "") not in managed_names]
+    if len(next_rules) != len(existing_rules):
+        put_lifecycle_rules(client, namespace, bucket_name, next_rules)
+
+
+def retention_rule_summary(rule) -> dict:
+    duration = getattr(rule, "duration", None)
+    return {
+        "id": getattr(rule, "id", ""),
+        "display_name": getattr(rule, "display_name", ""),
+        "duration": oci.util.to_dict(duration) if duration else None,
+        "time_rule_locked": getattr(rule, "time_rule_locked", None).isoformat()
+        if getattr(rule, "time_rule_locked", None)
+        else "",
+    }
 
 
 def job_log_helper_command() -> list[str]:
@@ -1972,10 +2173,47 @@ async def delete_profile(profile_name: str):
 # --- 2. Job & Schedule Management (JSON Store) ---
 @app.post("/save-job")
 async def save_job(job: DataSyncJob):
+    metadata_tags = normalize_metadata_tags(job.metadata_tags)
+    lifecycle_policy = normalize_lifecycle_policy(job.lifecycle_policy)
+    existing_job = next((j for j in load_jobs() if j.get("name") == job.name), None)
+    existing_lifecycle_enabled = bool((existing_job or {}).get("lifecycle_policy", {}).get("enabled"))
+    existing_destination_changed = bool(
+        existing_job
+        and (
+            existing_job.get("dest_profile") != job.dest_profile
+            or destination_bucket_name(existing_job.get("dest_bucket", "")) != destination_bucket_name(job.dest_bucket)
+        )
+    )
+    lifecycle_rule_count = 0
+    try:
+        if existing_lifecycle_enabled and existing_destination_changed:
+            remove_job_lifecycle_policy(
+                job.name,
+                existing_job.get("dest_profile", ""),
+                existing_job.get("dest_bucket", ""),
+            )
+        if lifecycle_policy.get("enabled") or existing_lifecycle_enabled:
+            lifecycle_rule_count = apply_job_lifecycle_policy(
+                job.name,
+                job.dest_profile,
+                job.dest_bucket,
+                lifecycle_policy,
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_operation_error(
+            500,
+            "Apply OCI lifecycle policy",
+            e,
+            "Check Object Storage permissions for lifecycle policy management on the destination bucket.",
+        )
+
     with JOBS_LOCK:
         jobs = load_jobs()
         job_dict = job.model_dump()
-        job_dict["metadata_tags"] = normalize_metadata_tags(job.metadata_tags)
+        job_dict["metadata_tags"] = metadata_tags
+        job_dict["lifecycle_policy"] = lifecycle_policy
         existing = next((i for i, j in enumerate(jobs) if j['name'] == job.name), None)
 
         if existing is not None:
@@ -1986,7 +2224,12 @@ async def save_job(job: DataSyncJob):
         write_jobs_atomically(jobs)
 
     schedule_state = "ready for scheduling" if job.schedule.frequency != "none" else "saved for manual runs"
-    return {"message": f"Job '{job.name}' {schedule_state}"}
+    lifecycle_state = (
+        f" OCI lifecycle rules applied: {lifecycle_rule_count}."
+        if lifecycle_policy.get("enabled")
+        else " OCI lifecycle rules disabled for this job."
+    )
+    return {"message": f"Job '{job.name}' {schedule_state}.{lifecycle_state}"}
 
 @app.get("/list-jobs")
 async def list_jobs():
@@ -1995,8 +2238,19 @@ async def list_jobs():
 @app.delete("/delete-job/{job_name}")
 async def delete_job(job_name: str):
     with JOBS_LOCK:
-        jobs = [j for j in load_jobs() if j['name'] != job_name]
+        existing_jobs = load_jobs()
+        job_to_delete = next((j for j in existing_jobs if j['name'] == job_name), None)
+        jobs = [j for j in existing_jobs if j['name'] != job_name]
         write_jobs_atomically(jobs)
+    if job_to_delete:
+        try:
+            remove_job_lifecycle_policy(
+                job_name,
+                job_to_delete.get("dest_profile", ""),
+                job_to_delete.get("dest_bucket", ""),
+            )
+        except Exception as exc:
+            logger.warning("Unable to remove lifecycle rules for deleted job '%s': %s", job_name, exc)
     return {"message": "Job deleted"}
 
 # --- 3. Live Logs ---
@@ -2366,6 +2620,82 @@ async def list_buckets(profile: str):
         return [{"name": b.name} for b in buckets]
     except Exception as e:
         raise_operation_error(500, "List buckets", e, "Check storage compartment access for this OCI profile.")
+
+
+@app.get("/bucket-protection")
+async def bucket_protection(profile_name: str = Query(...), bucket_name: str = Query(...)):
+    try:
+        bucket_name = destination_bucket_name(bucket_name)
+        _, os_client, namespace = object_storage_context(profile_name)
+        bucket = os_client.get_bucket(namespace, bucket_name).data
+        lifecycle_rules = get_lifecycle_rules(os_client, namespace, bucket_name)
+        retention_rules = []
+        try:
+            retention_collection = os_client.list_retention_rules(namespace, bucket_name).data
+            retention_rules = list(getattr(retention_collection, "items", None) or [])
+        except oci.exceptions.ServiceError as exc:
+            if exc.status not in (401, 403, 404):
+                raise
+            logger.info("Unable to list retention rules for bucket '%s': %s", bucket_name, exc)
+
+        versioning = getattr(bucket, "versioning", "") or "Disabled"
+        retention_rule_details = [retention_rule_summary(rule) for rule in retention_rules]
+        return {
+            "profile_name": profile_name,
+            "bucket_name": bucket_name,
+            "versioning": versioning,
+            "versioning_enabled": str(versioning).lower() == "enabled",
+            "lifecycle_rule_count": len(lifecycle_rules),
+            "managed_lifecycle_rule_count": len(
+                [
+                    rule
+                    for rule in lifecycle_rules
+                    if str(getattr(rule, "name", "")).startswith("oci-migrator-")
+                ]
+            ),
+            "retention_rule_count": len(retention_rule_details),
+            "retention_rules": retention_rule_details,
+            "can_enable_versioning": str(versioning).lower() != "enabled" and not retention_rule_details,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_operation_error(
+            500,
+            "Read bucket protection",
+            e,
+            "Check Object Storage permissions for bucket metadata, lifecycle policies, and retention rules.",
+        )
+
+
+@app.post("/bucket-versioning/enable")
+async def enable_bucket_versioning(req: BucketProtectionReq):
+    try:
+        bucket_name = destination_bucket_name(req.bucket_name)
+        _, os_client, namespace = object_storage_context(req.profile_name)
+        retention_collection = os_client.list_retention_rules(namespace, bucket_name).data
+        retention_rules = list(getattr(retention_collection, "items", None) or [])
+        if retention_rules:
+            raise HTTPException(
+                status_code=400,
+                detail="Object Versioning cannot be enabled when OCI retention rules are active on the bucket.",
+            )
+
+        details = oci.object_storage.models.UpdateBucketDetails(
+            versioning=oci.object_storage.models.UpdateBucketDetails.VERSIONING_ENABLED
+        )
+        os_client.update_bucket(namespace, bucket_name, details)
+        return {"message": f"Object Versioning enabled on bucket '{bucket_name}'.", "versioning": "Enabled"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_operation_error(
+            500,
+            "Enable bucket versioning",
+            e,
+            "Check Object Storage bucket update permissions and ensure no OCI retention rule is active.",
+        )
+
 
 @app.get("/list-objects/{profile_name}/{bucket_name}")
 async def list_objects(profile_name: str, bucket_name: str):
