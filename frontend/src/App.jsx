@@ -1518,7 +1518,7 @@ export default function App() {
             <div className="max-w-[1500px] mx-auto space-y-6 animate-in fade-in">
               <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800"><Activity size={24} className="text-[#9c3029]"/> Active Sync Jobs</h2>
               <div className="bg-white border border-gray-200 rounded-md shadow-sm overflow-hidden">
-                <div className="hidden lg:grid grid-cols-[minmax(150px,0.8fr)_minmax(360px,1.7fr)_minmax(180px,0.85fr)_minmax(130px,0.55fr)_350px] gap-4 px-4 py-2.5 bg-gray-50 border-b border-gray-100 text-[10px] uppercase font-bold tracking-wider text-gray-400">
+                <div className="hidden lg:grid grid-cols-[minmax(150px,0.8fr)_minmax(320px,1.7fr)_minmax(170px,0.85fr)_minmax(110px,0.55fr)_128px] gap-4 px-4 py-2.5 bg-gray-50 border-b border-gray-100 text-[10px] uppercase font-bold tracking-wider text-gray-400">
                   <div>Job</div>
                   <div>Pipeline</div>
                   <div>Schedule</div>
@@ -1542,7 +1542,7 @@ export default function App() {
 
                     return (
                       <div key={job.name}>
-                        <div className="grid grid-cols-1 lg:grid-cols-[minmax(150px,0.8fr)_minmax(360px,1.7fr)_minmax(180px,0.85fr)_minmax(130px,0.55fr)_350px] gap-4 items-center px-4 py-4 text-left min-h-[92px]">
+                        <div className="grid grid-cols-1 lg:grid-cols-[minmax(150px,0.8fr)_minmax(320px,1.7fr)_minmax(170px,0.85fr)_minmax(110px,0.55fr)_128px] gap-4 items-center px-4 py-4 text-left min-h-[150px]">
                           <div className="flex items-start gap-3 min-w-0">
                             <RefreshCw className="text-[#9c3029] mt-1 shrink-0" size={16} />
                             <div className="min-w-0">
@@ -1592,11 +1592,11 @@ export default function App() {
                               <span className="text-xs text-gray-400">Never</span>
                             )}
                           </div>
-                          <div className="flex flex-wrap gap-2 lg:justify-end lg:flex-nowrap">
-                            <button onClick={() => handleEditJob(job)} className="h-9 px-3 bg-white border border-gray-200 text-gray-600 rounded-md hover:text-[#9c3029] hover:bg-gray-50 text-xs font-semibold flex items-center justify-center gap-1.5" title="Edit job"><Edit size={14}/> Edit</button>
-                            <button onClick={() => handleRunManual(job)} className="h-9 px-3 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#a63d2e] flex items-center justify-center gap-1.5"><RefreshCw size={14} /> Run Now</button>
-                            <button onClick={() => activeLogJob === job.name ? setActiveLogJob(null) : setActiveLogJob(job.name)} className={`h-9 px-3 rounded-md transition-colors text-xs font-semibold flex items-center justify-center gap-1.5 ${activeLogJob === job.name ? 'bg-gray-100 text-gray-800 border border-gray-300' : 'bg-white border border-gray-200 text-gray-600 hover:text-[#9c3029] hover:bg-gray-50'}`} title="View latest log"><Terminal size={14}/> Log</button>
-                            <button onClick={() => handleDeleteJob(job.name)} className="h-9 w-9 bg-white border border-gray-200 text-gray-500 rounded-md hover:text-[#9c3029] hover:bg-gray-50 flex items-center justify-center" title="Delete job"><Trash2 size={14}/></button>
+                          <div className="flex flex-col gap-1.5 lg:items-stretch">
+                            <button onClick={() => handleEditJob(job)} className="h-8 w-full px-2 bg-white border border-gray-200 text-gray-600 rounded-md hover:text-[#9c3029] hover:bg-gray-50 text-xs font-semibold flex items-center justify-center gap-1.5" title="Edit job"><Edit size={13}/> Edit</button>
+                            <button onClick={() => handleRunManual(job)} className="h-8 w-full px-2 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#a63d2e] flex items-center justify-center gap-1.5"><RefreshCw size={13} /> Run Now</button>
+                            <button onClick={() => activeLogJob === job.name ? setActiveLogJob(null) : setActiveLogJob(job.name)} className={`h-8 w-full px-2 rounded-md transition-colors text-xs font-semibold flex items-center justify-center gap-1.5 ${activeLogJob === job.name ? 'bg-gray-100 text-gray-800 border border-gray-300' : 'bg-white border border-gray-200 text-gray-600 hover:text-[#9c3029] hover:bg-gray-50'}`} title="View latest log"><Terminal size={13}/> Log</button>
+                            <button onClick={() => handleDeleteJob(job.name)} className="h-8 w-full px-2 bg-white border border-gray-200 text-gray-500 rounded-md hover:text-[#9c3029] hover:bg-gray-50 text-xs font-semibold flex items-center justify-center gap-1.5" title="Delete job"><Trash2 size={13}/> Delete</button>
                           </div>
                         </div>
                         {activeLogJob === job.name && (
