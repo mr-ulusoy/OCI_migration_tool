@@ -876,26 +876,32 @@ export default function App() {
     ]);
   };
 
-  const handleEnableBucketVersioning = async () => {
+  const handleSetBucketVersioning = async (versioning) => {
     const bucketName = bucketNameFromPath(selectedBucket);
     if (!storageProfile || !bucketName) return;
+    const isEnabling = versioning === 'Enabled';
     setConfirmDialog({
-      title: 'Enable Object Versioning',
-      message: `This enables Object Versioning on bucket "${bucketName}" in OCI. Previous object versions are kept when data is overwritten or deleted.`,
-      detail: 'This is a bucket-level protection setting.',
-      confirmLabel: 'Enable Versioning',
+      title: isEnabling ? 'Enable Object Versioning' : 'Suspend Object Versioning',
+      message: isEnabling
+        ? `This enables Object Versioning on bucket "${bucketName}" in OCI. Previous object versions are kept when data is overwritten or deleted.`
+        : `Suspend Object Versioning on bucket "${bucketName}"? Existing object versions remain available, but new overwrites and deletes will no longer create new versions.`,
+      detail: isEnabling
+        ? 'This is a bucket-level protection setting.'
+        : 'OCI versioning cannot return to Disabled after it has been enabled; it can only be suspended.',
+      confirmLabel: isEnabling ? 'Enable Versioning' : 'Suspend Versioning',
       icon: 'shield',
       onConfirm: async () => {
         setBucketProtectionLoading(true);
         try {
-          await api.post('/bucket-versioning/enable', {
+          await api.post('/bucket-versioning', {
             profile_name: storageProfile,
-            bucket_name: bucketName
+            bucket_name: bucketName,
+            versioning
           });
-          showSuccess('Object Versioning enabled.');
+          showSuccess(isEnabling ? 'Object Versioning enabled.' : 'Object Versioning suspended.');
           await fetchBucketProtection(storageProfile, bucketName);
         } catch (err) {
-          showError('Failed to enable Object Versioning', err);
+          showError('Failed to update Object Versioning', err);
         } finally {
           setBucketProtectionLoading(false);
         }
@@ -2443,7 +2449,13 @@ export default function App() {
                              </div>
                              <div className="border border-gray-200 rounded-md p-3">
                                <div className="text-[10px] uppercase font-bold text-gray-400">Versioning</div>
-                               <div className={`mt-1 inline-flex px-2 py-0.5 rounded-full border text-[10px] font-bold uppercase ${bucketProtection.versioning_enabled ? 'text-green-700 bg-green-50 border-green-200' : 'text-amber-700 bg-amber-50 border-amber-200'}`}>
+                               <div className={`mt-1 inline-flex px-2 py-0.5 rounded-full border text-[10px] font-bold uppercase ${
+                                 bucketProtection.versioning_enabled
+                                   ? 'text-green-700 bg-green-50 border-green-200'
+                                   : bucketProtection.versioning_suspended
+                                     ? 'text-amber-700 bg-amber-50 border-amber-200'
+                                     : 'text-gray-600 bg-gray-50 border-gray-200'
+                               }`}>
                                  {bucketProtection.versioning || 'Disabled'}
                                </div>
                              </div>
@@ -2474,12 +2486,16 @@ export default function App() {
                            </button>
                            <button
                              type="button"
-                             onClick={handleEnableBucketVersioning}
-                             disabled={bucketProtectionLoading || !bucketProtection || bucketProtection.versioning_enabled || !bucketProtection.can_enable_versioning}
-                             className="bg-[#9c3029] text-white py-2 rounded-md font-semibold hover:bg-[#7a2520] disabled:opacity-60 flex items-center justify-center gap-2 text-xs"
+                             onClick={() => handleSetBucketVersioning(bucketProtection?.versioning_enabled ? 'Suspended' : 'Enabled')}
+                             disabled={bucketProtectionLoading || !bucketProtection || (bucketProtection.versioning_enabled ? !bucketProtection.can_suspend_versioning : !bucketProtection.can_enable_versioning)}
+                             className={`py-2 rounded-md font-semibold disabled:opacity-60 flex items-center justify-center gap-2 text-xs ${
+                               bucketProtection?.versioning_enabled
+                                 ? 'bg-white border border-gray-200 text-gray-600 hover:text-[#9c3029] hover:bg-gray-50'
+                                 : 'bg-[#9c3029] text-white hover:bg-[#7a2520]'
+                             }`}
                            >
                              {bucketProtectionLoading ? <Loader2 className="animate-spin" size={14} /> : <Shield size={14} />}
-                             Enable Object Versioning
+                             {bucketProtection?.versioning_enabled ? 'Suspend Object Versioning' : 'Enable Object Versioning'}
                            </button>
                          </div>
 

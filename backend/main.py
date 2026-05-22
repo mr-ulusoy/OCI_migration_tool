@@ -532,6 +532,12 @@ class BucketProtectionReq(BaseModel):
     bucket_name: str
 
 
+class BucketVersioningReq(BaseModel):
+    profile_name: str
+    bucket_name: str
+    versioning: str
+
+
 class BucketAutoTieringReq(BaseModel):
     profile_name: str
     bucket_name: str
@@ -989,9 +995,21 @@ def normalize_versioning(value: str) -> str:
     allowed = {
         "Disabled": "Disabled",
         "Enabled": "Enabled",
+        "Suspended": "Suspended",
     }
     if versioning not in allowed:
-        raise HTTPException(status_code=400, detail="Versioning must be Disabled or Enabled.")
+        raise HTTPException(status_code=400, detail="Versioning must be Disabled, Enabled, or Suspended.")
+    return allowed[versioning]
+
+
+def normalize_update_versioning(value: str) -> str:
+    versioning = str(value or "").strip()
+    allowed = {
+        "Enabled": "Enabled",
+        "Suspended": "Suspended",
+    }
+    if versioning not in allowed:
+        raise HTTPException(status_code=400, detail="Versioning update must be Enabled or Suspended.")
     return allowed[versioning]
 
 
@@ -2777,6 +2795,7 @@ async def bucket_protection(profile_name: str = Query(...), bucket_name: str = Q
             "auto_tiering_enabled": auto_tiering == "InfrequentAccess",
             "versioning": versioning,
             "versioning_enabled": str(versioning).lower() == "enabled",
+            "versioning_suspended": str(versioning).lower() == "suspended",
             "lifecycle_rule_count": len(lifecycle_rules),
             "managed_lifecycle_rule_count": len(
                 [
@@ -2788,6 +2807,7 @@ async def bucket_protection(profile_name: str = Query(...), bucket_name: str = Q
             "retention_rule_count": len(retention_rule_details),
             "retention_rules": retention_rule_details,
             "can_enable_versioning": str(versioning).lower() != "enabled" and not retention_rule_details,
+            "can_suspend_versioning": str(versioning).lower() == "enabled",
             "can_enable_auto_tiering": not any(
                 getattr(rule, "action", "") == "INFREQUENT_ACCESS" for rule in lifecycle_rules
             ),
@@ -2803,33 +2823,42 @@ async def bucket_protection(profile_name: str = Query(...), bucket_name: str = Q
         )
 
 
-@app.post("/bucket-versioning/enable")
-async def enable_bucket_versioning(req: BucketProtectionReq):
+@app.post("/bucket-versioning")
+async def update_bucket_versioning(req: BucketVersioningReq):
     try:
         bucket_name = destination_bucket_name(req.bucket_name)
+        versioning = normalize_update_versioning(req.versioning)
         _, os_client, namespace = object_storage_context(req.profile_name)
-        retention_collection = os_client.list_retention_rules(namespace, bucket_name).data
-        retention_rules = list(getattr(retention_collection, "items", None) or [])
-        if retention_rules:
+        if versioning == "Enabled":
+            retention_collection = os_client.list_retention_rules(namespace, bucket_name).data
+            retention_rules = list(getattr(retention_collection, "items", None) or [])
+        else:
+            retention_rules = []
+        if versioning == "Enabled" and retention_rules:
             raise HTTPException(
                 status_code=400,
                 detail="Object Versioning cannot be enabled when OCI retention rules are active on the bucket.",
             )
 
-        details = oci.object_storage.models.UpdateBucketDetails(
-            versioning=oci.object_storage.models.UpdateBucketDetails.VERSIONING_ENABLED
-        )
+        details = oci.object_storage.models.UpdateBucketDetails(versioning=versioning)
         os_client.update_bucket(namespace, bucket_name, details)
-        return {"message": f"Object Versioning enabled on bucket '{bucket_name}'.", "versioning": "Enabled"}
+        return {"message": f"Object Versioning set to {versioning} on bucket '{bucket_name}'.", "versioning": versioning}
     except HTTPException:
         raise
     except Exception as e:
         raise_operation_error(
             500,
-            "Enable bucket versioning",
+            "Update bucket versioning",
             e,
-            "Check Object Storage bucket update permissions and ensure no OCI retention rule is active.",
+            "Check Object Storage bucket update permissions and ensure no OCI retention rule blocks enabling versioning.",
         )
+
+
+@app.post("/bucket-versioning/enable")
+async def enable_bucket_versioning(req: BucketProtectionReq):
+    return await update_bucket_versioning(
+        BucketVersioningReq(profile_name=req.profile_name, bucket_name=req.bucket_name, versioning="Enabled")
+    )
 
 
 @app.post("/bucket-auto-tiering")
