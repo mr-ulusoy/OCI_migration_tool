@@ -2530,6 +2530,11 @@ export default function App() {
                          ) : (
                            <div className="text-xs text-gray-400">{bucketProtectionLoading ? 'Loading bucket settings...' : 'Bucket settings are not loaded.'}</div>
                          )}
+                         {bucketProtection && (
+                           <div className="text-[11px] text-gray-600 bg-gray-50 border border-gray-200 rounded-md p-3">
+                             Immutable/WORM retention rules are managed in the OCI Console. OCI Migrator only shows the current WORM rule count here; enable or change retention rules from the OCI bucket page when immutable protection is required.
+                           </div>
+                         )}
 
                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                            <button
@@ -2664,9 +2669,6 @@ export default function App() {
                            </div>
                          </div>
 
-                         <div className="text-[10px] text-gray-500">
-                           OCI Retention Rules/WORM are shown here as status only. They prevent object updates/deletes until retention expires or the rule is removed.
-                         </div>
                        </div>
                      </div>
                    )}
