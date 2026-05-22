@@ -478,9 +478,15 @@ class MetadataTag(BaseModel):
     value: str
 
 
+class LifecycleFilterConfig(BaseModel):
+    type: str = "include_prefix"
+    value: str = ""
+
+
 class LifecyclePolicyConfig(BaseModel):
     enabled: bool = False
     prefix: str = ""
+    filters: List[LifecycleFilterConfig] = Field(default_factory=list)
     infrequent_access_after_days: Optional[int] = None
     archive_after_days: Optional[int] = None
     delete_after_days: Optional[int] = None
@@ -967,6 +973,51 @@ def normalize_lifecycle_prefix(value: str) -> str:
     return prefix
 
 
+def normalize_lifecycle_filters(filters: object, legacy_prefix: str = "") -> list[dict]:
+    normalized_filters: list[dict] = []
+    allowed_types = {
+        "include_prefix": "include_prefix",
+        "include_pattern": "include_pattern",
+        "exclude_pattern": "exclude_pattern",
+    }
+
+    if filters:
+        if not isinstance(filters, list):
+            raise HTTPException(status_code=400, detail="Lifecycle filters must be a list.")
+        for item in filters:
+            if isinstance(item, LifecycleFilterConfig):
+                filter_data = item.model_dump()
+            elif isinstance(item, dict):
+                filter_data = item
+            else:
+                raise HTTPException(status_code=400, detail="Lifecycle filters must contain filter objects.")
+
+            filter_type = str(filter_data.get("type", "include_prefix")).strip()
+            if filter_type not in allowed_types:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Lifecycle filter type must be include_prefix, include_pattern, or exclude_pattern.",
+                )
+            value = str(filter_data.get("value", "")).strip()
+            if not value:
+                raise HTTPException(status_code=400, detail="Lifecycle filter values are required.")
+            if len(value) > 1024 or any(char in value for char in "\r\n\0"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Lifecycle filter values must be single-line text up to 1024 characters.",
+                )
+            normalized_filters.append({"type": allowed_types[filter_type], "value": value})
+
+    legacy_prefix = normalize_lifecycle_prefix(legacy_prefix)
+    if not normalized_filters and legacy_prefix:
+        normalized_filters.append({"type": "include_prefix", "value": legacy_prefix})
+
+    if len(normalized_filters) > 20:
+        raise HTTPException(status_code=400, detail="A lifecycle policy can have at most 20 object name filters.")
+
+    return normalized_filters
+
+
 def normalize_lifecycle_days(value: Optional[int], field_name: str) -> Optional[int]:
     if value in (None, ""):
         return None
@@ -1032,9 +1083,12 @@ def normalize_lifecycle_policy(policy: LifecyclePolicyConfig | dict | None) -> d
     else:
         policy_data = dict(policy)
 
+    filters = normalize_lifecycle_filters(policy_data.get("filters", []), policy_data.get("prefix", ""))
+    first_prefix = next((item["value"] for item in filters if item["type"] == "include_prefix"), "")
     normalized = {
         "enabled": bool(policy_data.get("enabled", False)),
-        "prefix": normalize_lifecycle_prefix(policy_data.get("prefix", "")),
+        "prefix": first_prefix,
+        "filters": filters,
         "infrequent_access_after_days": normalize_lifecycle_days(
             policy_data.get("infrequent_access_after_days"),
             "Move to Infrequent Access after",
@@ -1117,14 +1171,23 @@ def get_bucket_with_auto_tiering(client, namespace: str, bucket_name: str):
     return client.get_bucket(namespace, bucket_name, fields=["autoTiering"]).data
 
 
-def build_lifecycle_rule(name: str, target: str, action: str, days: int, prefix: str):
+def build_lifecycle_object_filter(filters: list[dict]):
+    inclusion_prefixes = [item["value"] for item in filters if item["type"] == "include_prefix"]
+    inclusion_patterns = [item["value"] for item in filters if item["type"] == "include_pattern"]
+    exclusion_patterns = [item["value"] for item in filters if item["type"] == "exclude_pattern"]
+    if not inclusion_prefixes and not inclusion_patterns and not exclusion_patterns:
+        return None
+    return oci.object_storage.models.ObjectNameFilter(
+        inclusion_prefixes=inclusion_prefixes,
+        inclusion_patterns=inclusion_patterns,
+        exclusion_patterns=exclusion_patterns,
+    )
+
+
+def build_lifecycle_rule(name: str, target: str, action: str, days: int, filters: list[dict]):
     object_filter = None
-    if prefix:
-        object_filter = oci.object_storage.models.ObjectNameFilter(
-            inclusion_prefixes=[prefix],
-            inclusion_patterns=[],
-            exclusion_patterns=[],
-        )
+    if target in ("objects", "object-versions", "previous-object-versions"):
+        object_filter = build_lifecycle_object_filter(filters)
     return oci.object_storage.models.ObjectLifecycleRule(
         name=name,
         target=target,
@@ -1137,7 +1200,7 @@ def build_lifecycle_rule(name: str, target: str, action: str, days: int, prefix:
 
 
 def desired_lifecycle_rules(job_name: str, policy: dict) -> list:
-    prefix = policy.get("prefix", "")
+    filters = list(policy.get("filters", []))
     safe_job_name = normalize_job_name(job_name).lower()
     rules = []
     if policy.get("infrequent_access_after_days"):
@@ -1147,7 +1210,7 @@ def desired_lifecycle_rules(job_name: str, policy: dict) -> list:
                 "objects",
                 "INFREQUENT_ACCESS",
                 policy["infrequent_access_after_days"],
-                prefix,
+                filters,
             )
         )
     if policy.get("archive_after_days"):
@@ -1157,7 +1220,7 @@ def desired_lifecycle_rules(job_name: str, policy: dict) -> list:
                 "objects",
                 "ARCHIVE",
                 policy["archive_after_days"],
-                prefix,
+                filters,
             )
         )
     if policy.get("delete_after_days"):
@@ -1167,7 +1230,7 @@ def desired_lifecycle_rules(job_name: str, policy: dict) -> list:
                 "objects",
                 "DELETE",
                 policy["delete_after_days"],
-                prefix,
+                filters,
             )
         )
     if policy.get("previous_versions_delete_after_days"):
@@ -1177,7 +1240,7 @@ def desired_lifecycle_rules(job_name: str, policy: dict) -> list:
                 "previous-object-versions",
                 "DELETE",
                 policy["previous_versions_delete_after_days"],
-                prefix,
+                filters,
             )
         )
     return rules
@@ -1220,11 +1283,27 @@ def remove_job_lifecycle_policy(job_name: str, profile_name: str, destination: s
         put_lifecycle_rules(client, namespace, bucket_name, next_rules)
 
 
+def lifecycle_filters_from_rule(rule) -> list[dict]:
+    object_filter = getattr(rule, "object_name_filter", None)
+    if not object_filter:
+        return []
+
+    filters: list[dict] = []
+    for value in getattr(object_filter, "inclusion_prefixes", None) or []:
+        filters.append({"type": "include_prefix", "value": value})
+    for value in getattr(object_filter, "inclusion_patterns", None) or []:
+        filters.append({"type": "include_pattern", "value": value})
+    for value in getattr(object_filter, "exclusion_patterns", None) or []:
+        filters.append({"type": "exclude_pattern", "value": value})
+    return filters
+
+
 def managed_lifecycle_policy_from_rules(managed_key: str, rules: list) -> dict:
     managed_names = lifecycle_managed_rule_names(managed_key)
     policy = {
         "enabled": False,
         "prefix": "",
+        "filters": [],
         "infrequent_access_after_days": None,
         "archive_after_days": None,
         "delete_after_days": None,
@@ -1243,10 +1322,10 @@ def managed_lifecycle_policy_from_rules(managed_key: str, rules: list) -> dict:
             continue
         policy["enabled"] = True
         policy[action_fields.get(rule_name, "")] = getattr(rule, "time_amount", None)
-        object_filter = getattr(rule, "object_name_filter", None)
-        prefixes = getattr(object_filter, "inclusion_prefixes", None) if object_filter else None
-        if prefixes and not policy["prefix"]:
-            policy["prefix"] = prefixes[0]
+        if not policy["filters"]:
+            policy["filters"] = lifecycle_filters_from_rule(rule)
+            first_prefix = next((item["value"] for item in policy["filters"] if item["type"] == "include_prefix"), "")
+            policy["prefix"] = first_prefix
 
     return policy
 
