@@ -125,11 +125,20 @@ CONFIG_LOCK = Lock()
 JOBS_LOCK = Lock()
 RCLONE_LOCK = Lock()
 SESSION_LOCK = Lock()
-SESSIONS: dict[str, float] = {}
+REVOKED_SESSIONS: dict[str, float] = {}
 
 
 def _b64decode(value: str) -> bytes:
     return base64.b64decode(value.encode("ascii"), validate=True)
+
+
+def _b64url_encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _b64url_decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(f"{value}{padding}".encode("ascii"))
 
 
 def hash_password(password: str) -> str:
@@ -158,36 +167,96 @@ def verify_password(password: str, stored_hash: str) -> bool:
         return False
 
 
+def session_signing_key(config: dict[str, object]) -> bytes:
+    secret_material = "\0".join(
+        [
+            str(config.get("api_token", "")),
+            str(config.get("admin_password_hash", "")),
+            ENV_FILE_PATH,
+        ]
+    )
+    return hashlib.sha256(secret_material.encode("utf-8")).digest()
+
+
+def sign_session_payload(payload: str, config: dict[str, object]) -> str:
+    digest = hmac.new(session_signing_key(config), payload.encode("ascii"), hashlib.sha256).digest()
+    return _b64url_encode(digest)
+
+
+def decode_session_token(token: str, config: dict[str, object]) -> dict | None:
+    payload_raw, separator, signature = token.partition(".")
+    if not separator or not payload_raw or not signature:
+        return None
+
+    expected_signature = sign_session_payload(payload_raw, config)
+    if not hmac.compare_digest(signature, expected_signature):
+        return None
+
+    try:
+        payload = json.loads(_b64url_decode(payload_raw).decode("utf-8"))
+    except (ValueError, json.JSONDecodeError):
+        return None
+
+    return payload if isinstance(payload, dict) else None
+
+
+def prune_revoked_sessions(now: float) -> None:
+    expired_tokens = [token for token, expiry in REVOKED_SESSIONS.items() if expiry <= now]
+    for token in expired_tokens:
+        REVOKED_SESSIONS.pop(token, None)
+
+
 def create_session_token() -> str:
     config = get_runtime_config()
     ttl = int(config.get("session_ttl_seconds", 43200))
-    token = secrets.token_urlsafe(48)
-    expires_at = time.time() + max(ttl, 300)
-
-    with SESSION_LOCK:
-        now = time.time()
-        expired_tokens = [session for session, expiry in SESSIONS.items() if expiry <= now]
-        for session in expired_tokens:
-            SESSIONS.pop(session, None)
-        SESSIONS[token] = expires_at
-
-    return token
+    now = int(time.time())
+    expires_at = now + max(ttl, 300)
+    payload = {
+        "ver": 1,
+        "sub": str(config.get("admin_username", "admin")),
+        "iat": now,
+        "exp": expires_at,
+        "nonce": secrets.token_urlsafe(18),
+    }
+    payload_raw = _b64url_encode(json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8"))
+    return f"{payload_raw}.{sign_session_payload(payload_raw, config)}"
 
 
 def invalidate_session_token(token: str) -> None:
+    config = get_runtime_config()
+    payload = decode_session_token(token, config) or {}
+    try:
+        expires_at = float(payload.get("exp", time.time() + int(config.get("session_ttl_seconds", 43200))))
+    except (TypeError, ValueError):
+        expires_at = time.time() + int(config.get("session_ttl_seconds", 43200))
+
     with SESSION_LOCK:
-        SESSIONS.pop(token, None)
+        prune_revoked_sessions(time.time())
+        REVOKED_SESSIONS[token] = expires_at
 
 
 def session_token_is_valid(token: str) -> bool:
+    config = get_runtime_config()
+    now = time.time()
     with SESSION_LOCK:
-        expires_at = SESSIONS.get(token)
-        if not expires_at:
+        prune_revoked_sessions(now)
+        if token in REVOKED_SESSIONS:
             return False
-        if expires_at <= time.time():
-            SESSIONS.pop(token, None)
-            return False
-        return True
+
+    payload = decode_session_token(token, config)
+    if not payload:
+        return False
+
+    try:
+        expires_at = float(payload.get("exp", 0))
+    except (TypeError, ValueError):
+        return False
+    if expires_at <= now:
+        return False
+    if payload.get("sub") != config.get("admin_username", "admin"):
+        return False
+
+    return True
 
 
 def bearer_token_from_header(authorization: Optional[str]) -> str:
@@ -242,6 +311,8 @@ def _write_env_values(path: str, updates: dict[str, str]) -> None:
             temp_file.writelines(output_lines)
         os.chmod(temp_path, 0o600)
         os.replace(temp_path, path)
+        with _CONFIG_CACHE_LOCK:
+            _CONFIG_CACHE["mtime"] = "__not_loaded__"
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
@@ -1132,7 +1203,7 @@ async def change_password(data: ChangePasswordRequest):
     )
 
     with SESSION_LOCK:
-        SESSIONS.clear()
+        REVOKED_SESSIONS.clear()
 
     return {
         "message": "Admin password changed.",

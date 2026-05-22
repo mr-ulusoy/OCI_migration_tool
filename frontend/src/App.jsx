@@ -163,6 +163,7 @@ export default function App() {
       (res) => res,
       (err) => {
         if (err?.response?.status === 401) {
+          setNotice(null);
           if (authState.mode === 'session') {
             localStorage.removeItem(SESSION_TOKEN_KEY);
             localStorage.removeItem(SESSION_USERNAME_KEY);
@@ -252,6 +253,7 @@ export default function App() {
 
   const showError = (title, err) => {
     console.error(err);
+    if (err?.response?.status === 401) return;
     setNotice({ type: 'error', title, message: formatApiError(err, title) });
   };
 
@@ -844,6 +846,7 @@ export default function App() {
       localStorage.setItem(SESSION_USERNAME_KEY, res.data.username || loginForm.username);
       setAuthState({ token: res.data.token, mode: 'session', username: res.data.username || loginForm.username });
       setLoginForm(prev => ({ ...prev, password: '' }));
+      setNotice(null);
     } catch (err) {
       console.error(err);
       setLoginError(formatApiError(err, 'Login failed.'));
@@ -863,6 +866,7 @@ export default function App() {
       localStorage.removeItem(SESSION_USERNAME_KEY);
       setAuthState({ token: '', mode: '', username: 'admin' });
       setShowPasswordPanel(false);
+      setNotice(null);
     }
   };
 
@@ -988,9 +992,6 @@ export default function App() {
             <button onClick={fetchHealth} className={`px-2.5 py-2 border rounded-md text-xs font-semibold flex items-center gap-2 ${!health?.status ? 'border-gray-200 text-gray-600 bg-white' : health.status === 'ok' ? 'border-green-200 text-green-700 bg-green-50' : health.status === 'warn' ? 'border-amber-200 text-amber-700 bg-amber-50' : 'border-red-200 text-red-700 bg-red-50'}`} title="Refresh health status">
               <HeartPulse size={15} />
               {health?.status || 'health'}
-            </button>
-            <button onClick={handleExportRuntimeConfig} disabled={exportingConfig} className="p-2 bg-white border border-gray-200 text-gray-600 rounded-md hover:text-[#9c3029] hover:bg-gray-50 disabled:opacity-60" title="Export runtime config backup">
-              {exportingConfig ? <Loader2 className="animate-spin" size={16} /> : <Download size={16} />}
             </button>
             {authState.mode === 'session' && (
               <button onClick={() => setShowPasswordPanel(prev => !prev)} className="p-2 bg-white border border-gray-200 text-gray-600 rounded-md hover:text-[#9c3029] hover:bg-gray-50" title="Change password">
@@ -1304,6 +1305,30 @@ export default function App() {
           {view === 'settings' && (
             <div className="max-w-7xl mx-auto space-y-6 animate-in fade-in">
               <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800"><Settings size={24} className="text-[#9c3029]"/> Settings</h2>
+              <div className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-sm text-gray-800 flex items-center gap-2">
+                      <Archive size={16} className="text-[#9c3029]" /> Runtime Config Backup
+                    </h3>
+                    <div className="mt-2 grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] text-gray-500">
+                      <span className="bg-gray-50 border border-gray-100 rounded-md px-2 py-1 font-mono truncate">~/.oci-migrator.env</span>
+                      <span className="bg-gray-50 border border-gray-100 rounded-md px-2 py-1 font-mono truncate">~/.oci/config</span>
+                      <span className="bg-gray-50 border border-gray-100 rounded-md px-2 py-1 font-mono truncate">~/.config/rclone/rclone.conf</span>
+                    </div>
+                    <p className="mt-2 text-[11px] text-amber-700">ZIP-filen innehaller hemligheter och ska lagras skyddat.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleExportRuntimeConfig}
+                    disabled={exportingConfig}
+                    className="px-3 py-2 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#7a2520] disabled:opacity-60 flex items-center justify-center gap-2"
+                  >
+                    {exportingConfig ? <Loader2 className="animate-spin" size={14} /> : <Download size={14} />}
+                    Export Backup
+                  </button>
+                </div>
+              </div>
               <div className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
                 <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
                   <h3 className="font-bold text-sm text-gray-800 flex items-center gap-2">
