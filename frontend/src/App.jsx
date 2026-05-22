@@ -1518,7 +1518,7 @@ export default function App() {
             <div className="max-w-[1500px] mx-auto space-y-6 animate-in fade-in">
               <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800"><Activity size={24} className="text-[#9c3029]"/> Active Sync Jobs</h2>
               <div className="bg-white border border-gray-200 rounded-md shadow-sm overflow-hidden">
-                <div className="hidden lg:grid grid-cols-[minmax(130px,0.8fr)_minmax(300px,1.8fr)_minmax(160px,0.85fr)_minmax(160px,0.85fr)_235px] gap-3 px-3 py-2.5 bg-gray-50 border-b border-gray-100 text-[10px] uppercase font-bold tracking-wider text-gray-400">
+                <div className="hidden lg:grid grid-cols-[minmax(150px,0.8fr)_minmax(360px,1.7fr)_minmax(180px,0.85fr)_minmax(130px,0.55fr)_350px] gap-4 px-4 py-2.5 bg-gray-50 border-b border-gray-100 text-[10px] uppercase font-bold tracking-wider text-gray-400">
                   <div>Job</div>
                   <div>Pipeline</div>
                   <div>Schedule</div>
@@ -1529,6 +1529,8 @@ export default function App() {
                   {jobs.map(job => {
                     const latestRun = latestRunByJob[job.name];
                     const latestMessage = cleanJobMessage(latestRun?.error || latestRun?.details || '');
+                    const latestStatus = String(latestRun?.status || '').toLowerCase();
+                    const showLatestMessage = latestRun && latestStatus !== 'success' && latestMessage;
                     const scheduleText = (() => {
                       const schedule = job.schedule || {};
                       if (schedule.frequency === 'none') return 'manual';
@@ -1540,9 +1542,9 @@ export default function App() {
 
                     return (
                       <div key={job.name}>
-                        <div className="grid grid-cols-1 lg:grid-cols-[minmax(130px,0.8fr)_minmax(300px,1.8fr)_minmax(160px,0.85fr)_minmax(160px,0.85fr)_235px] gap-3 items-center p-3 text-left">
+                        <div className="grid grid-cols-1 lg:grid-cols-[minmax(150px,0.8fr)_minmax(360px,1.7fr)_minmax(180px,0.85fr)_minmax(130px,0.55fr)_350px] gap-4 items-center px-4 py-4 text-left min-h-[92px]">
                           <div className="flex items-start gap-3 min-w-0">
-                            <RefreshCw className="text-[#9c3029] mt-0.5 shrink-0" size={16} />
+                            <RefreshCw className="text-[#9c3029] mt-1 shrink-0" size={16} />
                             <div className="min-w-0">
                               <div className="lg:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Job</div>
                               <h3 className="font-bold text-sm text-gray-800 truncate">{job.name}</h3>
@@ -1550,15 +1552,14 @@ export default function App() {
                           </div>
                           <div className="min-w-0">
                             <div className="lg:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Pipeline</div>
-                            <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_16px_minmax(0,1fr)] gap-1 xl:gap-2 items-center font-mono">
-                              <div className="min-w-0 flex items-center gap-1">
-                                <span className="text-[9px] uppercase font-bold text-gray-400 font-sans shrink-0">Source</span>
-                                <span className="text-xs text-gray-600 truncate" title={job.source_remote}>{job.source_remote}</span>
+                            <div className="space-y-1.5 font-mono">
+                              <div className="min-w-0">
+                                <div className="text-[9px] uppercase font-bold text-gray-400 font-sans leading-none">Source</div>
+                                <div className="text-xs text-gray-600 truncate mt-0.5" title={job.source_remote}>{job.source_remote}</div>
                               </div>
-                              <ArrowRight size={13} className="hidden xl:block text-gray-300" />
-                              <div className="min-w-0 flex items-center gap-1">
-                                <span className="text-[9px] uppercase font-bold text-gray-400 font-sans shrink-0">Dest</span>
-                                <span className="text-xs text-gray-700 font-semibold truncate" title={destination}>{destination}</span>
+                              <div className="min-w-0">
+                                <div className="text-[9px] uppercase font-bold text-gray-400 font-sans leading-none">Destination</div>
+                                <div className="text-xs text-gray-700 font-semibold truncate mt-0.5" title={destination}>{destination}</div>
                               </div>
                             </div>
                           </div>
@@ -1577,23 +1578,25 @@ export default function App() {
                           <div className="min-w-0">
                             <div className="lg:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Last Run</div>
                             {latestRun ? (
-                              <div className="min-w-0 flex flex-wrap items-center gap-2">
+                              <div className="min-w-0 flex flex-col items-start gap-1">
                                 <span className={`text-[9px] px-2 py-0.5 rounded-full border font-bold uppercase ${runStatusClass(latestRun.status)}`}>
                                   {latestRun.status}
                                 </span>
-                                <span className="text-[11px] text-gray-500 truncate" title={latestMessage || formatTimestamp(latestRun.updated_at)}>
-                                  {latestMessage || formatTimestamp(latestRun.updated_at)}
-                                </span>
+                                {showLatestMessage && (
+                                  <span className="text-[11px] text-gray-500 truncate max-w-full" title={latestMessage}>
+                                    {latestMessage}
+                                  </span>
+                                )}
                               </div>
                             ) : (
                               <span className="text-xs text-gray-400">Never</span>
                             )}
                           </div>
-                          <div className="flex flex-wrap gap-2 lg:justify-end">
-                            <button onClick={() => handleEditJob(job)} className="px-2.5 py-1.5 bg-white border border-gray-200 text-gray-600 rounded-md hover:text-[#9c3029] hover:bg-gray-50 text-xs font-semibold flex items-center gap-1.5" title="Edit job"><Edit size={14}/> Edit</button>
-                            <button onClick={() => handleRunManual(job)} className="px-2.5 py-1.5 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#a63d2e] flex items-center gap-1.5"><RefreshCw size={14} /> Run Now</button>
-                            <button onClick={() => activeLogJob === job.name ? setActiveLogJob(null) : setActiveLogJob(job.name)} className={`px-2.5 py-1.5 rounded-md transition-colors text-xs font-semibold flex items-center gap-1.5 ${activeLogJob === job.name ? 'bg-gray-100 text-gray-800 border border-gray-300' : 'bg-white border border-gray-200 text-gray-600 hover:text-[#9c3029] hover:bg-gray-50'}`} title="View latest log"><Terminal size={14}/> Log</button>
-                            <button onClick={() => handleDeleteJob(job.name)} className="p-1.5 bg-white border border-gray-200 text-gray-500 rounded-md hover:text-[#9c3029] hover:bg-gray-50" title="Delete job"><Trash2 size={14}/></button>
+                          <div className="flex flex-wrap gap-2 lg:justify-end lg:flex-nowrap">
+                            <button onClick={() => handleEditJob(job)} className="h-9 px-3 bg-white border border-gray-200 text-gray-600 rounded-md hover:text-[#9c3029] hover:bg-gray-50 text-xs font-semibold flex items-center justify-center gap-1.5" title="Edit job"><Edit size={14}/> Edit</button>
+                            <button onClick={() => handleRunManual(job)} className="h-9 px-3 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#a63d2e] flex items-center justify-center gap-1.5"><RefreshCw size={14} /> Run Now</button>
+                            <button onClick={() => activeLogJob === job.name ? setActiveLogJob(null) : setActiveLogJob(job.name)} className={`h-9 px-3 rounded-md transition-colors text-xs font-semibold flex items-center justify-center gap-1.5 ${activeLogJob === job.name ? 'bg-gray-100 text-gray-800 border border-gray-300' : 'bg-white border border-gray-200 text-gray-600 hover:text-[#9c3029] hover:bg-gray-50'}`} title="View latest log"><Terminal size={14}/> Log</button>
+                            <button onClick={() => handleDeleteJob(job.name)} className="h-9 w-9 bg-white border border-gray-200 text-gray-500 rounded-md hover:text-[#9c3029] hover:bg-gray-50 flex items-center justify-center" title="Delete job"><Trash2 size={14}/></button>
                           </div>
                         </div>
                         {activeLogJob === job.name && (
@@ -1619,6 +1622,8 @@ export default function App() {
                 <div className="divide-y divide-gray-100">
                   {jobRuns.slice(0, 12).map(run => {
                     const isDataSyncRun = run.kind === 'data_sync';
+                    const runMessage = cleanJobMessage(run.error || run.details);
+                    const showRunMessage = String(run.status || '').toLowerCase() !== 'success' && runMessage;
                     return (
                       <div key={run.id}>
                         <div className="p-4 flex items-start justify-between gap-4 text-left">
@@ -1628,7 +1633,7 @@ export default function App() {
                               <span className="font-semibold text-sm text-gray-800 truncate">{run.job_name || run.kind}</span>
                               <span className="text-[11px] text-gray-400 uppercase">{run.trigger || 'manual'}</span>
                             </div>
-                            <div className="mt-1 text-xs text-gray-500 truncate">{cleanJobMessage(run.error || run.details) || `${run.source || ''} -> ${run.destination || ''}`}</div>
+                            {showRunMessage && <div className="mt-1 text-xs text-gray-500 truncate">{runMessage}</div>}
                             <div className="mt-1 text-[10px] text-gray-400 font-mono truncate">{run.id}</div>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
