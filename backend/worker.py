@@ -127,11 +127,10 @@ def normalize_metadata_tags(metadata_tags=None):
 
 
 @celery_app.task(bind=True, name="worker.rclone_sync_task")
-def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", transfers=4, checkers=8, buffer_size="16M", storage_tier="Standard", job_name="default", run_id=None, trigger="manual", metadata_tags=None):
+def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", transfers=4, checkers=8, buffer_size="16M", job_name="default", run_id=None, trigger="manual", metadata_tags=None):
     run_id = run_id or self.request.id
     dest = f"{dest_profile}_rclone:{dest_bucket}"
     metadata_tags = normalize_metadata_tags(metadata_tags)
-    storage_tier = storage_tier if storage_tier in {"Standard", "InfrequentAccess", "Archive"} else "Standard"
     ensure_job_log_dir()
     log_file = job_log_path(job_name, run_id)
     update_job_run(
@@ -142,7 +141,6 @@ def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", trans
         source=source,
         destination=dest,
         metadata_tags=metadata_tags,
-        storage_tier=storage_tier,
         details="Job is running.",
         log_file=str(log_file),
         started_at=datetime.utcnow().isoformat() + "Z",
@@ -165,7 +163,6 @@ def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", trans
         "--stats-one-line",
         "--fast-list", 
         "--retries", "10", 
-        "--oos-storage-tier", storage_tier,
         "--use-mmap"
     ]
     if metadata_tags:

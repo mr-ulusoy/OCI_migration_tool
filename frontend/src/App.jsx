@@ -42,18 +42,22 @@ const createDefaultSyncJob = () => ({
   transfers: 16,
   checkers: 32,
   buffer_size: '128M',
-  storage_tier: 'Standard',
   metadata_tags: [],
-  lifecycle_policy: {
-    enabled: false,
-    prefix: '',
-    infrequent_access_after_days: '',
-    archive_after_days: '',
-    delete_after_days: '',
-    previous_versions_delete_after_days: ''
-  },
   schedule: { frequency: 'none', time: '02:00', day_of_week: 'monday', day_of_month: '1' }
 });
+const createDefaultLifecyclePolicy = () => ({
+  enabled: false,
+  prefix: '',
+  infrequent_access_after_days: '',
+  archive_after_days: '',
+  delete_after_days: '',
+  previous_versions_delete_after_days: ''
+});
+const DEFAULT_NEW_BUCKET_CONFIG = {
+  storageTier: 'Standard',
+  autoTiering: 'Disabled',
+  versioning: 'Disabled'
+};
 
 function getLegacyApiToken() {
   return import.meta.env.VITE_API_TOKEN || localStorage.getItem('OCI_MIGRATOR_API_TOKEN') || '';
@@ -287,7 +291,10 @@ export default function App() {
   const [storageObjects, setStorageObjects] = useState([]);
   
   const [newBucketName, setNewBucketName] = useState('');
+  const [newBucketConfig, setNewBucketConfig] = useState(DEFAULT_NEW_BUCKET_CONFIG);
   const [newFolderName, setNewFolderName] = useState('');
+  const [bucketLifecycleForm, setBucketLifecycleForm] = useState(createDefaultLifecyclePolicy);
+  const [savingBucketSettings, setSavingBucketSettings] = useState(false);
 
   const showError = (title, err) => {
     console.error(err);
@@ -821,9 +828,44 @@ export default function App() {
     }
   };
 
+  const fetchBucketLifecyclePolicy = async (profile, bucket) => {
+    const bucketName = bucketNameFromPath(bucket);
+    if (!profile || !bucketName) {
+      setBucketLifecycleForm(createDefaultLifecyclePolicy());
+      return null;
+    }
+
+    try {
+      const res = await api.get('/bucket-lifecycle-policy', {
+        params: { profile_name: profile, bucket_name: bucketName }
+      });
+      const policy = res.data.lifecycle_policy || createDefaultLifecyclePolicy();
+      setBucketLifecycleForm({
+        ...createDefaultLifecyclePolicy(),
+        ...policy,
+        infrequent_access_after_days: policy.infrequent_access_after_days ?? '',
+        archive_after_days: policy.archive_after_days ?? '',
+        delete_after_days: policy.delete_after_days ?? '',
+        previous_versions_delete_after_days: policy.previous_versions_delete_after_days ?? ''
+      });
+      return policy;
+    } catch (err) {
+      showError('Failed to load bucket lifecycle policy', err);
+      setBucketLifecycleForm(createDefaultLifecyclePolicy());
+      return null;
+    }
+  };
+
+  const loadSelectedBucketSettings = async (profile, bucket) => {
+    await Promise.all([
+      fetchBucketProtection(profile, bucket),
+      fetchBucketLifecyclePolicy(profile, bucket)
+    ]);
+  };
+
   const handleEnableBucketVersioning = async () => {
-    const bucketName = bucketNameFromPath(syncJob.dest_bucket);
-    if (!syncJob.dest_profile || !bucketName) return;
+    const bucketName = bucketNameFromPath(selectedBucket);
+    if (!storageProfile || !bucketName) return;
     if (!window.confirm(`Enable Object Versioning on bucket '${bucketName}'? This is configured at bucket level in OCI.`)) {
       return;
     }
@@ -831,11 +873,11 @@ export default function App() {
     setBucketProtectionLoading(true);
     try {
       await api.post('/bucket-versioning/enable', {
-        profile_name: syncJob.dest_profile,
+        profile_name: storageProfile,
         bucket_name: bucketName
       });
       showSuccess('Object Versioning enabled.');
-      await fetchBucketProtection(syncJob.dest_profile, bucketName);
+      await fetchBucketProtection(storageProfile, bucketName);
     } catch (err) {
       showError('Failed to enable Object Versioning', err);
     } finally {
@@ -844,8 +886,8 @@ export default function App() {
   };
 
   const handleSetBucketAutoTiering = async (autoTiering) => {
-    const bucketName = bucketNameFromPath(syncJob.dest_bucket);
-    if (!syncJob.dest_profile || !bucketName) return;
+    const bucketName = bucketNameFromPath(selectedBucket);
+    if (!storageProfile || !bucketName) return;
     const label = autoTiering === 'InfrequentAccess' ? 'Enable Auto-Tiering' : 'Disable Auto-Tiering';
     if (!window.confirm(`${label} on bucket '${bucketName}'? This is configured at bucket level in OCI.`)) {
       return;
@@ -854,12 +896,12 @@ export default function App() {
     setBucketProtectionLoading(true);
     try {
       await api.post('/bucket-auto-tiering', {
-        profile_name: syncJob.dest_profile,
+        profile_name: storageProfile,
         bucket_name: bucketName,
         auto_tiering: autoTiering
       });
       showSuccess(autoTiering === 'InfrequentAccess' ? 'Auto-Tiering enabled.' : 'Auto-Tiering disabled.');
-      await fetchBucketProtection(syncJob.dest_profile, bucketName);
+      await fetchBucketProtection(storageProfile, bucketName);
     } catch (err) {
       showError('Failed to update Auto-Tiering', err);
     } finally {
@@ -867,46 +909,11 @@ export default function App() {
     }
   };
 
-  useEffect(() => {
-    if (view !== 'builder') return;
-    const bucketName = bucketNameFromPath(syncJob.dest_bucket);
-    if (!syncJob.dest_profile || !bucketName) {
-      setBucketProtection(null);
-      return;
-    }
-
-    let cancelled = false;
-    setBucketProtectionLoading(true);
-    api.get('/bucket-protection', {
-      params: { profile_name: syncJob.dest_profile, bucket_name: bucketName }
-    })
-      .then(res => {
-        if (!cancelled) setBucketProtection(res.data);
-      })
-      .catch(err => {
-        console.error(err);
-        if (!cancelled) {
-          setBucketProtection(null);
-          if (err?.response?.status !== 401) {
-            setNotice({ type: 'error', title: 'Failed to load bucket protection', message: formatApiError(err, 'Failed to load bucket protection') });
-          }
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setBucketProtectionLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [api, view, syncJob.dest_profile, syncJob.dest_bucket]);
-
   const startNewSyncJob = () => {
     setEditingJobName('');
     setSyncJob(createDefaultSyncJob());
     setSourceBuckets([]);
     setDestBuckets([]);
-    setBucketProtection(null);
     setView('builder');
   };
 
@@ -935,53 +942,6 @@ export default function App() {
       setNotice({ type: 'error', title: 'Invalid metadata', message: 'Metadata values must be single-line text up to 1024 characters.' });
       return;
     }
-    const lifecyclePolicy = normalizeLifecyclePolicy(syncJob.lifecycle_policy);
-    if (
-      [
-        lifecyclePolicy.infrequent_access_after_days,
-        lifecyclePolicy.archive_after_days,
-        lifecyclePolicy.delete_after_days,
-        lifecyclePolicy.previous_versions_delete_after_days
-      ]
-        .some(value => Number.isNaN(value))
-    ) {
-      setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Lifecycle days must be positive whole numbers.' });
-      return;
-    }
-    if (
-      lifecyclePolicy.enabled
-      && !lifecyclePolicy.infrequent_access_after_days
-      && !lifecyclePolicy.archive_after_days
-      && !lifecyclePolicy.delete_after_days
-      && !lifecyclePolicy.previous_versions_delete_after_days
-    ) {
-      setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Enable at least one lifecycle action.' });
-      return;
-    }
-    if (
-      lifecyclePolicy.infrequent_access_after_days
-      && lifecyclePolicy.archive_after_days
-      && lifecyclePolicy.archive_after_days <= lifecyclePolicy.infrequent_access_after_days
-    ) {
-      setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Archive after days must be greater than Infrequent Access after days.' });
-      return;
-    }
-    if (
-      lifecyclePolicy.infrequent_access_after_days
-      && lifecyclePolicy.delete_after_days
-      && lifecyclePolicy.delete_after_days <= lifecyclePolicy.infrequent_access_after_days
-    ) {
-      setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Delete after days must be greater than Infrequent Access after days.' });
-      return;
-    }
-    if (
-      lifecyclePolicy.archive_after_days
-      && lifecyclePolicy.delete_after_days
-      && lifecyclePolicy.delete_after_days <= lifecyclePolicy.archive_after_days
-    ) {
-      setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Delete after days must be greater than archive after days.' });
-      return;
-    }
     if (syncJob.schedule.frequency === 'monthly') {
       const dayOfMonth = Number(syncJob.schedule.day_of_month);
       if (!Number.isInteger(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 31) {
@@ -991,7 +951,7 @@ export default function App() {
     }
     setLoading(true);
     try {
-      await api.post(`/save-job`, { ...syncJob, storage_tier: syncJob.storage_tier || 'Standard', metadata_tags: metadataTags, lifecycle_policy: lifecyclePolicy });
+      await api.post(`/save-job`, { ...syncJob, metadata_tags: metadataTags, lifecycle_policy: createDefaultLifecyclePolicy() });
       if (editingJobName && editingJobName !== syncJob.name) {
         await api.delete(`/delete-job/${encodeURIComponent(editingJobName)}`);
       }
@@ -1010,11 +970,7 @@ export default function App() {
         ...createDefaultSyncJob().schedule,
         ...(job.schedule || {})
       },
-      metadata_tags: normalizeMetadataTags(job.metadata_tags),
-      lifecycle_policy: {
-        ...createDefaultSyncJob().lifecycle_policy,
-        ...(job.lifecycle_policy || {})
-      }
+      metadata_tags: normalizeMetadataTags(job.metadata_tags)
     };
     setEditingJobName(job.name);
     setSyncJob(normalizedJob);
@@ -1048,15 +1004,99 @@ export default function App() {
 
   // --- Storage Explorer ---
   const handleStorageProfileChange = async (p) => { 
-      setStorageProfile(p); setSelectedBucket(''); setStorageObjects([]);
+      setStorageProfile(p); setSelectedBucket(''); setStorageObjects([]); setBucketProtection(null); setBucketLifecycleForm(createDefaultLifecyclePolicy());
+      if (!p) {
+        setStorageBuckets([]);
+        return;
+      }
       try { const res = await api.get(`/list-buckets/${p}`); setStorageBuckets(res.data); } catch (err) { showError('Failed to list buckets', err); }
   };
   const handleBucketClick = async (b) => { 
-      setSelectedBucket(b); try { const res = await api.get(`/list-objects/${storageProfile}/${b}`); setStorageObjects(res.data); } catch (err) { showError('Failed to list bucket objects', err); }
+      setSelectedBucket(b);
+      try {
+        const res = await api.get(`/list-objects/${storageProfile}/${b}`);
+        setStorageObjects(res.data);
+        await loadSelectedBucketSettings(storageProfile, b);
+      } catch (err) { showError('Failed to list bucket objects', err); }
   };
   const handleCreateBucket = async () => {
       if (!newBucketName) return;
-      try { await api.post(`/create-bucket`, { profile_name: storageProfile, bucket_name: newBucketName }); setNewBucketName(''); handleStorageProfileChange(storageProfile); showSuccess('Bucket created.'); } catch (err) { showError('Failed to create bucket', err); }
+      try {
+        await api.post(`/create-bucket`, {
+          profile_name: storageProfile,
+          bucket_name: newBucketName,
+          storage_tier: newBucketConfig.storageTier,
+          auto_tiering: newBucketConfig.storageTier === 'Standard' ? newBucketConfig.autoTiering : 'Disabled',
+          versioning: newBucketConfig.versioning
+        });
+        setNewBucketName('');
+        setNewBucketConfig(DEFAULT_NEW_BUCKET_CONFIG);
+        handleStorageProfileChange(storageProfile);
+        showSuccess('Bucket created.');
+      } catch (err) { showError('Failed to create bucket', err); }
+  };
+  const handleSaveBucketLifecyclePolicy = async () => {
+      if (!storageProfile || !selectedBucket) return;
+      const lifecyclePolicy = normalizeLifecyclePolicy(bucketLifecycleForm);
+      if (
+        [
+          lifecyclePolicy.infrequent_access_after_days,
+          lifecyclePolicy.archive_after_days,
+          lifecyclePolicy.delete_after_days,
+          lifecyclePolicy.previous_versions_delete_after_days
+        ].some(value => Number.isNaN(value))
+      ) {
+        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Lifecycle days must be positive whole numbers.' });
+        return;
+      }
+      if (
+        lifecyclePolicy.enabled
+        && !lifecyclePolicy.infrequent_access_after_days
+        && !lifecyclePolicy.archive_after_days
+        && !lifecyclePolicy.delete_after_days
+        && !lifecyclePolicy.previous_versions_delete_after_days
+      ) {
+        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Enable at least one lifecycle action.' });
+        return;
+      }
+      if (
+        lifecyclePolicy.infrequent_access_after_days
+        && lifecyclePolicy.archive_after_days
+        && lifecyclePolicy.archive_after_days <= lifecyclePolicy.infrequent_access_after_days
+      ) {
+        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Archive after days must be greater than Infrequent Access after days.' });
+        return;
+      }
+      if (
+        lifecyclePolicy.infrequent_access_after_days
+        && lifecyclePolicy.delete_after_days
+        && lifecyclePolicy.delete_after_days <= lifecyclePolicy.infrequent_access_after_days
+      ) {
+        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Delete after days must be greater than Infrequent Access after days.' });
+        return;
+      }
+      if (
+        lifecyclePolicy.archive_after_days
+        && lifecyclePolicy.delete_after_days
+        && lifecyclePolicy.delete_after_days <= lifecyclePolicy.archive_after_days
+      ) {
+        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Delete after days must be greater than archive after days.' });
+        return;
+      }
+      setSavingBucketSettings(true);
+      try {
+        await api.put('/bucket-lifecycle-policy', {
+          profile_name: storageProfile,
+          bucket_name: selectedBucket,
+          lifecycle_policy: lifecyclePolicy
+        });
+        showSuccess('Bucket lifecycle policy updated.');
+        await loadSelectedBucketSettings(storageProfile, selectedBucket);
+      } catch (err) {
+        showError('Failed to update bucket lifecycle policy', err);
+      } finally {
+        setSavingBucketSettings(false);
+      }
   };
   const handleCreateFolder = async () => {
       if (!newFolderName || !selectedBucket) return;
@@ -1756,15 +1796,9 @@ export default function App() {
                             <div className="flex flex-wrap items-center gap-2 min-w-0">
                               <span className="text-xs text-gray-600 truncate flex items-center gap-1" title={scheduleText}><Clock size={12} className="shrink-0" />{scheduleText}</span>
                               <span className="text-[10px] px-2 py-0.5 rounded-full border border-gray-200 bg-gray-50 text-gray-600 font-bold uppercase">{job.sync_mode || 'copy'}</span>
-                              <span className="text-[10px] px-2 py-0.5 rounded-full border border-gray-200 bg-gray-50 text-gray-600 font-bold">{job.storage_tier || 'Standard'}</span>
                               {Boolean(job.metadata_tags?.length) && (
                                 <span className="text-[10px] text-gray-400 flex items-center gap-1">
                                   <Tags size={11} /> {job.metadata_tags.length}
-                                </span>
-                              )}
-                              {job.lifecycle_policy?.enabled && (
-                                <span className="text-[10px] text-gray-400 flex items-center gap-1">
-                                  <Archive size={11} /> retention
                                 </span>
                               )}
                             </div>
@@ -1924,116 +1958,6 @@ export default function App() {
                       <option value="">Select Target Bucket...</option>
                       {destBuckets.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
                     </select>
-                    {syncJob.dest_profile && syncJob.dest_bucket && (
-                      <div className="mt-3 bg-white border border-gray-200 rounded-md p-3 text-xs">
-                        <div className="flex items-center justify-between gap-2 mb-2">
-                          <div className="font-bold text-gray-800 flex items-center gap-1.5">
-                            <Shield size={14} className="text-[#9c3029]" />
-                            Bucket Protection
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => fetchBucketProtection(syncJob.dest_profile, syncJob.dest_bucket)}
-                            className="text-[10px] font-semibold text-gray-500 hover:text-[#9c3029]"
-                          >
-                            {bucketProtectionLoading ? 'Checking...' : 'Refresh'}
-                          </button>
-                        </div>
-                        {bucketProtection ? (
-                          <div className="space-y-2">
-                            <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
-                              <div>
-                                <div className="text-[9px] uppercase font-bold text-gray-400">Bucket Tier</div>
-                                <div className="mt-1 font-semibold text-gray-700">{bucketProtection.storage_tier || 'Standard'}</div>
-                              </div>
-                              <div>
-                                <div className="text-[9px] uppercase font-bold text-gray-400">Versioning</div>
-                                <div className={`mt-1 inline-flex px-2 py-0.5 rounded-full border font-bold uppercase ${bucketProtection.versioning_enabled ? 'text-green-700 bg-green-50 border-green-200' : 'text-amber-700 bg-amber-50 border-amber-200'}`}>
-                                  {bucketProtection.versioning || 'Disabled'}
-                                </div>
-                              </div>
-                              <div>
-                                <div className="text-[9px] uppercase font-bold text-gray-400">Auto-Tiering</div>
-                                <div className={`mt-1 inline-flex px-2 py-0.5 rounded-full border font-bold uppercase ${bucketProtection.auto_tiering_enabled ? 'text-green-700 bg-green-50 border-green-200' : 'text-gray-600 bg-gray-50 border-gray-200'}`}>
-                                  {bucketProtection.auto_tiering_enabled ? 'ON' : 'OFF'}
-                                </div>
-                              </div>
-                              <div>
-                                <div className="text-[9px] uppercase font-bold text-gray-400">Rules</div>
-                                <div className="mt-1 font-semibold text-gray-700">{bucketProtection.lifecycle_rule_count || 0} lifecycle / {bucketProtection.retention_rule_count || 0} WORM</div>
-                              </div>
-                            </div>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                              <button
-                                type="button"
-                                onClick={() => handleSetBucketAutoTiering(bucketProtection.auto_tiering_enabled ? 'Disabled' : 'InfrequentAccess')}
-                                disabled={bucketProtectionLoading || (!bucketProtection.auto_tiering_enabled && !bucketProtection.can_enable_auto_tiering)}
-                                className="w-full bg-white border border-gray-200 text-gray-600 py-2 rounded-md font-semibold hover:text-[#9c3029] hover:bg-gray-50 disabled:opacity-60 flex items-center justify-center gap-2"
-                              >
-                                {bucketProtectionLoading ? <Loader2 className="animate-spin" size={14} /> : <Archive size={14} />}
-                                {bucketProtection.auto_tiering_enabled ? 'Disable Auto-Tiering' : 'Enable Auto-Tiering'}
-                              </button>
-                              {!bucketProtection.can_enable_auto_tiering && !bucketProtection.auto_tiering_enabled && (
-                                <div className="text-[10px] text-amber-700 bg-amber-50 border border-amber-100 rounded-md p-2">
-                                  Auto-Tiering cannot be enabled while a lifecycle rule moves objects to Infrequent Access.
-                                </div>
-                              )}
-                            </div>
-                            {!bucketProtection.versioning_enabled && bucketProtection.can_enable_versioning && (
-                              <button
-                                type="button"
-                                onClick={handleEnableBucketVersioning}
-                                disabled={bucketProtectionLoading}
-                                className="w-full mt-1 bg-[#9c3029] text-white py-2 rounded-md font-semibold hover:bg-[#7a2520] disabled:opacity-60 flex items-center justify-center gap-2"
-                              >
-                                {bucketProtectionLoading ? <Loader2 className="animate-spin" size={14} /> : <Shield size={14} />}
-                                Enable Object Versioning
-                              </button>
-                            )}
-                            {!bucketProtection.can_enable_versioning && !bucketProtection.versioning_enabled && (
-                              <div className="text-[10px] text-amber-700 bg-amber-50 border border-amber-100 rounded-md p-2">
-                                Object Versioning cannot be enabled while OCI retention rules are active on this bucket.
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="text-[11px] text-gray-400">
-                            {bucketProtectionLoading ? 'Loading bucket protection...' : 'Protection status is not loaded.'}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div className="mb-6 border border-gray-200 rounded-md overflow-hidden">
-                  <div className="px-4 py-3 bg-gray-50 border-b border-gray-100">
-                    <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Archive size={16}/> Upload Storage Tier</h4>
-                    <p className="mt-1 text-[11px] text-gray-500">Sets the OCI storage tier for new objects written by this sync job.</p>
-                  </div>
-                  <div className="p-4 grid grid-cols-1 md:grid-cols-3 gap-3">
-                    {[
-                      { value: 'Standard', label: 'Standard', description: 'Default hot storage for active data.' },
-                      { value: 'InfrequentAccess', label: 'Infrequent Access', description: 'Lower storage cost for less-used data.' },
-                      { value: 'Archive', label: 'Archive', description: 'Lowest cost, restore needed before read.' }
-                    ].map(option => (
-                      <label
-                        key={option.value}
-                        className={`border rounded-md p-3 cursor-pointer transition-colors ${syncJob.storage_tier === option.value ? 'border-[#9c3029] bg-red-50/40' : 'border-gray-200 bg-white hover:bg-gray-50'}`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <input
-                            type="radio"
-                            name="storage-tier"
-                            value={option.value}
-                            checked={syncJob.storage_tier === option.value}
-                            onChange={e => setSyncJob(prev => ({ ...prev, storage_tier: e.target.value }))}
-                            className="accent-[#9c3029]"
-                          />
-                          <span className="text-sm font-bold text-gray-800">{option.label}</span>
-                        </div>
-                        <div className="mt-1 text-[11px] text-gray-500">{option.description}</div>
-                      </label>
-                    ))}
                   </div>
                 </div>
                 <div className="mb-6 border border-gray-200 rounded-md overflow-hidden">
@@ -2093,108 +2017,6 @@ export default function App() {
                   )}
                 </div>
 
-                <div className="mb-6 border border-gray-200 rounded-md overflow-hidden">
-                  <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 flex items-center justify-between gap-3">
-                    <div>
-                      <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Archive size={16}/> OCI Lifecycle Policy</h4>
-                      <p className="mt-1 text-[11px] text-gray-500">Moves or deletes objects after a set age. Empty prefix means the whole bucket.</p>
-                    </div>
-                    <label className="flex items-center gap-2 text-xs font-semibold text-gray-600">
-                      <input
-                        type="checkbox"
-                        checked={Boolean(syncJob.lifecycle_policy?.enabled)}
-                        onChange={e => setSyncJob(prev => ({
-                          ...prev,
-                          lifecycle_policy: {
-                            ...createDefaultSyncJob().lifecycle_policy,
-                            ...(prev.lifecycle_policy || {}),
-                            enabled: e.target.checked
-                          }
-                        }))}
-                        className="accent-[#9c3029]"
-                      />
-                      Manage in OCI
-                    </label>
-                  </div>
-                  {syncJob.lifecycle_policy?.enabled ? (
-                    <div className="p-4 grid grid-cols-1 md:grid-cols-4 gap-3">
-                      <div className="md:col-span-4">
-                        <label className="text-[10px] uppercase font-bold text-gray-500">Object Prefix / Folder</label>
-                        <input
-                          value={syncJob.lifecycle_policy?.prefix || ''}
-                          onChange={e => setSyncJob(prev => ({
-                            ...prev,
-                            lifecycle_policy: { ...prev.lifecycle_policy, prefix: e.target.value }
-                          }))}
-                          placeholder="backup/customer-a/"
-                          className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] uppercase font-bold text-gray-500">Move to Infrequent Access After</label>
-                        <input
-                          type="number"
-                          min="1"
-                          value={syncJob.lifecycle_policy?.infrequent_access_after_days ?? ''}
-                          onChange={e => setSyncJob(prev => ({
-                            ...prev,
-                            lifecycle_policy: { ...prev.lifecycle_policy, infrequent_access_after_days: e.target.value }
-                          }))}
-                          placeholder="30"
-                          className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] uppercase font-bold text-gray-500">Move to Archive After</label>
-                        <input
-                          type="number"
-                          min="1"
-                          value={syncJob.lifecycle_policy?.archive_after_days ?? ''}
-                          onChange={e => setSyncJob(prev => ({
-                            ...prev,
-                            lifecycle_policy: { ...prev.lifecycle_policy, archive_after_days: e.target.value }
-                          }))}
-                          placeholder="90"
-                          className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] uppercase font-bold text-gray-500">Delete After</label>
-                        <input
-                          type="number"
-                          min="1"
-                          value={syncJob.lifecycle_policy?.delete_after_days ?? ''}
-                          onChange={e => setSyncJob(prev => ({
-                            ...prev,
-                            lifecycle_policy: { ...prev.lifecycle_policy, delete_after_days: e.target.value }
-                          }))}
-                          placeholder="365"
-                          className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
-                        />
-                      </div>
-                      <div>
-                        <label className="text-[10px] uppercase font-bold text-gray-500">Delete Previous Versions After</label>
-                        <input
-                          type="number"
-                          min="1"
-                          value={syncJob.lifecycle_policy?.previous_versions_delete_after_days ?? ''}
-                          onChange={e => setSyncJob(prev => ({
-                            ...prev,
-                            lifecycle_policy: { ...prev.lifecycle_policy, previous_versions_delete_after_days: e.target.value }
-                          }))}
-                          placeholder="90"
-                          className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
-                        />
-                      </div>
-                      <div className="md:col-span-4 text-[10px] text-gray-500">
-                        OCI does not allow Auto-Tiering together with lifecycle rules that move objects to Infrequent Access. These rules are named with an oci-migrator prefix and existing customer-managed rules are preserved.
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="p-4 text-xs text-gray-400">Lifecycle policy is off for this sync job.</div>
-                  )}
-                </div>
-                
                 {/* SCHEMALÄGGNING & OPTIMERING (Transfers, Checkers, Buffer, Time) */}
                 <div className="grid grid-cols-3 gap-4 mb-6 text-left">
                   <div className="space-y-1">
@@ -2446,12 +2268,52 @@ export default function App() {
                   </select>
                 </div>
                 {storageProfile && (
+                   <>
                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                       <div className="bg-white border border-gray-200 rounded-md p-5 h-[600px] flex flex-col text-left shadow-sm">
                          <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2 text-sm"><Database size={16} className="text-[#9c3029]"/> Buckets</h3>
-                         <div className="flex gap-2 mb-4">
-                             <input value={newBucketName} onChange={e => setNewBucketName(e.target.value)} placeholder="New bucket name" className="w-full bg-gray-50 border border-gray-200 p-2 rounded-md text-xs focus:outline-none focus:border-[#9c3029]" />
-                             <button onClick={handleCreateBucket} className="bg-[#9c3029] text-white px-3 py-2 rounded-md hover:bg-[#a63d2e]"><Plus size={14}/></button>
+                         <div className="space-y-2 mb-4 p-3 bg-gray-50 border border-gray-200 rounded-md">
+                             <input value={newBucketName} onChange={e => setNewBucketName(e.target.value)} placeholder="New bucket name" className="w-full bg-white border border-gray-200 p-2 rounded-md text-xs focus:outline-none focus:border-[#9c3029]" />
+                             <div className="grid grid-cols-2 gap-2">
+                               <div>
+                                 <label className="text-[9px] uppercase font-bold text-gray-500">Default Tier</label>
+                                 <select
+                                   value={newBucketConfig.storageTier}
+                                   onChange={e => setNewBucketConfig(prev => ({
+                                     ...prev,
+                                     storageTier: e.target.value,
+                                     autoTiering: e.target.value === 'Standard' ? prev.autoTiering : 'Disabled'
+                                   }))}
+                                   className="mt-1 w-full bg-white border border-gray-200 p-1.5 rounded-md text-xs focus:outline-none focus:border-[#9c3029]"
+                                 >
+                                   <option value="Standard">Standard</option>
+                                   <option value="Archive">Archive</option>
+                                 </select>
+                               </div>
+                               <div>
+                                 <label className="text-[9px] uppercase font-bold text-gray-500">Versioning</label>
+                                 <select
+                                   value={newBucketConfig.versioning}
+                                   onChange={e => setNewBucketConfig(prev => ({ ...prev, versioning: e.target.value }))}
+                                   className="mt-1 w-full bg-white border border-gray-200 p-1.5 rounded-md text-xs focus:outline-none focus:border-[#9c3029]"
+                                 >
+                                   <option value="Disabled">Disabled</option>
+                                   <option value="Enabled">Enabled</option>
+                                 </select>
+                               </div>
+                             </div>
+                             <label className={`flex items-center gap-2 text-[11px] font-semibold ${newBucketConfig.storageTier === 'Standard' ? 'text-gray-600' : 'text-gray-400'}`}>
+                               <input
+                                 type="checkbox"
+                                 checked={newBucketConfig.autoTiering === 'InfrequentAccess'}
+                                 disabled={newBucketConfig.storageTier !== 'Standard'}
+                                 onChange={e => setNewBucketConfig(prev => ({ ...prev, autoTiering: e.target.checked ? 'InfrequentAccess' : 'Disabled' }))}
+                                 className="accent-[#9c3029]"
+                               />
+                               Auto-Tiering to Infrequent Access
+                             </label>
+                             <div className="text-[10px] text-gray-500">OCI bucket default tier is Standard or Archive; Infrequent Access is reached with Auto-Tiering or lifecycle rules.</div>
+                             <button onClick={handleCreateBucket} className="w-full bg-[#9c3029] text-white px-3 py-2 rounded-md hover:bg-[#a63d2e] text-xs font-bold flex items-center justify-center gap-1"><Plus size={14}/> Create Bucket</button>
                          </div>
                          <div className="flex-1 overflow-y-auto pr-1">
                              {storageBuckets.map(b => (
@@ -2492,6 +2354,143 @@ export default function App() {
                          </div>
                       </div>
                    </div>
+                   {selectedBucket && (
+                     <div className="bg-white border border-gray-200 rounded-md shadow-sm overflow-hidden text-left">
+                       <div className="px-5 py-4 bg-gray-50 border-b border-gray-100 flex items-center justify-between gap-3">
+                         <h3 className="font-bold text-gray-800 flex items-center gap-2 text-sm"><Settings size={16} className="text-[#9c3029]"/> Bucket Settings</h3>
+                         <button
+                           type="button"
+                           onClick={() => loadSelectedBucketSettings(storageProfile, selectedBucket)}
+                           className="px-2.5 py-1.5 bg-white border border-gray-200 rounded-md text-xs font-semibold text-gray-600 hover:text-[#9c3029]"
+                         >
+                           {bucketProtectionLoading ? 'Checking...' : 'Refresh'}
+                         </button>
+                       </div>
+                       <div className="p-5 space-y-5">
+                         {bucketProtection ? (
+                           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                             <div className="border border-gray-200 rounded-md p-3">
+                               <div className="text-[10px] uppercase font-bold text-gray-400">Default Tier</div>
+                               <div className="mt-1 text-sm font-bold text-gray-800">{bucketProtection.storage_tier || 'Standard'}</div>
+                             </div>
+                             <div className="border border-gray-200 rounded-md p-3">
+                               <div className="text-[10px] uppercase font-bold text-gray-400">Versioning</div>
+                               <div className={`mt-1 inline-flex px-2 py-0.5 rounded-full border text-[10px] font-bold uppercase ${bucketProtection.versioning_enabled ? 'text-green-700 bg-green-50 border-green-200' : 'text-amber-700 bg-amber-50 border-amber-200'}`}>
+                                 {bucketProtection.versioning || 'Disabled'}
+                               </div>
+                             </div>
+                             <div className="border border-gray-200 rounded-md p-3">
+                               <div className="text-[10px] uppercase font-bold text-gray-400">Auto-Tiering</div>
+                               <div className={`mt-1 inline-flex px-2 py-0.5 rounded-full border text-[10px] font-bold uppercase ${bucketProtection.auto_tiering_enabled ? 'text-green-700 bg-green-50 border-green-200' : 'text-gray-600 bg-gray-50 border-gray-200'}`}>
+                                 {bucketProtection.auto_tiering_enabled ? 'ON' : 'OFF'}
+                               </div>
+                             </div>
+                             <div className="border border-gray-200 rounded-md p-3">
+                               <div className="text-[10px] uppercase font-bold text-gray-400">Rules</div>
+                               <div className="mt-1 text-sm font-bold text-gray-800">{bucketProtection.lifecycle_rule_count || 0} lifecycle / {bucketProtection.retention_rule_count || 0} WORM</div>
+                             </div>
+                           </div>
+                         ) : (
+                           <div className="text-xs text-gray-400">{bucketProtectionLoading ? 'Loading bucket settings...' : 'Bucket settings are not loaded.'}</div>
+                         )}
+
+                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                           <button
+                             type="button"
+                             onClick={() => handleSetBucketAutoTiering(bucketProtection?.auto_tiering_enabled ? 'Disabled' : 'InfrequentAccess')}
+                             disabled={bucketProtectionLoading || !bucketProtection || (!bucketProtection.auto_tiering_enabled && !bucketProtection.can_enable_auto_tiering)}
+                             className="bg-white border border-gray-200 text-gray-600 py-2 rounded-md font-semibold hover:text-[#9c3029] hover:bg-gray-50 disabled:opacity-60 flex items-center justify-center gap-2 text-xs"
+                           >
+                             {bucketProtectionLoading ? <Loader2 className="animate-spin" size={14} /> : <Archive size={14} />}
+                             {bucketProtection?.auto_tiering_enabled ? 'Disable Auto-Tiering' : 'Enable Auto-Tiering'}
+                           </button>
+                           <button
+                             type="button"
+                             onClick={handleEnableBucketVersioning}
+                             disabled={bucketProtectionLoading || !bucketProtection || bucketProtection.versioning_enabled || !bucketProtection.can_enable_versioning}
+                             className="bg-[#9c3029] text-white py-2 rounded-md font-semibold hover:bg-[#7a2520] disabled:opacity-60 flex items-center justify-center gap-2 text-xs"
+                           >
+                             {bucketProtectionLoading ? <Loader2 className="animate-spin" size={14} /> : <Shield size={14} />}
+                             Enable Object Versioning
+                           </button>
+                         </div>
+
+                         {bucketProtection && !bucketProtection.can_enable_auto_tiering && !bucketProtection.auto_tiering_enabled && (
+                           <div className="text-[10px] text-amber-700 bg-amber-50 border border-amber-100 rounded-md p-2">
+                             Auto-Tiering cannot be enabled while a lifecycle rule moves objects to Infrequent Access.
+                           </div>
+                         )}
+                         {bucketProtection && !bucketProtection.can_enable_versioning && !bucketProtection.versioning_enabled && (
+                           <div className="text-[10px] text-amber-700 bg-amber-50 border border-amber-100 rounded-md p-2">
+                             Object Versioning cannot be enabled while OCI retention rules are active on this bucket.
+                           </div>
+                         )}
+
+                         <div className="border border-gray-200 rounded-md overflow-hidden">
+                           <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 flex items-center justify-between gap-3">
+                             <div>
+                               <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Archive size={16}/> OCI Lifecycle Management</h4>
+                               <p className="mt-1 text-[11px] text-gray-500">Managed bucket-level lifecycle rules. Empty prefix means the whole bucket.</p>
+                             </div>
+                             <label className="flex items-center gap-2 text-xs font-semibold text-gray-600">
+                               <input
+                                 type="checkbox"
+                                 checked={Boolean(bucketLifecycleForm.enabled)}
+                                 onChange={e => setBucketLifecycleForm(prev => ({ ...prev, enabled: e.target.checked }))}
+                                 className="accent-[#9c3029]"
+                               />
+                               Enabled
+                             </label>
+                           </div>
+                           {bucketLifecycleForm.enabled ? (
+                             <div className="p-4 grid grid-cols-1 md:grid-cols-4 gap-3">
+                               <div className="md:col-span-4">
+                                 <label className="text-[10px] uppercase font-bold text-gray-500">Object Prefix / Folder</label>
+                                 <input
+                                   value={bucketLifecycleForm.prefix || ''}
+                                   onChange={e => setBucketLifecycleForm(prev => ({ ...prev, prefix: e.target.value }))}
+                                   placeholder="backup/customer-a/"
+                                   className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                                 />
+                               </div>
+                               <div>
+                                 <label className="text-[10px] uppercase font-bold text-gray-500">Move to Infrequent Access After</label>
+                                 <input type="number" min="1" value={bucketLifecycleForm.infrequent_access_after_days ?? ''} onChange={e => setBucketLifecycleForm(prev => ({ ...prev, infrequent_access_after_days: e.target.value }))} placeholder="30" className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
+                               </div>
+                               <div>
+                                 <label className="text-[10px] uppercase font-bold text-gray-500">Move to Archive After</label>
+                                 <input type="number" min="1" value={bucketLifecycleForm.archive_after_days ?? ''} onChange={e => setBucketLifecycleForm(prev => ({ ...prev, archive_after_days: e.target.value }))} placeholder="90" className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
+                               </div>
+                               <div>
+                                 <label className="text-[10px] uppercase font-bold text-gray-500">Delete After</label>
+                                 <input type="number" min="1" value={bucketLifecycleForm.delete_after_days ?? ''} onChange={e => setBucketLifecycleForm(prev => ({ ...prev, delete_after_days: e.target.value }))} placeholder="365" className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
+                               </div>
+                               <div>
+                                 <label className="text-[10px] uppercase font-bold text-gray-500">Delete Previous Versions After</label>
+                                 <input type="number" min="1" value={bucketLifecycleForm.previous_versions_delete_after_days ?? ''} onChange={e => setBucketLifecycleForm(prev => ({ ...prev, previous_versions_delete_after_days: e.target.value }))} placeholder="90" className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
+                               </div>
+                               <div className="md:col-span-4 text-[10px] text-gray-500">
+                                 OCI does not allow Auto-Tiering together with lifecycle rules that move objects to Infrequent Access.
+                               </div>
+                             </div>
+                           ) : (
+                             <div className="p-4 text-xs text-gray-400">Managed lifecycle rules are disabled for this bucket.</div>
+                           )}
+                           <div className="px-4 py-3 border-t border-gray-100 bg-white flex justify-end">
+                             <button onClick={handleSaveBucketLifecyclePolicy} disabled={savingBucketSettings} className="bg-[#9c3029] text-white px-4 py-2 rounded-md text-xs font-bold hover:bg-[#7a2520] disabled:opacity-60 flex items-center gap-2">
+                               {savingBucketSettings ? <Loader2 className="animate-spin" size={14} /> : <Save size={14} />}
+                               Save Lifecycle
+                             </button>
+                           </div>
+                         </div>
+
+                         <div className="text-[10px] text-gray-500">
+                           OCI Retention Rules/WORM are shown here as status only. They prevent object updates/deletes until retention expires or the rule is removed.
+                         </div>
+                       </div>
+                     </div>
+                   )}
+                   </>
                 )}
              </div>
           )}

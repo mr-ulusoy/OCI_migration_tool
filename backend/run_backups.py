@@ -102,7 +102,6 @@ def main():
                             "source": job["source_remote"],
                             "destination": destination,
                             "metadata_tags": job.get("metadata_tags", []),
-                            "storage_tier": job.get("storage_tier", "Standard"),
                             "details": "Queued by scheduler.",
                             "log_file": str(job_log_path(safe_job_name, run_id)),
                         }
@@ -118,7 +117,6 @@ def main():
                                 job.get("transfers", 4),
                                 job.get("checkers", 8),
                                 job.get("buffer_size", "16M"),
-                                job.get("storage_tier", "Standard"),
                                 # Viktigt: så att schemalagda jobb får sin egen loggfil
                                 safe_job_name,
                                 run_id,

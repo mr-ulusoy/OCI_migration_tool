@@ -496,7 +496,6 @@ class DataSyncJob(BaseModel):
     transfers: int = 4
     checkers: int = 8
     buffer_size: str = "16M"
-    storage_tier: str = "Standard"
     is_active: bool = True
     metadata_tags: List[MetadataTag] = Field(default_factory=list)
     lifecycle_policy: LifecyclePolicyConfig = Field(default_factory=LifecyclePolicyConfig)
@@ -518,6 +517,9 @@ class JobLogSettingsRequest(BaseModel):
 class CreateBucketReq(BaseModel):
     profile_name: str
     bucket_name: str
+    storage_tier: str = "Standard"
+    auto_tiering: str = "Disabled"
+    versioning: str = "Disabled"
 
 class CreateFolderReq(BaseModel):
     profile_name: str
@@ -534,6 +536,12 @@ class BucketAutoTieringReq(BaseModel):
     profile_name: str
     bucket_name: str
     auto_tiering: str
+
+
+class BucketLifecyclePolicyReq(BaseModel):
+    profile_name: str
+    bucket_name: str
+    lifecycle_policy: LifecyclePolicyConfig = Field(default_factory=LifecyclePolicyConfig)
 
 # --- Helpers ---
 
@@ -969,12 +977,22 @@ def normalize_storage_tier(value: str) -> str:
     tier = str(value or "Standard").strip()
     allowed = {
         "Standard": "Standard",
-        "InfrequentAccess": "InfrequentAccess",
         "Archive": "Archive",
     }
     if tier not in allowed:
-        raise HTTPException(status_code=400, detail="Storage tier must be Standard, InfrequentAccess, or Archive.")
+        raise HTTPException(status_code=400, detail="Bucket storage tier must be Standard or Archive.")
     return allowed[tier]
+
+
+def normalize_versioning(value: str) -> str:
+    versioning = str(value or "Disabled").strip()
+    allowed = {
+        "Disabled": "Disabled",
+        "Enabled": "Enabled",
+    }
+    if versioning not in allowed:
+        raise HTTPException(status_code=400, detail="Versioning must be Disabled or Enabled.")
+    return allowed[versioning]
 
 
 def normalize_auto_tiering(value: str) -> str:
@@ -1055,6 +1073,9 @@ def lifecycle_managed_rule_names(job_name: str) -> set[str]:
         f"oci-migrator-{safe_job_name}-delete",
         f"oci-migrator-{safe_job_name}-delete-previous",
     }
+
+
+BUCKET_SETTINGS_LIFECYCLE_KEY = "bucket-settings"
 
 
 def object_storage_context(profile_name: str):
@@ -1175,6 +1196,37 @@ def remove_job_lifecycle_policy(job_name: str, profile_name: str, destination: s
     next_rules = [rule for rule in existing_rules if getattr(rule, "name", "") not in managed_names]
     if len(next_rules) != len(existing_rules):
         put_lifecycle_rules(client, namespace, bucket_name, next_rules)
+
+
+def managed_lifecycle_policy_from_rules(managed_key: str, rules: list) -> dict:
+    managed_names = lifecycle_managed_rule_names(managed_key)
+    policy = {
+        "enabled": False,
+        "prefix": "",
+        "infrequent_access_after_days": None,
+        "archive_after_days": None,
+        "delete_after_days": None,
+        "previous_versions_delete_after_days": None,
+    }
+    action_fields = {
+        f"oci-migrator-{normalize_job_name(managed_key).lower()}-infrequent-access": "infrequent_access_after_days",
+        f"oci-migrator-{normalize_job_name(managed_key).lower()}-archive": "archive_after_days",
+        f"oci-migrator-{normalize_job_name(managed_key).lower()}-delete": "delete_after_days",
+        f"oci-migrator-{normalize_job_name(managed_key).lower()}-delete-previous": "previous_versions_delete_after_days",
+    }
+
+    for rule in rules:
+        rule_name = getattr(rule, "name", "")
+        if rule_name not in managed_names:
+            continue
+        policy["enabled"] = True
+        policy[action_fields.get(rule_name, "")] = getattr(rule, "time_amount", None)
+        object_filter = getattr(rule, "object_name_filter", None)
+        prefixes = getattr(object_filter, "inclusion_prefixes", None) if object_filter else None
+        if prefixes and not policy["prefix"]:
+            policy["prefix"] = prefixes[0]
+
+    return policy
 
 
 def retention_rule_summary(rule) -> dict:
@@ -2246,7 +2298,6 @@ async def delete_profile(profile_name: str):
 async def save_job(job: DataSyncJob):
     metadata_tags = normalize_metadata_tags(job.metadata_tags)
     lifecycle_policy = normalize_lifecycle_policy(job.lifecycle_policy)
-    storage_tier = normalize_storage_tier(job.storage_tier)
     existing_job = next((j for j in load_jobs() if j.get("name") == job.name), None)
     existing_lifecycle_enabled = bool((existing_job or {}).get("lifecycle_policy", {}).get("enabled"))
     existing_destination_changed = bool(
@@ -2284,7 +2335,6 @@ async def save_job(job: DataSyncJob):
     with JOBS_LOCK:
         jobs = load_jobs()
         job_dict = job.model_dump()
-        job_dict["storage_tier"] = storage_tier
         job_dict["metadata_tags"] = metadata_tags
         job_dict["lifecycle_policy"] = lifecycle_policy
         existing = next((i for i, j in enumerate(jobs) if j['name'] == job.name), None)
@@ -2410,7 +2460,6 @@ async def start_sync_manual(job: DataSyncJob):
     safe_job_name = normalize_job_name(job.name)
     destination = f"{job.dest_profile}_rclone:{job.dest_bucket}"
     metadata_tags = normalize_metadata_tags(job.metadata_tags)
-    storage_tier = normalize_storage_tier(job.storage_tier)
     upsert_job_run(
         {
             "id": run_id,
@@ -2421,7 +2470,6 @@ async def start_sync_manual(job: DataSyncJob):
             "source": job.source_remote,
             "destination": destination,
             "metadata_tags": metadata_tags,
-            "storage_tier": storage_tier,
             "details": "Queued for worker.",
             "log_file": str(job_log_path(safe_job_name, run_id)),
         }
@@ -2436,7 +2484,6 @@ async def start_sync_manual(job: DataSyncJob):
                 job.transfers,
                 job.checkers,
                 job.buffer_size,
-                storage_tier,
                 safe_job_name,
                 run_id,
                 "manual",
@@ -2810,6 +2857,54 @@ async def update_bucket_auto_tiering(req: BucketAutoTieringReq):
         )
 
 
+@app.get("/bucket-lifecycle-policy")
+async def get_bucket_lifecycle_policy(profile_name: str = Query(...), bucket_name: str = Query(...)):
+    try:
+        bucket_name = destination_bucket_name(bucket_name)
+        _, os_client, namespace = object_storage_context(profile_name)
+        rules = get_lifecycle_rules(os_client, namespace, bucket_name)
+        return {
+            "profile_name": profile_name,
+            "bucket_name": bucket_name,
+            "lifecycle_policy": managed_lifecycle_policy_from_rules(BUCKET_SETTINGS_LIFECYCLE_KEY, rules),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_operation_error(
+            500,
+            "Read bucket lifecycle policy",
+            e,
+            "Check Object Storage permissions for lifecycle policy management.",
+        )
+
+
+@app.put("/bucket-lifecycle-policy")
+async def update_bucket_lifecycle_policy(req: BucketLifecyclePolicyReq):
+    try:
+        lifecycle_policy = normalize_lifecycle_policy(req.lifecycle_policy)
+        rule_count = apply_job_lifecycle_policy(
+            BUCKET_SETTINGS_LIFECYCLE_KEY,
+            req.profile_name,
+            req.bucket_name,
+            lifecycle_policy,
+        )
+        return {
+            "message": f"Bucket lifecycle policy updated. Managed rules: {rule_count}.",
+            "lifecycle_policy": lifecycle_policy,
+            "managed_rule_count": rule_count,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_operation_error(
+            500,
+            "Update bucket lifecycle policy",
+            e,
+            "Check Object Storage permissions and Auto-Tiering conflicts.",
+        )
+
+
 @app.get("/list-objects/{profile_name}/{bucket_name}")
 async def list_objects(profile_name: str, bucket_name: str):
     try:
@@ -2833,6 +2928,12 @@ async def list_objects(profile_name: str, bucket_name: str):
 @app.post("/create-bucket")
 async def create_bucket(req: CreateBucketReq):
     try:
+        storage_tier = normalize_storage_tier(req.storage_tier)
+        auto_tiering = normalize_auto_tiering(req.auto_tiering)
+        versioning = normalize_versioning(req.versioning)
+        if storage_tier == "Archive" and auto_tiering == "InfrequentAccess":
+            raise HTTPException(status_code=400, detail="Auto-Tiering is only supported for Standard buckets.")
+
         config = oci.config.from_file(CONFIG_PATH, req.profile_name)
         os_client = oci.object_storage.ObjectStorageClient(config)
         namespace = os_client.get_namespace().data
@@ -2840,10 +2941,15 @@ async def create_bucket(req: CreateBucketReq):
         
         details = oci.object_storage.models.CreateBucketDetails(
             name=req.bucket_name,
-            compartment_id=comp_id
+            compartment_id=comp_id,
+            storage_tier=storage_tier,
+            versioning=versioning,
+            auto_tiering=auto_tiering,
         )
         os_client.create_bucket(namespace, details)
         return {"message": f"Bucket '{req.bucket_name}' created"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise_operation_error(500, "Create bucket", e, "Check that the bucket name is unique and the profile has permission.")
 
