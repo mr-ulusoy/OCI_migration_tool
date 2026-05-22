@@ -999,7 +999,7 @@ export default function App() {
       setActiveLogJob(job.name);
       fetchJobRuns();
       showSuccess(`Started ${job.name}.`);
-    } catch (err) { showError('Failed to start data sync job', err); }
+    } catch (err) { showError('Failed to start backup job', err); }
   };
 
   // --- Storage Explorer ---
@@ -1251,9 +1251,9 @@ export default function App() {
         <div className="space-y-1 font-medium text-sm text-gray-700">
           <button onClick={() => setView('keys')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'keys' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Key size={18} /> <span>Credentials</span></button>
           <button onClick={() => setView('datasync')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'datasync' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Activity size={18} /> <span>Job Dashboard</span></button>
-          <button onClick={startNewSyncJob} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'builder' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Plus size={18} /> <span>New Sync Job</span></button>
-          <button onClick={() => setView('explorer')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'explorer' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Database size={18} /> <span>VM Migration</span></button>
-          <button onClick={() => setView('storage')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'storage' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Archive size={18} /> <span>Storage Explorer</span></button>
+          <button onClick={startNewSyncJob} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'builder' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Plus size={18} /> <span>New Backup Job</span></button>
+          <button onClick={() => setView('explorer')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'explorer' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Database size={18} /> <span>VM Image Migration</span></button>
+          <button onClick={() => setView('storage')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'storage' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Archive size={18} /> <span>OCI Object Storage</span></button>
           <button onClick={() => setView('settings')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'settings' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Settings size={18} /> <span>Settings</span></button>
         </div>
       </nav>
@@ -1324,7 +1324,7 @@ export default function App() {
                           }} 
                           className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm text-gray-800 focus:outline-none focus:border-[#9c3029]"
                         >
-                          <option value="oci">Oracle Cloud Infrastructure (OCI)</option>
+                          <option value="oci">Oracle Object Storage (OCI)</option>
                           <option value="s3">AWS S3 (or S3 Clone)</option>
                           <option value="azureblob">Azure Blob Storage</option>
                           <option value="google cloud storage">Google Cloud Storage</option>
@@ -1620,7 +1620,7 @@ export default function App() {
                   </div>
                 </div>
                 <p className="mt-3 text-[11px] text-gray-500">
-                  Import restores runtime env, OCI config, rclone config, sync jobs, job history, and bundled key files. A pre-restore backup is created automatically.
+                  Import restores runtime env, OCI config, rclone config, backup jobs, job history, and bundled key files. A pre-restore backup is created automatically.
                 </p>
               </div>
               <div className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
@@ -1744,7 +1744,7 @@ export default function App() {
           {/* VIEW: JOB DASHBOARD */}
           {view === 'datasync' && (
             <div className="max-w-[1500px] mx-auto space-y-6 animate-in fade-in">
-              <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800"><Activity size={24} className="text-[#9c3029]"/> Active Sync Jobs</h2>
+              <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800"><Activity size={24} className="text-[#9c3029]"/> Active Backup Jobs</h2>
               <div className="bg-white border border-gray-200 rounded-md shadow-sm overflow-hidden">
                 <div className="hidden lg:grid grid-cols-[minmax(150px,0.8fr)_minmax(320px,1.7fr)_minmax(170px,0.85fr)_minmax(110px,0.55fr)_128px] gap-4 px-4 py-2.5 bg-gray-50 border-b border-gray-100 text-[10px] uppercase font-bold tracking-wider text-gray-400">
                   <div>Job</div>
@@ -1908,7 +1908,7 @@ export default function App() {
           {view === 'builder' && (
             <div className="max-w-3xl mx-auto animate-in slide-in-from-bottom-4">
               <div className="bg-white border border-gray-200 rounded-md p-8 shadow-sm text-left">
-                <h2 className="text-xl font-bold mb-8 flex items-center gap-2 text-gray-800"><Plus className="text-[#9c3029]"/> {editingJobName ? 'Edit Sync Pipeline' : 'Build Sync Pipeline'}</h2>
+                <h2 className="text-xl font-bold mb-8 flex items-center gap-2 text-gray-800"><Plus className="text-[#9c3029]"/> {editingJobName ? 'Edit Backup Job' : 'Build Backup Job'}</h2>
                 <div className="grid grid-cols-2 gap-6 mb-6">
                   <div className="space-y-1">
                     <label className="text-[11px] uppercase font-bold text-gray-500">Job Name</label>
