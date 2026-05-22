@@ -481,6 +481,7 @@ class MetadataTag(BaseModel):
 class LifecyclePolicyConfig(BaseModel):
     enabled: bool = False
     prefix: str = ""
+    infrequent_access_after_days: Optional[int] = None
     archive_after_days: Optional[int] = None
     delete_after_days: Optional[int] = None
     previous_versions_delete_after_days: Optional[int] = None
@@ -495,6 +496,7 @@ class DataSyncJob(BaseModel):
     transfers: int = 4
     checkers: int = 8
     buffer_size: str = "16M"
+    storage_tier: str = "Standard"
     is_active: bool = True
     metadata_tags: List[MetadataTag] = Field(default_factory=list)
     lifecycle_policy: LifecyclePolicyConfig = Field(default_factory=LifecyclePolicyConfig)
@@ -526,6 +528,12 @@ class CreateFolderReq(BaseModel):
 class BucketProtectionReq(BaseModel):
     profile_name: str
     bucket_name: str
+
+
+class BucketAutoTieringReq(BaseModel):
+    profile_name: str
+    bucket_name: str
+    auto_tiering: str
 
 # --- Helpers ---
 
@@ -957,6 +965,29 @@ def normalize_lifecycle_days(value: Optional[int], field_name: str) -> Optional[
     return days
 
 
+def normalize_storage_tier(value: str) -> str:
+    tier = str(value or "Standard").strip()
+    allowed = {
+        "Standard": "Standard",
+        "InfrequentAccess": "InfrequentAccess",
+        "Archive": "Archive",
+    }
+    if tier not in allowed:
+        raise HTTPException(status_code=400, detail="Storage tier must be Standard, InfrequentAccess, or Archive.")
+    return allowed[tier]
+
+
+def normalize_auto_tiering(value: str) -> str:
+    auto_tiering = str(value or "Disabled").strip()
+    allowed = {
+        "Disabled": "Disabled",
+        "InfrequentAccess": "InfrequentAccess",
+    }
+    if auto_tiering not in allowed:
+        raise HTTPException(status_code=400, detail="Auto-Tiering must be Disabled or InfrequentAccess.")
+    return allowed[auto_tiering]
+
+
 def normalize_lifecycle_policy(policy: LifecyclePolicyConfig | dict | None) -> dict:
     if policy is None:
         policy = LifecyclePolicyConfig()
@@ -968,6 +999,10 @@ def normalize_lifecycle_policy(policy: LifecyclePolicyConfig | dict | None) -> d
     normalized = {
         "enabled": bool(policy_data.get("enabled", False)),
         "prefix": normalize_lifecycle_prefix(policy_data.get("prefix", "")),
+        "infrequent_access_after_days": normalize_lifecycle_days(
+            policy_data.get("infrequent_access_after_days"),
+            "Move to Infrequent Access after",
+        ),
         "archive_after_days": normalize_lifecycle_days(policy_data.get("archive_after_days"), "Archive after"),
         "delete_after_days": normalize_lifecycle_days(policy_data.get("delete_after_days"), "Delete after"),
         "previous_versions_delete_after_days": normalize_lifecycle_days(
@@ -979,12 +1014,29 @@ def normalize_lifecycle_policy(policy: LifecyclePolicyConfig | dict | None) -> d
     if normalized["enabled"]:
         if not any(
             normalized[key]
-            for key in ("archive_after_days", "delete_after_days", "previous_versions_delete_after_days")
+            for key in (
+                "infrequent_access_after_days",
+                "archive_after_days",
+                "delete_after_days",
+                "previous_versions_delete_after_days",
+            )
         ):
             raise HTTPException(
                 status_code=400,
-                detail="Enable at least one lifecycle action: archive, delete, or delete previous versions.",
+                detail="Enable at least one lifecycle action: Infrequent Access, Archive, delete, or delete previous versions.",
             )
+        if (
+            normalized["infrequent_access_after_days"]
+            and normalized["archive_after_days"]
+            and normalized["archive_after_days"] <= normalized["infrequent_access_after_days"]
+        ):
+            raise HTTPException(status_code=400, detail="Archive after days must be greater than Infrequent Access after days.")
+        if (
+            normalized["infrequent_access_after_days"]
+            and normalized["delete_after_days"]
+            and normalized["delete_after_days"] <= normalized["infrequent_access_after_days"]
+        ):
+            raise HTTPException(status_code=400, detail="Delete after days must be greater than Infrequent Access after days.")
         if (
             normalized["archive_after_days"]
             and normalized["delete_after_days"]
@@ -998,6 +1050,7 @@ def normalize_lifecycle_policy(policy: LifecyclePolicyConfig | dict | None) -> d
 def lifecycle_managed_rule_names(job_name: str) -> set[str]:
     safe_job_name = normalize_job_name(job_name).lower()
     return {
+        f"oci-migrator-{safe_job_name}-infrequent-access",
         f"oci-migrator-{safe_job_name}-archive",
         f"oci-migrator-{safe_job_name}-delete",
         f"oci-migrator-{safe_job_name}-delete-previous",
@@ -1044,6 +1097,16 @@ def desired_lifecycle_rules(job_name: str, policy: dict) -> list:
     prefix = policy.get("prefix", "")
     safe_job_name = normalize_job_name(job_name).lower()
     rules = []
+    if policy.get("infrequent_access_after_days"):
+        rules.append(
+            build_lifecycle_rule(
+                f"oci-migrator-{safe_job_name}-infrequent-access",
+                "objects",
+                "INFREQUENT_ACCESS",
+                policy["infrequent_access_after_days"],
+                prefix,
+            )
+        )
     if policy.get("archive_after_days"):
         rules.append(
             build_lifecycle_rule(
@@ -1085,6 +1148,14 @@ def put_lifecycle_rules(client, namespace: str, bucket_name: str, rules: list) -
 def apply_job_lifecycle_policy(job_name: str, profile_name: str, destination: str, policy: dict) -> int:
     bucket_name = destination_bucket_name(destination)
     _, client, namespace = object_storage_context(profile_name)
+    bucket = client.get_bucket(namespace, bucket_name).data
+    if policy.get("enabled") and policy.get("infrequent_access_after_days"):
+        auto_tiering = str(getattr(bucket, "auto_tiering", "") or "")
+        if auto_tiering == "InfrequentAccess":
+            raise HTTPException(
+                status_code=400,
+                detail="OCI does not allow an Infrequent Access lifecycle rule while Auto-Tiering is enabled on the bucket.",
+            )
     managed_names = lifecycle_managed_rule_names(job_name)
     existing_rules = [
         rule
@@ -2175,6 +2246,7 @@ async def delete_profile(profile_name: str):
 async def save_job(job: DataSyncJob):
     metadata_tags = normalize_metadata_tags(job.metadata_tags)
     lifecycle_policy = normalize_lifecycle_policy(job.lifecycle_policy)
+    storage_tier = normalize_storage_tier(job.storage_tier)
     existing_job = next((j for j in load_jobs() if j.get("name") == job.name), None)
     existing_lifecycle_enabled = bool((existing_job or {}).get("lifecycle_policy", {}).get("enabled"))
     existing_destination_changed = bool(
@@ -2212,6 +2284,7 @@ async def save_job(job: DataSyncJob):
     with JOBS_LOCK:
         jobs = load_jobs()
         job_dict = job.model_dump()
+        job_dict["storage_tier"] = storage_tier
         job_dict["metadata_tags"] = metadata_tags
         job_dict["lifecycle_policy"] = lifecycle_policy
         existing = next((i for i, j in enumerate(jobs) if j['name'] == job.name), None)
@@ -2337,6 +2410,7 @@ async def start_sync_manual(job: DataSyncJob):
     safe_job_name = normalize_job_name(job.name)
     destination = f"{job.dest_profile}_rclone:{job.dest_bucket}"
     metadata_tags = normalize_metadata_tags(job.metadata_tags)
+    storage_tier = normalize_storage_tier(job.storage_tier)
     upsert_job_run(
         {
             "id": run_id,
@@ -2347,6 +2421,7 @@ async def start_sync_manual(job: DataSyncJob):
             "source": job.source_remote,
             "destination": destination,
             "metadata_tags": metadata_tags,
+            "storage_tier": storage_tier,
             "details": "Queued for worker.",
             "log_file": str(job_log_path(safe_job_name, run_id)),
         }
@@ -2361,6 +2436,7 @@ async def start_sync_manual(job: DataSyncJob):
                 job.transfers,
                 job.checkers,
                 job.buffer_size,
+                storage_tier,
                 safe_job_name,
                 run_id,
                 "manual",
@@ -2639,10 +2715,15 @@ async def bucket_protection(profile_name: str = Query(...), bucket_name: str = Q
             logger.info("Unable to list retention rules for bucket '%s': %s", bucket_name, exc)
 
         versioning = getattr(bucket, "versioning", "") or "Disabled"
+        storage_tier = getattr(bucket, "storage_tier", "") or "Standard"
+        auto_tiering = getattr(bucket, "auto_tiering", "") or "Disabled"
         retention_rule_details = [retention_rule_summary(rule) for rule in retention_rules]
         return {
             "profile_name": profile_name,
             "bucket_name": bucket_name,
+            "storage_tier": storage_tier,
+            "auto_tiering": auto_tiering,
+            "auto_tiering_enabled": auto_tiering == "InfrequentAccess",
             "versioning": versioning,
             "versioning_enabled": str(versioning).lower() == "enabled",
             "lifecycle_rule_count": len(lifecycle_rules),
@@ -2656,6 +2737,9 @@ async def bucket_protection(profile_name: str = Query(...), bucket_name: str = Q
             "retention_rule_count": len(retention_rule_details),
             "retention_rules": retention_rule_details,
             "can_enable_versioning": str(versioning).lower() != "enabled" and not retention_rule_details,
+            "can_enable_auto_tiering": not any(
+                getattr(rule, "action", "") == "INFREQUENT_ACCESS" for rule in lifecycle_rules
+            ),
         }
     except HTTPException:
         raise
@@ -2694,6 +2778,35 @@ async def enable_bucket_versioning(req: BucketProtectionReq):
             "Enable bucket versioning",
             e,
             "Check Object Storage bucket update permissions and ensure no OCI retention rule is active.",
+        )
+
+
+@app.post("/bucket-auto-tiering")
+async def update_bucket_auto_tiering(req: BucketAutoTieringReq):
+    try:
+        bucket_name = destination_bucket_name(req.bucket_name)
+        auto_tiering = normalize_auto_tiering(req.auto_tiering)
+        _, os_client, namespace = object_storage_context(req.profile_name)
+        lifecycle_rules = get_lifecycle_rules(os_client, namespace, bucket_name)
+        if auto_tiering == "InfrequentAccess" and any(
+            getattr(rule, "action", "") == "INFREQUENT_ACCESS" for rule in lifecycle_rules
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="OCI does not allow Auto-Tiering when a lifecycle rule moves objects to Infrequent Access.",
+            )
+
+        details = oci.object_storage.models.UpdateBucketDetails(auto_tiering=auto_tiering)
+        os_client.update_bucket(namespace, bucket_name, details)
+        return {"message": f"Auto-Tiering set to {auto_tiering} on bucket '{bucket_name}'.", "auto_tiering": auto_tiering}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise_operation_error(
+            500,
+            "Update bucket Auto-Tiering",
+            e,
+            "Check Object Storage bucket update permissions and lifecycle policy conflicts.",
         )
 
 
