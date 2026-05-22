@@ -977,6 +977,7 @@ export default function App() {
           <button onClick={startNewSyncJob} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'builder' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Plus size={18} /> <span>New Sync Job</span></button>
           <button onClick={() => setView('explorer')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'explorer' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Database size={18} /> <span>VM Migration</span></button>
           <button onClick={() => setView('storage')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'storage' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Archive size={18} /> <span>Storage Explorer</span></button>
+          <button onClick={() => setView('settings')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'settings' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Settings size={18} /> <span>Settings</span></button>
         </div>
       </nav>
 
@@ -1299,10 +1300,10 @@ export default function App() {
              </div>
           )}
 
-          {/* VIEW: JOB DASHBOARD */}
-          {view === 'datasync' && (
+          {/* VIEW: SETTINGS */}
+          {view === 'settings' && (
             <div className="max-w-7xl mx-auto space-y-6 animate-in fade-in">
-              <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800"><Activity size={24} className="text-[#9c3029]"/> Active Sync Jobs</h2>
+              <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800"><Settings size={24} className="text-[#9c3029]"/> Settings</h2>
               <div className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
                 <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
                   <h3 className="font-bold text-sm text-gray-800 flex items-center gap-2">
@@ -1418,6 +1419,13 @@ export default function App() {
                   <span>{jobLogSettings?.logrotate_file || '/etc/logrotate.d/migrator-job-logs'}</span>
                 </div>
               </form>
+            </div>
+          )}
+
+          {/* VIEW: JOB DASHBOARD */}
+          {view === 'datasync' && (
+            <div className="max-w-7xl mx-auto space-y-6 animate-in fade-in">
+              <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800"><Activity size={24} className="text-[#9c3029]"/> Active Sync Jobs</h2>
               <div className="bg-white border border-gray-200 rounded-md shadow-sm overflow-hidden">
                 <div className="hidden xl:grid grid-cols-[minmax(150px,1fr)_minmax(230px,1.5fr)_minmax(170px,1fr)_minmax(150px,0.9fr)_80px_minmax(190px,1.1fr)_170px] gap-4 px-4 py-3 bg-gray-50 border-b border-gray-100 text-[10px] uppercase font-bold tracking-wider text-gray-400">
                   <div>Job</div>
