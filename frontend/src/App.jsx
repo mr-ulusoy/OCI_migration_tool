@@ -317,7 +317,12 @@ export default function App() {
     try {
       const res = await api.post('/upgrade/check');
       setUpgradeCheck(res.data);
-      setUpgradeStatus(prev => ({ ...(prev || {}), ...res.data }));
+      setUpgradeStatus(prev => ({
+        ...(prev || {}),
+        ...res.data,
+        status: res.data.up_to_date ? 'success' : 'idle',
+        message: res.data.up_to_date ? 'You are on the latest version.' : 'A new version is available.'
+      }));
     } catch (err) {
       showError('Failed to check for updates', err);
     }
@@ -1428,7 +1433,7 @@ export default function App() {
                   <div className="bg-gray-50 border border-gray-100 rounded-md p-3">
                     <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Latest GitHub</div>
                     <div className="text-sm font-mono text-gray-800">{upgradeCheck?.latest_short || 'not checked'}</div>
-                    <div className="text-[11px] text-gray-500 truncate mt-1">{upgradeCheck?.up_to_date === true ? 'Already up to date' : upgradeCheck?.up_to_date === false ? 'Update available' : 'Run check when needed'}</div>
+                    <div className="text-[11px] text-gray-500 truncate mt-1">{upgradeCheck?.up_to_date === true ? 'You are on the latest version.' : upgradeCheck?.up_to_date === false ? 'A new version is available.' : 'Run check when needed'}</div>
                   </div>
                   <div className="bg-gray-50 border border-gray-100 rounded-md p-3">
                     <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Status</div>
