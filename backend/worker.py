@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 from datetime import datetime, timedelta
@@ -105,14 +106,22 @@ def migrate_single_vm(self, src_p, dst_p, vm_id, dst_comp, bucket):
 def normalize_metadata_tags(metadata_tags=None):
     normalized_tags = []
     seen_keys = set()
+
+    def normalize_metadata_key(raw_key):
+        key = str(raw_key or "").strip().lower()
+        suffix = key[len("opc-meta-"):] if key.startswith("opc-meta-") else key
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,118}", suffix or ""):
+            return ""
+        return f"opc-meta-{suffix}"
+
     for tag in metadata_tags or []:
         if not isinstance(tag, dict):
             continue
-        key = str(tag.get("key", "")).strip()
+        key = normalize_metadata_key(tag.get("key", ""))
         value = str(tag.get("value", "")).strip()
-        if not key or not value or key.lower() in seen_keys:
+        if not key or not value or key in seen_keys:
             continue
-        seen_keys.add(key.lower())
+        seen_keys.add(key)
         normalized_tags.append({"key": key, "value": value})
     return normalized_tags
 
@@ -156,8 +165,10 @@ def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", trans
         "--retries", "10", 
         "--use-mmap"
     ]
-    for tag in metadata_tags:
-        cmd.extend(["--metadata-set", f"{tag['key']}={tag['value']}"])
+    if metadata_tags:
+        cmd.append("--metadata")
+        for tag in metadata_tags:
+            cmd.extend(["--metadata-set", f"{tag['key']}={tag['value']}"])
     
     timeout = rclone_timeout_seconds()
 

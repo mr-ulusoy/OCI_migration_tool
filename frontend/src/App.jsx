@@ -114,10 +114,16 @@ function remoteTargetFromPath(value = '') {
   return separatorIndex >= 0 ? rawValue.slice(separatorIndex + 1) : '';
 }
 
+function normalizeObjectMetadataKey(value = '') {
+  const key = String(value || '').trim().toLowerCase();
+  if (!key) return '';
+  return key.startsWith('opc-meta-') ? key : `opc-meta-${key}`;
+}
+
 function normalizeMetadataTags(tags = []) {
   return tags
     .map(tag => ({
-      key: String(tag?.key || '').trim(),
+      key: normalizeObjectMetadataKey(tag?.key),
       value: String(tag?.value || '').trim()
     }))
     .filter(tag => tag.key || tag.value);
@@ -780,11 +786,11 @@ export default function App() {
       setNotice({ type: 'error', title: 'Invalid metadata', message: 'Metadata tags need both a key and a value.' });
       return;
     }
-    if (metadataTags.some(tag => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(tag.key))) {
-      setNotice({ type: 'error', title: 'Invalid metadata', message: 'Metadata keys must start with a letter or number and may contain letters, numbers, dot, underscore, and dash.' });
+    if (metadataTags.some(tag => !/^opc-meta-[a-z0-9][a-z0-9._-]{0,118}$/.test(tag.key))) {
+      setNotice({ type: 'error', title: 'Invalid metadata', message: 'Metadata keys are saved as opc-meta-* and may contain lowercase letters, numbers, dot, underscore, and dash.' });
       return;
     }
-    const metadataKeys = metadataTags.map(tag => tag.key.toLowerCase());
+    const metadataKeys = metadataTags.map(tag => tag.key);
     if (new Set(metadataKeys).size !== metadataKeys.length) {
       setNotice({ type: 'error', title: 'Invalid metadata', message: 'Metadata tag keys must be unique.' });
       return;
@@ -1720,7 +1726,7 @@ export default function App() {
                 </div>
                 <div className="mb-6 border border-gray-200 rounded-md overflow-hidden">
                   <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 flex items-center justify-between gap-3">
-                    <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Tags size={16}/> Metadata Tags</h4>
+                    <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Tags size={16}/> Object Metadata</h4>
                     <button
                       type="button"
                       onClick={() => setSyncJob(prev => ({
@@ -1743,7 +1749,7 @@ export default function App() {
                               nextTags[index] = { ...nextTags[index], key: e.target.value };
                               return { ...prev, metadata_tags: nextTags };
                             })}
-                            placeholder="key"
+                            placeholder="site or opc-meta-site"
                             className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
                           />
                           <input
@@ -1771,7 +1777,7 @@ export default function App() {
                       ))}
                     </div>
                   ) : (
-                    <div className="p-4 text-xs text-gray-400">No metadata tags configured.</div>
+                    <div className="p-4 text-xs text-gray-400">No object metadata configured. Keys are stored in OCI as opc-meta-*.</div>
                   )}
                 </div>
                 

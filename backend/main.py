@@ -882,6 +882,16 @@ def normalize_metadata_tags(tags: list[MetadataTag | dict]) -> list[dict]:
     normalized_tags = []
     seen_keys = set()
 
+    def normalize_metadata_key(raw_key: str) -> str:
+        key = raw_key.strip().lower()
+        suffix = key[len("opc-meta-"):] if key.startswith("opc-meta-") else key
+        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,118}", suffix):
+            raise HTTPException(
+                status_code=400,
+                detail="Metadata keys are saved as opc-meta-* and may contain lowercase letters, numbers, dot, underscore, and dash.",
+            )
+        return f"opc-meta-{suffix}"
+
     for tag in tags or []:
         raw_key = tag.key if isinstance(tag, MetadataTag) else str(tag.get("key", ""))
         raw_value = tag.value if isinstance(tag, MetadataTag) else str(tag.get("value", ""))
@@ -892,17 +902,13 @@ def normalize_metadata_tags(tags: list[MetadataTag | dict]) -> list[dict]:
             continue
         if not key or not value:
             raise HTTPException(status_code=400, detail="Metadata tags need both a key and a value.")
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", key):
-            raise HTTPException(
-                status_code=400,
-                detail="Metadata tag keys must start with a letter or number and may contain letters, numbers, dot, underscore, and dash.",
-            )
-        if key.lower() in seen_keys:
+        key = normalize_metadata_key(key)
+        if key in seen_keys:
             raise HTTPException(status_code=400, detail=f"Duplicate metadata tag key: {key}")
         if len(value) > 1024 or any(char in value for char in "\r\n\0"):
             raise HTTPException(status_code=400, detail="Metadata tag values must be single-line text up to 1024 characters.")
 
-        seen_keys.add(key.lower())
+        seen_keys.add(key)
         normalized_tags.append({"key": key, "value": value})
 
     if len(normalized_tags) > 20:
