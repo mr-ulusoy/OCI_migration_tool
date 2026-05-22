@@ -134,7 +134,6 @@ export default function App() {
   const [loginForm, setLoginForm] = useState({ username: 'admin', password: '' });
   const [loginError, setLoginError] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
-  const [showPasswordPanel, setShowPasswordPanel] = useState(false);
   const [passwordForm, setPasswordForm] = useState({ currentPassword: '', newPassword: '', confirmPassword: '' });
   const [passwordMessage, setPasswordMessage] = useState('');
   const [notice, setNotice] = useState(null);
@@ -912,7 +911,6 @@ export default function App() {
       localStorage.removeItem(SESSION_TOKEN_KEY);
       localStorage.removeItem(SESSION_USERNAME_KEY);
       setAuthState({ token: '', mode: '', username: 'admin' });
-      setShowPasswordPanel(false);
       setNotice(null);
     }
   };
@@ -1040,11 +1038,6 @@ export default function App() {
               <HeartPulse size={15} />
               {health?.status || 'health'}
             </button>
-            {authState.mode === 'session' && (
-              <button onClick={() => setShowPasswordPanel(prev => !prev)} className="p-2 bg-white border border-gray-200 text-gray-600 rounded-md hover:text-[#9c3029] hover:bg-gray-50" title="Change password">
-                <Lock size={16} />
-              </button>
-            )}
             <button onClick={handleLogout} className="p-2 bg-white border border-gray-200 text-gray-600 rounded-md hover:text-[#9c3029] hover:bg-gray-50" title="Logout">
               <LogOut size={16} />
             </button>
@@ -1061,45 +1054,6 @@ export default function App() {
             <button onClick={() => setNotice(null)} className="p-1 text-gray-400 hover:text-gray-700 rounded-md" title="Dismiss">
               <X size={16} />
             </button>
-          </div>
-        )}
-
-        {showPasswordPanel && (
-          <div className="absolute right-10 top-20 z-30 w-80 bg-white border border-gray-200 rounded-md shadow-lg p-5 text-left">
-            <h2 className="text-sm font-bold text-gray-800 mb-4 flex items-center gap-2"><Lock size={16} className="text-[#9c3029]" /> Change Password</h2>
-            <form onSubmit={handleChangePassword} className="space-y-3">
-              <input
-                type="password"
-                value={passwordForm.currentPassword}
-                onChange={e => setPasswordForm({ ...passwordForm, currentPassword: e.target.value })}
-                placeholder="Current password"
-                className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
-                autoComplete="current-password"
-              />
-              <input
-                type="password"
-                value={passwordForm.newPassword}
-                onChange={e => setPasswordForm({ ...passwordForm, newPassword: e.target.value })}
-                placeholder="New password"
-                className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
-                autoComplete="new-password"
-              />
-              <input
-                type="password"
-                value={passwordForm.confirmPassword}
-                onChange={e => setPasswordForm({ ...passwordForm, confirmPassword: e.target.value })}
-                placeholder="Confirm new password"
-                className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
-                autoComplete="new-password"
-              />
-              {passwordMessage && <div className={`text-xs rounded-md p-2 border ${passwordMessage === 'Password changed.' ? 'text-green-700 bg-green-50 border-green-100' : 'text-red-600 bg-red-50 border-red-100'}`}>{passwordMessage}</div>}
-              <div className="flex gap-2">
-                <button type="submit" disabled={authLoading} className="flex-1 bg-[#9c3029] text-white py-2 rounded-md font-semibold text-sm hover:bg-[#7a2520] flex items-center justify-center gap-2">
-                  {authLoading ? <Loader2 className="animate-spin" size={16} /> : 'Save'}
-                </button>
-                <button type="button" onClick={() => setShowPasswordPanel(false)} className="px-3 bg-white border border-gray-200 text-gray-600 rounded-md text-sm hover:bg-gray-50">Close</button>
-              </div>
-            </form>
           </div>
         )}
 
@@ -1352,6 +1306,55 @@ export default function App() {
           {view === 'settings' && (
             <div className="max-w-7xl mx-auto space-y-6 animate-in fade-in">
               <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800"><Settings size={24} className="text-[#9c3029]"/> Settings</h2>
+              {authState.mode === 'session' && (
+                <form onSubmit={handleChangePassword} className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
+                  <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
+                    <div>
+                      <h3 className="font-bold text-sm text-gray-800 flex items-center gap-2"><Lock size={16} className="text-[#9c3029]" /> Change Password</h3>
+                      <p className="mt-1 text-[11px] text-gray-500">Update the admin password used for this web console.</p>
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={authLoading}
+                      className="px-3 py-2 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#7a2520] disabled:opacity-60 flex items-center justify-center gap-2"
+                    >
+                      {authLoading ? <Loader2 className="animate-spin" size={14} /> : <Save size={14} />}
+                      Save Password
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                    <input
+                      type="password"
+                      value={passwordForm.currentPassword}
+                      onChange={e => setPasswordForm({ ...passwordForm, currentPassword: e.target.value })}
+                      placeholder="Current password"
+                      className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                      autoComplete="current-password"
+                    />
+                    <input
+                      type="password"
+                      value={passwordForm.newPassword}
+                      onChange={e => setPasswordForm({ ...passwordForm, newPassword: e.target.value })}
+                      placeholder="New password"
+                      className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                      autoComplete="new-password"
+                    />
+                    <input
+                      type="password"
+                      value={passwordForm.confirmPassword}
+                      onChange={e => setPasswordForm({ ...passwordForm, confirmPassword: e.target.value })}
+                      placeholder="Confirm new password"
+                      className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                      autoComplete="new-password"
+                    />
+                  </div>
+                  {passwordMessage && (
+                    <div className={`mt-3 text-xs rounded-md p-2 border ${passwordMessage === 'Password changed.' ? 'text-green-700 bg-green-50 border-green-100' : 'text-red-600 bg-red-50 border-red-100'}`}>
+                      {passwordMessage}
+                    </div>
+                  )}
+                </form>
+              )}
               <div className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
                 <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
                   <div className="min-w-0">
