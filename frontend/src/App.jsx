@@ -1868,6 +1868,10 @@ export default function App() {
 
 	                {selectedVms.length > 0 && (
 	                  <div className="bg-white p-4 rounded-md border border-gray-200 shadow-sm text-left">
+	                    <div className="mb-4 flex items-start gap-2 rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+	                      <AlertCircle size={15} className="mt-0.5 shrink-0" />
+	                      <span>This action will shut down the selected server(s) and create a backup in the selected storage bucket.</span>
+	                    </div>
 	                    <div className="grid grid-cols-1 xl:grid-cols-[minmax(220px,1fr)_minmax(220px,1fr)_220px] gap-4 items-end">
 	                      <div>
 	                        <div className="flex items-center justify-between mb-1">
