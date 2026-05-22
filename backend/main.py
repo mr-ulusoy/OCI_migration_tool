@@ -24,7 +24,7 @@ import uvicorn
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional
 from job_logs import JOB_LOG_DIR, job_log_path, legacy_job_log_path, resolve_readable_log_path, tail_file
 from job_store import JOB_HISTORY_FILE, get_job_run, list_job_runs, locked_history_file, upsert_job_run
@@ -495,6 +495,17 @@ class LifecyclePolicyConfig(BaseModel):
     archive_after_days: Optional[int] = None
     delete_after_days: Optional[int] = None
     previous_versions_delete_after_days: Optional[int] = None
+
+    @field_validator(
+        "infrequent_access_after_days",
+        "archive_after_days",
+        "delete_after_days",
+        "previous_versions_delete_after_days",
+        mode="before",
+    )
+    @classmethod
+    def blank_lifecycle_days_to_none(cls, value):
+        return None if value == "" else value
 
 
 class LocalRetentionConfig(BaseModel):

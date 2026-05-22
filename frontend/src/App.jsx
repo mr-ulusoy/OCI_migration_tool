@@ -57,10 +57,10 @@ const createDefaultLifecyclePolicy = () => ({
   enabled: false,
   prefix: '',
   filters: [],
-  infrequent_access_after_days: '',
-  archive_after_days: '',
-  delete_after_days: '',
-  previous_versions_delete_after_days: ''
+  infrequent_access_after_days: null,
+  archive_after_days: null,
+  delete_after_days: null,
+  previous_versions_delete_after_days: null
 });
 const createLifecycleFilter = () => ({ type: 'include_prefix', value: '' });
 const LIFECYCLE_FILTER_LABELS = {
@@ -99,6 +99,12 @@ function getInitialAuth() {
 function formatApiError(err, fallback = 'Request failed.') {
   const detail = err?.response?.data?.detail;
   if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail.map(item => {
+      const path = Array.isArray(item?.loc) ? item.loc.filter(part => part !== 'body').join('.') : '';
+      return [path, item?.msg].filter(Boolean).join(': ');
+    }).filter(Boolean).join('\n') || fallback;
+  }
   if (detail && typeof detail === 'object') {
     const parts = [
       detail.message,
