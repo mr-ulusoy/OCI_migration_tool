@@ -487,10 +487,25 @@ class LifecycleFilterConfig(BaseModel):
     value: str = ""
 
 
+class LifecycleRuleConfig(BaseModel):
+    name: str = ""
+    target: str = "objects"
+    action: str = "ARCHIVE"
+    days: Optional[int] = None
+    enabled: bool = True
+    filters: List[LifecycleFilterConfig] = Field(default_factory=list)
+
+    @field_validator("days", mode="before")
+    @classmethod
+    def blank_rule_days_to_none(cls, value):
+        return None if value == "" else value
+
+
 class LifecyclePolicyConfig(BaseModel):
     enabled: bool = False
     prefix: str = ""
     filters: List[LifecycleFilterConfig] = Field(default_factory=list)
+    rules: List[LifecycleRuleConfig] = Field(default_factory=list)
     infrequent_access_after_days: Optional[int] = None
     archive_after_days: Optional[int] = None
     delete_after_days: Optional[int] = None
@@ -1408,7 +1423,138 @@ def is_infrequent_access_lifecycle_rule(rule) -> bool:
     return action.replace("_", "").replace("-", "").lower() == "infrequentaccess"
 
 
-def normalize_lifecycle_policy(policy: LifecyclePolicyConfig | dict | None) -> dict:
+LIFECYCLE_ACTIONS = {
+    "INFREQUENT_ACCESS": {
+        "suffix": "infrequent-access",
+        "targets": {"objects", "previous-object-versions"},
+        "label": "Move to Infrequent Access",
+    },
+    "ARCHIVE": {
+        "suffix": "archive",
+        "targets": {"objects", "previous-object-versions"},
+        "label": "Move to Archive",
+    },
+    "DELETE": {
+        "suffix": "delete",
+        "targets": {"objects", "previous-object-versions"},
+        "label": "Delete",
+    },
+    "ABORT": {
+        "suffix": "abort-multipart",
+        "targets": {"multipart-uploads"},
+        "label": "Abort uncommitted multipart uploads",
+    },
+}
+
+LIFECYCLE_TARGETS = {"objects", "previous-object-versions", "multipart-uploads"}
+
+
+def lifecycle_managed_rule_prefix(managed_key: str) -> str:
+    return f"oci-migrator-{normalize_job_name(managed_key).lower()}-"
+
+
+def is_managed_lifecycle_rule(managed_key: str, rule) -> bool:
+    rule_name = str(getattr(rule, "name", "") or "")
+    return rule_name in lifecycle_managed_rule_names(managed_key) or rule_name.startswith(lifecycle_managed_rule_prefix(managed_key))
+
+
+def normalize_lifecycle_target(value: object) -> str:
+    target = str(value or "objects").strip().lower().replace("_", "-")
+    if target not in LIFECYCLE_TARGETS:
+        raise HTTPException(
+            status_code=400,
+            detail="Lifecycle rule target must be objects, previous-object-versions, or multipart-uploads.",
+        )
+    return target
+
+
+def normalize_lifecycle_action(value: object) -> str:
+    action = str(value or "ARCHIVE").strip().upper().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "MOVE_TO_INFREQUENT_ACCESS": "INFREQUENT_ACCESS",
+        "INFREQUENTACCESS": "INFREQUENT_ACCESS",
+        "MOVE_TO_ARCHIVE": "ARCHIVE",
+        "ABORT_MULTIPART": "ABORT",
+        "ABORT_MULTIPART_UPLOADS": "ABORT",
+    }
+    action = aliases.get(action, action)
+    if action not in LIFECYCLE_ACTIONS:
+        raise HTTPException(status_code=400, detail="Lifecycle rule action is not supported.")
+    return action
+
+
+def normalize_lifecycle_rule_name(value: object, fallback: str, managed_key: str) -> str:
+    raw_name = str(value or fallback).strip()
+    if len(raw_name) > 255 or any(char in raw_name for char in "\r\n\0"):
+        raise HTTPException(status_code=400, detail="Lifecycle rule names must be single-line text up to 255 characters.")
+    safe_name = normalize_job_name(raw_name).lower()
+    managed_prefix = lifecycle_managed_rule_prefix(managed_key)
+    if safe_name.startswith(managed_prefix):
+        return safe_name
+    return f"{managed_prefix}{safe_name}"
+
+
+def normalize_lifecycle_rule(rule: object, managed_key: str, index: int, legacy_filters: list[dict] | None = None) -> dict:
+    if isinstance(rule, LifecycleRuleConfig):
+        rule_data = rule.model_dump()
+    elif isinstance(rule, dict):
+        rule_data = dict(rule)
+    else:
+        raise HTTPException(status_code=400, detail="Lifecycle rules must contain rule objects.")
+
+    target = normalize_lifecycle_target(rule_data.get("target", "objects"))
+    action = normalize_lifecycle_action(rule_data.get("action", "ARCHIVE"))
+    if target not in LIFECYCLE_ACTIONS[action]["targets"]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{LIFECYCLE_ACTIONS[action]['label']} is not valid for target {target}.",
+        )
+
+    days = normalize_lifecycle_days(rule_data.get("days"), "Lifecycle rule days")
+    if days is None:
+        raise HTTPException(status_code=400, detail="Lifecycle rule days are required.")
+
+    fallback = f"{LIFECYCLE_ACTIONS[action]['suffix']}-{index + 1}"
+    filters = normalize_lifecycle_filters(rule_data.get("filters", legacy_filters or []))
+    return {
+        "name": normalize_lifecycle_rule_name(rule_data.get("name", ""), fallback, managed_key),
+        "target": target,
+        "action": action,
+        "days": days,
+        "enabled": bool(rule_data.get("enabled", True)),
+        "filters": filters,
+    }
+
+
+def legacy_lifecycle_rules_from_policy(policy_data: dict, managed_key: str, filters: list[dict]) -> list[dict]:
+    legacy_specs = [
+        ("INFREQUENT_ACCESS", "objects", policy_data.get("infrequent_access_after_days")),
+        ("ARCHIVE", "objects", policy_data.get("archive_after_days")),
+        ("DELETE", "objects", policy_data.get("delete_after_days")),
+        ("DELETE", "previous-object-versions", policy_data.get("previous_versions_delete_after_days")),
+    ]
+    rules: list[dict] = []
+    for action, target, raw_days in legacy_specs:
+        days = normalize_lifecycle_days(raw_days, LIFECYCLE_ACTIONS[action]["label"])
+        if not days:
+            continue
+        rules.append(
+            normalize_lifecycle_rule(
+                {
+                    "target": target,
+                    "action": action,
+                    "days": days,
+                    "filters": filters,
+                    "name": f"{LIFECYCLE_ACTIONS[action]['suffix']}-{len(rules) + 1}",
+                },
+                managed_key,
+                len(rules),
+            )
+        )
+    return rules
+
+
+def normalize_lifecycle_policy(policy: LifecyclePolicyConfig | dict | None, managed_key: str | None = None) -> dict:
     if policy is None:
         policy = LifecyclePolicyConfig()
     if isinstance(policy, LifecyclePolicyConfig):
@@ -1416,56 +1562,51 @@ def normalize_lifecycle_policy(policy: LifecyclePolicyConfig | dict | None) -> d
     else:
         policy_data = dict(policy)
 
+    managed_key = managed_key or policy_data.get("managed_key") or BUCKET_SETTINGS_LIFECYCLE_KEY
     filters = normalize_lifecycle_filters(policy_data.get("filters", []), policy_data.get("prefix", ""))
     first_prefix = next((item["value"] for item in filters if item["type"] == "include_prefix"), "")
+    raw_rules = policy_data.get("rules", [])
+    if raw_rules:
+        if not isinstance(raw_rules, list):
+            raise HTTPException(status_code=400, detail="Lifecycle rules must be a list.")
+        rules = [normalize_lifecycle_rule(rule, managed_key, index, filters) for index, rule in enumerate(raw_rules)]
+    else:
+        rules = legacy_lifecycle_rules_from_policy(policy_data, managed_key, filters)
+
+    if len(rules) > 100:
+        raise HTTPException(status_code=400, detail="A lifecycle policy can have at most 100 managed rules.")
+    rule_names = [rule["name"] for rule in rules]
+    if len(set(rule_names)) != len(rule_names):
+        raise HTTPException(status_code=400, detail="Lifecycle rule names must be unique.")
+
+    legacy_fields = {
+        "infrequent_access_after_days": None,
+        "archive_after_days": None,
+        "delete_after_days": None,
+        "previous_versions_delete_after_days": None,
+    }
+    for rule in rules:
+        if rule["target"] == "objects" and rule["action"] == "INFREQUENT_ACCESS":
+            legacy_fields["infrequent_access_after_days"] = legacy_fields["infrequent_access_after_days"] or rule["days"]
+        elif rule["target"] == "objects" and rule["action"] == "ARCHIVE":
+            legacy_fields["archive_after_days"] = legacy_fields["archive_after_days"] or rule["days"]
+        elif rule["target"] == "objects" and rule["action"] == "DELETE":
+            legacy_fields["delete_after_days"] = legacy_fields["delete_after_days"] or rule["days"]
+        elif rule["target"] == "previous-object-versions" and rule["action"] == "DELETE":
+            legacy_fields["previous_versions_delete_after_days"] = (
+                legacy_fields["previous_versions_delete_after_days"] or rule["days"]
+            )
+
     normalized = {
         "enabled": bool(policy_data.get("enabled", False)),
         "prefix": first_prefix,
         "filters": filters,
-        "infrequent_access_after_days": normalize_lifecycle_days(
-            policy_data.get("infrequent_access_after_days"),
-            "Move to Infrequent Access after",
-        ),
-        "archive_after_days": normalize_lifecycle_days(policy_data.get("archive_after_days"), "Archive after"),
-        "delete_after_days": normalize_lifecycle_days(policy_data.get("delete_after_days"), "Delete after"),
-        "previous_versions_delete_after_days": normalize_lifecycle_days(
-            policy_data.get("previous_versions_delete_after_days"),
-            "Delete previous versions after",
-        ),
+        "rules": rules,
+        **legacy_fields,
     }
 
-    if normalized["enabled"]:
-        if not any(
-            normalized[key]
-            for key in (
-                "infrequent_access_after_days",
-                "archive_after_days",
-                "delete_after_days",
-                "previous_versions_delete_after_days",
-            )
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail="Enable at least one lifecycle action: Infrequent Access, Archive, delete, or delete previous versions.",
-            )
-        if (
-            normalized["infrequent_access_after_days"]
-            and normalized["archive_after_days"]
-            and normalized["archive_after_days"] <= normalized["infrequent_access_after_days"]
-        ):
-            raise HTTPException(status_code=400, detail="Archive after days must be greater than Infrequent Access after days.")
-        if (
-            normalized["infrequent_access_after_days"]
-            and normalized["delete_after_days"]
-            and normalized["delete_after_days"] <= normalized["infrequent_access_after_days"]
-        ):
-            raise HTTPException(status_code=400, detail="Delete after days must be greater than Infrequent Access after days.")
-        if (
-            normalized["archive_after_days"]
-            and normalized["delete_after_days"]
-            and normalized["delete_after_days"] <= normalized["archive_after_days"]
-        ):
-            raise HTTPException(status_code=400, detail="Delete after days must be greater than archive after days.")
+    if normalized["enabled"] and not rules:
+        raise HTTPException(status_code=400, detail="Add at least one lifecycle rule or disable lifecycle management.")
 
     return normalized
 
@@ -1517,7 +1658,7 @@ def build_lifecycle_object_filter(filters: list[dict]):
     )
 
 
-def build_lifecycle_rule(name: str, target: str, action: str, days: int, filters: list[dict]):
+def build_lifecycle_rule(name: str, target: str, action: str, days: int, filters: list[dict], enabled: bool = True):
     object_filter = None
     if target in ("objects", "object-versions", "previous-object-versions"):
         object_filter = build_lifecycle_object_filter(filters)
@@ -1527,53 +1668,22 @@ def build_lifecycle_rule(name: str, target: str, action: str, days: int, filters
         action=action,
         time_amount=days,
         time_unit=oci.object_storage.models.ObjectLifecycleRule.TIME_UNIT_DAYS,
-        is_enabled=True,
+        is_enabled=enabled,
         object_name_filter=object_filter,
     )
 
 
 def desired_lifecycle_rules(job_name: str, policy: dict) -> list:
-    filters = list(policy.get("filters", []))
-    safe_job_name = normalize_job_name(job_name).lower()
     rules = []
-    if policy.get("infrequent_access_after_days"):
+    for rule in policy.get("rules", []):
         rules.append(
             build_lifecycle_rule(
-                f"oci-migrator-{safe_job_name}-infrequent-access",
-                "objects",
-                "INFREQUENT_ACCESS",
-                policy["infrequent_access_after_days"],
-                filters,
-            )
-        )
-    if policy.get("archive_after_days"):
-        rules.append(
-            build_lifecycle_rule(
-                f"oci-migrator-{safe_job_name}-archive",
-                "objects",
-                "ARCHIVE",
-                policy["archive_after_days"],
-                filters,
-            )
-        )
-    if policy.get("delete_after_days"):
-        rules.append(
-            build_lifecycle_rule(
-                f"oci-migrator-{safe_job_name}-delete",
-                "objects",
-                "DELETE",
-                policy["delete_after_days"],
-                filters,
-            )
-        )
-    if policy.get("previous_versions_delete_after_days"):
-        rules.append(
-            build_lifecycle_rule(
-                f"oci-migrator-{safe_job_name}-delete-previous",
-                "previous-object-versions",
-                "DELETE",
-                policy["previous_versions_delete_after_days"],
-                filters,
+                rule["name"],
+                rule["target"],
+                rule["action"],
+                rule["days"],
+                list(rule.get("filters", [])),
+                bool(rule.get("enabled", True)),
             )
         )
     return rules
@@ -1588,18 +1698,17 @@ def apply_job_lifecycle_policy(job_name: str, profile_name: str, destination: st
     bucket_name = destination_bucket_name(destination)
     _, client, namespace = object_storage_context(profile_name)
     bucket = get_bucket_with_auto_tiering(client, namespace, bucket_name)
-    if policy.get("enabled") and policy.get("infrequent_access_after_days"):
+    if policy.get("enabled") and any(rule.get("action") == "INFREQUENT_ACCESS" for rule in policy.get("rules", [])):
         auto_tiering = normalized_bucket_auto_tiering(getattr(bucket, "auto_tiering", ""))
         if auto_tiering == "InfrequentAccess":
             raise HTTPException(
                 status_code=400,
                 detail="OCI does not allow an Infrequent Access lifecycle rule while Auto-Tiering is enabled on the bucket.",
             )
-    managed_names = lifecycle_managed_rule_names(job_name)
     existing_rules = [
         rule
         for rule in get_lifecycle_rules(client, namespace, bucket_name)
-        if getattr(rule, "name", "") not in managed_names
+        if not is_managed_lifecycle_rule(job_name, rule)
     ]
     new_rules = desired_lifecycle_rules(job_name, policy) if policy.get("enabled") else []
     put_lifecycle_rules(client, namespace, bucket_name, [*existing_rules, *new_rules])
@@ -1609,9 +1718,8 @@ def apply_job_lifecycle_policy(job_name: str, profile_name: str, destination: st
 def remove_job_lifecycle_policy(job_name: str, profile_name: str, destination: str) -> None:
     bucket_name = destination_bucket_name(destination)
     _, client, namespace = object_storage_context(profile_name)
-    managed_names = lifecycle_managed_rule_names(job_name)
     existing_rules = get_lifecycle_rules(client, namespace, bucket_name)
-    next_rules = [rule for rule in existing_rules if getattr(rule, "name", "") not in managed_names]
+    next_rules = [rule for rule in existing_rules if not is_managed_lifecycle_rule(job_name, rule)]
     if len(next_rules) != len(existing_rules):
         put_lifecycle_rules(client, namespace, bucket_name, next_rules)
 
@@ -1632,33 +1740,47 @@ def lifecycle_filters_from_rule(rule) -> list[dict]:
 
 
 def managed_lifecycle_policy_from_rules(managed_key: str, rules: list) -> dict:
-    managed_names = lifecycle_managed_rule_names(managed_key)
     policy = {
         "enabled": False,
         "prefix": "",
         "filters": [],
+        "rules": [],
         "infrequent_access_after_days": None,
         "archive_after_days": None,
         "delete_after_days": None,
         "previous_versions_delete_after_days": None,
     }
-    action_fields = {
-        f"oci-migrator-{normalize_job_name(managed_key).lower()}-infrequent-access": "infrequent_access_after_days",
-        f"oci-migrator-{normalize_job_name(managed_key).lower()}-archive": "archive_after_days",
-        f"oci-migrator-{normalize_job_name(managed_key).lower()}-delete": "delete_after_days",
-        f"oci-migrator-{normalize_job_name(managed_key).lower()}-delete-previous": "previous_versions_delete_after_days",
-    }
 
     for rule in rules:
-        rule_name = getattr(rule, "name", "")
-        if rule_name not in managed_names:
+        if not is_managed_lifecycle_rule(managed_key, rule):
             continue
+        target = normalize_lifecycle_target(getattr(rule, "target", "objects"))
+        action = normalize_lifecycle_action(getattr(rule, "action", "ARCHIVE"))
+        days = getattr(rule, "time_amount", None)
+        filters = lifecycle_filters_from_rule(rule)
         policy["enabled"] = True
-        policy[action_fields.get(rule_name, "")] = getattr(rule, "time_amount", None)
+        policy["rules"].append(
+            {
+                "name": getattr(rule, "name", ""),
+                "target": target,
+                "action": action,
+                "days": days,
+                "enabled": bool(getattr(rule, "is_enabled", True)),
+                "filters": filters,
+            }
+        )
         if not policy["filters"]:
-            policy["filters"] = lifecycle_filters_from_rule(rule)
+            policy["filters"] = filters
             first_prefix = next((item["value"] for item in policy["filters"] if item["type"] == "include_prefix"), "")
             policy["prefix"] = first_prefix
+        if target == "objects" and action == "INFREQUENT_ACCESS":
+            policy["infrequent_access_after_days"] = policy["infrequent_access_after_days"] or days
+        elif target == "objects" and action == "ARCHIVE":
+            policy["archive_after_days"] = policy["archive_after_days"] or days
+        elif target == "objects" and action == "DELETE":
+            policy["delete_after_days"] = policy["delete_after_days"] or days
+        elif target == "previous-object-versions" and action == "DELETE":
+            policy["previous_versions_delete_after_days"] = policy["previous_versions_delete_after_days"] or days
 
     return policy
 
@@ -3074,7 +3196,7 @@ async def delete_profile(profile_name: str):
 @app.post("/save-job")
 async def save_job(job: DataSyncJob):
     metadata_tags = normalize_metadata_tags(job.metadata_tags)
-    lifecycle_policy = normalize_lifecycle_policy(job.lifecycle_policy)
+    lifecycle_policy = normalize_lifecycle_policy(job.lifecycle_policy, job.name)
     local_retention = validate_local_retention_config(job.local_retention)
     jobs_snapshot = load_jobs()
     validate_local_retention_usage(job.name, job.previous_name, job.source_remote, local_retention, jobs_snapshot)
@@ -3718,7 +3840,7 @@ async def get_bucket_lifecycle_policy(profile_name: str = Query(...), bucket_nam
 @app.put("/bucket-lifecycle-policy")
 async def update_bucket_lifecycle_policy(req: BucketLifecyclePolicyReq):
     try:
-        lifecycle_policy = normalize_lifecycle_policy(req.lifecycle_policy)
+        lifecycle_policy = normalize_lifecycle_policy(req.lifecycle_policy, BUCKET_SETTINGS_LIFECYCLE_KEY)
         rule_count = apply_job_lifecycle_policy(
             BUCKET_SETTINGS_LIFECYCLE_KEY,
             req.profile_name,

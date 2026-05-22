@@ -57,16 +57,36 @@ const createDefaultLifecyclePolicy = () => ({
   enabled: false,
   prefix: '',
   filters: [],
+  rules: [],
   infrequent_access_after_days: null,
   archive_after_days: null,
   delete_after_days: null,
   previous_versions_delete_after_days: null
 });
 const createLifecycleFilter = () => ({ type: 'include_prefix', value: '' });
+const createLifecycleRule = (action = 'ARCHIVE') => ({
+  name: `lifecycle-rule-${Date.now().toString(36)}`,
+  target: 'objects',
+  action,
+  days: action === 'INFREQUENT_ACCESS' ? 30 : action === 'ARCHIVE' ? 90 : 365,
+  enabled: true,
+  filters: []
+});
 const LIFECYCLE_FILTER_LABELS = {
   include_prefix: 'Include by prefix',
   include_pattern: 'Include by pattern',
   exclude_pattern: 'Exclude by pattern'
+};
+const LIFECYCLE_TARGET_LABELS = {
+  objects: 'Objects',
+  'previous-object-versions': 'Previous Versions',
+  'multipart-uploads': 'Uncommitted Multipart Uploads'
+};
+const LIFECYCLE_ACTION_LABELS = {
+  INFREQUENT_ACCESS: 'Move to Infrequent Access',
+  ARCHIVE: 'Move to Archive',
+  DELETE: 'Delete',
+  ABORT: 'Abort Multipart Uploads'
 };
 const DEFAULT_NEW_BUCKET_CONFIG = {
   storageTier: 'Standard',
@@ -209,16 +229,67 @@ function normalizeLifecycleFilters(policy = {}) {
   return filters;
 }
 
+function lifecycleActionsForTarget(target = 'objects') {
+  if (target === 'multipart-uploads') return ['ABORT'];
+  return ['INFREQUENT_ACCESS', 'ARCHIVE', 'DELETE'];
+}
+
+function normalizeLifecycleAction(action = 'ARCHIVE', target = 'objects') {
+  const normalized = String(action || '').trim().toUpperCase();
+  const actions = lifecycleActionsForTarget(target);
+  return actions.includes(normalized) ? normalized : actions[0];
+}
+
+function normalizeLifecycleTarget(target = 'objects') {
+  return Object.prototype.hasOwnProperty.call(LIFECYCLE_TARGET_LABELS, target) ? target : 'objects';
+}
+
+function normalizeLifecycleRule(rule = {}) {
+  const target = normalizeLifecycleTarget(rule.target);
+  return {
+    name: String(rule.name || '').trim(),
+    target,
+    action: normalizeLifecycleAction(rule.action, target),
+    days: normalizeLifecycleDays(rule.days),
+    enabled: rule.enabled !== false,
+    filters: normalizeLifecycleFilters(rule)
+  };
+}
+
+function legacyLifecycleRules(policy = {}) {
+  const filters = normalizeLifecycleFilters(policy);
+  return [
+    { action: 'INFREQUENT_ACCESS', days: policy.infrequent_access_after_days },
+    { action: 'ARCHIVE', days: policy.archive_after_days },
+    { action: 'DELETE', days: policy.delete_after_days },
+    { action: 'DELETE', target: 'previous-object-versions', days: policy.previous_versions_delete_after_days }
+  ]
+    .map((rule, index) => ({
+      name: `legacy-rule-${index + 1}`,
+      target: rule.target || 'objects',
+      action: rule.action,
+      days: normalizeLifecycleDays(rule.days),
+      enabled: true,
+      filters
+    }))
+    .filter(rule => rule.days);
+}
+
 function normalizeLifecyclePolicy(policy = {}) {
   const filters = normalizeLifecycleFilters(policy);
+  const rules = Array.isArray(policy.rules) && policy.rules.length
+    ? policy.rules.map(normalizeLifecycleRule)
+    : legacyLifecycleRules(policy);
+  const findLegacyDays = (target, action) => rules.find(rule => rule.target === target && rule.action === action)?.days || null;
   return {
     enabled: Boolean(policy.enabled),
     prefix: filters.find(filter => filter.type === 'include_prefix')?.value || '',
     filters,
-    infrequent_access_after_days: normalizeLifecycleDays(policy.infrequent_access_after_days),
-    archive_after_days: normalizeLifecycleDays(policy.archive_after_days),
-    delete_after_days: normalizeLifecycleDays(policy.delete_after_days),
-    previous_versions_delete_after_days: normalizeLifecycleDays(policy.previous_versions_delete_after_days)
+    rules,
+    infrequent_access_after_days: findLegacyDays('objects', 'INFREQUENT_ACCESS'),
+    archive_after_days: findLegacyDays('objects', 'ARCHIVE'),
+    delete_after_days: findLegacyDays('objects', 'DELETE'),
+    previous_versions_delete_after_days: findLegacyDays('previous-object-versions', 'DELETE')
   };
 }
 
@@ -1043,15 +1114,7 @@ export default function App() {
         params: { profile_name: profile, bucket_name: bucketName }
       });
       const policy = res.data.lifecycle_policy || createDefaultLifecyclePolicy();
-      setBucketLifecycleForm({
-        ...createDefaultLifecyclePolicy(),
-        ...policy,
-        filters: normalizeLifecycleFilters(policy),
-        infrequent_access_after_days: policy.infrequent_access_after_days ?? '',
-        archive_after_days: policy.archive_after_days ?? '',
-        delete_after_days: policy.delete_after_days ?? '',
-        previous_versions_delete_after_days: policy.previous_versions_delete_after_days ?? ''
-      });
+      setBucketLifecycleForm(normalizeLifecyclePolicy({ ...createDefaultLifecyclePolicy(), ...policy }));
       return policy;
     } catch (err) {
       showError('Failed to load bucket lifecycle policy', err);
@@ -1280,84 +1343,102 @@ export default function App() {
         showSuccess('Bucket created.');
       } catch (err) { showError('Failed to create bucket', err); }
   };
-  const addLifecycleFilter = () => {
+  const addLifecycleRule = () => {
       setBucketLifecycleForm(prev => ({
         ...prev,
-        filters: [...normalizeLifecycleFilters(prev), createLifecycleFilter()]
+        enabled: true,
+        rules: [...(Array.isArray(prev.rules) ? prev.rules : []), createLifecycleRule()]
       }));
   };
-  const updateLifecycleFilter = (index, updates) => {
+  const updateLifecycleRule = (index, updates) => {
       setBucketLifecycleForm(prev => ({
         ...prev,
-        filters: normalizeLifecycleFilters(prev).map((filter, currentIndex) => (
-          currentIndex === index ? { ...filter, ...updates } : filter
+        rules: (Array.isArray(prev.rules) ? prev.rules : []).map((rule, currentIndex) => {
+          if (currentIndex !== index) return rule;
+          const nextRule = { ...rule, ...updates };
+          if (updates.target) {
+            nextRule.action = normalizeLifecycleAction(nextRule.action, updates.target);
+          }
+          return nextRule;
+        })
+      }));
+  };
+  const removeLifecycleRule = (index) => {
+      setBucketLifecycleForm(prev => ({
+        ...prev,
+        rules: (Array.isArray(prev.rules) ? prev.rules : []).filter((_, currentIndex) => currentIndex !== index)
+      }));
+  };
+  const addLifecycleRuleFilter = (ruleIndex) => {
+      setBucketLifecycleForm(prev => ({
+        ...prev,
+        rules: (Array.isArray(prev.rules) ? prev.rules : []).map((rule, currentIndex) => (
+          currentIndex === ruleIndex
+            ? { ...rule, filters: [...normalizeLifecycleFilters(rule), createLifecycleFilter()] }
+            : rule
         ))
       }));
   };
-  const removeLifecycleFilter = (index) => {
+  const updateLifecycleRuleFilter = (ruleIndex, filterIndex, updates) => {
       setBucketLifecycleForm(prev => ({
         ...prev,
-        filters: normalizeLifecycleFilters(prev).filter((_, currentIndex) => currentIndex !== index)
+        rules: (Array.isArray(prev.rules) ? prev.rules : []).map((rule, currentIndex) => (
+          currentIndex === ruleIndex
+            ? {
+                ...rule,
+                filters: normalizeLifecycleFilters(rule).map((filter, currentFilterIndex) => (
+                  currentFilterIndex === filterIndex ? { ...filter, ...updates } : filter
+                ))
+              }
+            : rule
+        ))
+      }));
+  };
+  const removeLifecycleRuleFilter = (ruleIndex, filterIndex) => {
+      setBucketLifecycleForm(prev => ({
+        ...prev,
+        rules: (Array.isArray(prev.rules) ? prev.rules : []).map((rule, currentIndex) => (
+          currentIndex === ruleIndex
+            ? { ...rule, filters: normalizeLifecycleFilters(rule).filter((_, currentFilterIndex) => currentFilterIndex !== filterIndex) }
+            : rule
+        ))
       }));
   };
   const handleSaveBucketLifecyclePolicy = async () => {
       if (!storageProfile || !selectedBucket) return;
       const lifecyclePolicy = normalizeLifecyclePolicy(bucketLifecycleForm);
-      if (lifecyclePolicy.filters.some(filter => !filter.value)) {
-        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Lifecycle object name filters need a value.' });
+      const lifecycleRules = lifecyclePolicy.rules || [];
+      if (lifecyclePolicy.enabled && !lifecycleRules.length) {
+        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Create at least one lifecycle rule or disable lifecycle management.' });
         return;
       }
-      if (lifecyclePolicy.filters.length > 20) {
-        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'OCI allows at most 20 object name filters in this policy.' });
+      if (lifecycleRules.some(rule => !rule.name)) {
+        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Each lifecycle rule needs a name.' });
         return;
       }
-      if (lifecyclePolicy.filters.some(filter => filter.value.length > 1024 || /[\r\n\0]/.test(filter.value))) {
-        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Lifecycle filter values must be single-line text up to 1024 characters.' });
+      const lifecycleRuleNames = lifecycleRules.map(rule => rule.name.toLowerCase());
+      if (new Set(lifecycleRuleNames).size !== lifecycleRuleNames.length) {
+        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Lifecycle rule names must be unique.' });
         return;
       }
-      if (
-        [
-          lifecyclePolicy.infrequent_access_after_days,
-          lifecyclePolicy.archive_after_days,
-          lifecyclePolicy.delete_after_days,
-          lifecyclePolicy.previous_versions_delete_after_days
-        ].some(value => Number.isNaN(value))
-      ) {
+      if (lifecycleRules.some(rule => Number.isNaN(rule.days))) {
         setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Lifecycle days must be positive whole numbers.' });
         return;
       }
-      if (
-        lifecyclePolicy.enabled
-        && !lifecyclePolicy.infrequent_access_after_days
-        && !lifecyclePolicy.archive_after_days
-        && !lifecyclePolicy.delete_after_days
-        && !lifecyclePolicy.previous_versions_delete_after_days
-      ) {
-        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Enable at least one lifecycle action.' });
+      if (lifecycleRules.some(rule => !Number.isInteger(rule.days) || rule.days < 1 || rule.days > 36500)) {
+        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Lifecycle days must be between 1 and 36500.' });
         return;
       }
-      if (
-        lifecyclePolicy.infrequent_access_after_days
-        && lifecyclePolicy.archive_after_days
-        && lifecyclePolicy.archive_after_days <= lifecyclePolicy.infrequent_access_after_days
-      ) {
-        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Archive after days must be greater than Infrequent Access after days.' });
+      if (lifecycleRules.some(rule => normalizeLifecycleFilters(rule).length > 20)) {
+        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'OCI allows at most 20 object name filters per lifecycle rule.' });
         return;
       }
-      if (
-        lifecyclePolicy.infrequent_access_after_days
-        && lifecyclePolicy.delete_after_days
-        && lifecyclePolicy.delete_after_days <= lifecyclePolicy.infrequent_access_after_days
-      ) {
-        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Delete after days must be greater than Infrequent Access after days.' });
+      if (lifecycleRules.some(rule => normalizeLifecycleFilters(rule).some(filter => !filter.value))) {
+        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Lifecycle object name filters need a value.' });
         return;
       }
-      if (
-        lifecyclePolicy.archive_after_days
-        && lifecyclePolicy.delete_after_days
-        && lifecyclePolicy.delete_after_days <= lifecyclePolicy.archive_after_days
-      ) {
-        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Delete after days must be greater than archive after days.' });
+      if (lifecycleRules.some(rule => normalizeLifecycleFilters(rule).some(filter => filter.value.length > 1024 || /[\r\n\0]/.test(filter.value)))) {
+        setNotice({ type: 'error', title: 'Invalid lifecycle policy', message: 'Lifecycle filter values must be single-line text up to 1024 characters.' });
         return;
       }
       setSavingBucketSettings(true);
@@ -3023,86 +3104,153 @@ export default function App() {
                          <div className="border border-gray-200 rounded-md overflow-hidden">
                            <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 flex items-center justify-between gap-3">
                              <div>
-                               <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Archive size={16}/> OCI Lifecycle Management</h4>
-                               <p className="mt-1 text-[11px] text-gray-500">Managed bucket-level lifecycle rules with optional OCI object name filters.</p>
+                               <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Archive size={16}/> OCI Lifecycle Policy Rules</h4>
+                               <p className="mt-1 text-[11px] text-gray-500">Each action is saved as a separate OCI lifecycle rule with its own object name filters.</p>
                              </div>
-                             <label className="flex items-center gap-2 text-xs font-semibold text-gray-600">
-                               <input
-                                 type="checkbox"
-                                 checked={Boolean(bucketLifecycleForm.enabled)}
-                                 onChange={e => setBucketLifecycleForm(prev => ({ ...prev, enabled: e.target.checked }))}
-                                 className="accent-[#9c3029]"
-                               />
-                               Enabled
-                             </label>
+                             <div className="flex items-center gap-3">
+                               <label className="flex items-center gap-2 text-xs font-semibold text-gray-600">
+                                 <input
+                                   type="checkbox"
+                                   checked={Boolean(bucketLifecycleForm.enabled)}
+                                   onChange={e => setBucketLifecycleForm(prev => ({ ...prev, enabled: e.target.checked }))}
+                                   className="accent-[#9c3029]"
+                                 />
+                                 Enabled
+                               </label>
+                               <button
+                                 type="button"
+                                 onClick={addLifecycleRule}
+                                 className="bg-white border border-gray-200 px-2.5 py-1.5 rounded-md text-[11px] font-semibold text-gray-600 hover:text-[#9c3029] flex items-center gap-1"
+                               >
+                                 <Plus size={13} /> Create Rule
+                               </button>
+                             </div>
                            </div>
                            {bucketLifecycleForm.enabled ? (
-                             <div className="p-4 grid grid-cols-1 md:grid-cols-4 gap-3">
-                               <div className="md:col-span-4 border border-gray-200 rounded-md overflow-hidden">
-                                 <div className="px-3 py-2 bg-gray-50 border-b border-gray-100 flex items-center justify-between gap-3">
-                                   <div>
-                                     <div className="text-[10px] uppercase font-bold text-gray-500">Object Name Filters</div>
-                                     <div className="text-[10px] text-gray-500">No filters means all objects. Exclude patterns take precedence.</div>
-                                   </div>
-                                   <button
-                                     type="button"
-                                     onClick={addLifecycleFilter}
-                                     className="bg-white border border-gray-200 px-2.5 py-1.5 rounded-md text-[11px] font-semibold text-gray-600 hover:text-[#9c3029] flex items-center gap-1"
-                                   >
-                                     <Plus size={13} /> Add Filter
-                                   </button>
-                                 </div>
-                                 <div className="p-3 space-y-2">
-                                   {normalizeLifecycleFilters(bucketLifecycleForm).length ? (
-                                     normalizeLifecycleFilters(bucketLifecycleForm).map((filter, index) => (
-                                       <div key={`${filter.type}-${index}`} className="grid grid-cols-1 md:grid-cols-[220px_1fr_40px] gap-2 items-center">
+                             <div className="p-4 space-y-3">
+                               {(bucketLifecycleForm.rules || []).map((rule, ruleIndex) => {
+                                 const filters = normalizeLifecycleFilters(rule);
+                                 const targetActions = lifecycleActionsForTarget(rule.target);
+                                 return (
+                                   <div key={`${rule.name || 'rule'}-${ruleIndex}`} className="border border-gray-200 rounded-md overflow-hidden">
+                                     <div className="p-3 bg-gray-50 border-b border-gray-100 grid grid-cols-1 lg:grid-cols-[1.4fr_1fr_1fr_140px_90px_40px] gap-2 items-end">
+                                       <div>
+                                         <label className="text-[10px] uppercase font-bold text-gray-500">Name</label>
+                                         <input
+                                           value={rule.name || ''}
+                                           onChange={e => updateLifecycleRule(ruleIndex, { name: e.target.value })}
+                                           placeholder="lifecycle-rule"
+                                           className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-xs font-mono focus:outline-none focus:border-[#9c3029]"
+                                         />
+                                       </div>
+                                       <div>
+                                         <label className="text-[10px] uppercase font-bold text-gray-500">Target</label>
                                          <select
-                                           value={filter.type}
-                                           onChange={e => updateLifecycleFilter(index, { type: e.target.value })}
-                                           className="bg-white border border-gray-200 p-2 rounded-md text-xs font-semibold text-gray-700 focus:outline-none focus:border-[#9c3029]"
+                                           value={rule.target || 'objects'}
+                                           onChange={e => updateLifecycleRule(ruleIndex, { target: e.target.value })}
+                                           className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-xs font-semibold text-gray-700 focus:outline-none focus:border-[#9c3029]"
                                          >
-                                           {Object.entries(LIFECYCLE_FILTER_LABELS).map(([value, label]) => (
+                                           {Object.entries(LIFECYCLE_TARGET_LABELS).map(([value, label]) => (
                                              <option key={value} value={value}>{label}</option>
                                            ))}
                                          </select>
-                                         <input
-                                           value={filter.value}
-                                           onChange={e => updateLifecycleFilter(index, { value: e.target.value })}
-                                           placeholder={filter.type === 'include_prefix' ? 'backup/customer-a/' : '*.tmp'}
-                                           className="bg-white border border-gray-200 p-2 rounded-md text-xs font-mono focus:outline-none focus:border-[#9c3029]"
-                                         />
-                                         <button
-                                           type="button"
-                                           onClick={() => removeLifecycleFilter(index)}
-                                           className="h-9 w-9 border border-gray-200 rounded-md text-gray-400 hover:text-[#9c3029] hover:bg-gray-50 flex items-center justify-center"
-                                           title="Remove filter"
-                                         >
-                                           <Trash2 size={14} />
-                                         </button>
                                        </div>
-                                     ))
-                                   ) : (
-                                     <div className="text-xs text-gray-400">This lifecycle policy applies to the whole bucket.</div>
-                                   )}
-                                 </div>
-                               </div>
-                               <div>
-                                 <label className="text-[10px] uppercase font-bold text-gray-500">Move to Infrequent Access After</label>
-                                 <input type="number" min="1" value={bucketLifecycleForm.infrequent_access_after_days ?? ''} onChange={e => setBucketLifecycleForm(prev => ({ ...prev, infrequent_access_after_days: e.target.value }))} placeholder="30" className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
-                               </div>
-                               <div>
-                                 <label className="text-[10px] uppercase font-bold text-gray-500">Move to Archive After</label>
-                                 <input type="number" min="1" value={bucketLifecycleForm.archive_after_days ?? ''} onChange={e => setBucketLifecycleForm(prev => ({ ...prev, archive_after_days: e.target.value }))} placeholder="90" className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
-                               </div>
-                               <div>
-                                 <label className="text-[10px] uppercase font-bold text-gray-500">Delete After</label>
-                                 <input type="number" min="1" value={bucketLifecycleForm.delete_after_days ?? ''} onChange={e => setBucketLifecycleForm(prev => ({ ...prev, delete_after_days: e.target.value }))} placeholder="365" className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
-                               </div>
-                               <div>
-                                 <label className="text-[10px] uppercase font-bold text-gray-500">Delete Previous Versions After</label>
-                                 <input type="number" min="1" value={bucketLifecycleForm.previous_versions_delete_after_days ?? ''} onChange={e => setBucketLifecycleForm(prev => ({ ...prev, previous_versions_delete_after_days: e.target.value }))} placeholder="90" className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
-                               </div>
-                               <div className="md:col-span-4 text-[10px] text-gray-500">
+                                       <div>
+                                         <label className="text-[10px] uppercase font-bold text-gray-500">Lifecycle Action</label>
+                                         <select
+                                           value={normalizeLifecycleAction(rule.action, rule.target)}
+                                           onChange={e => updateLifecycleRule(ruleIndex, { action: e.target.value })}
+                                           className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-xs font-semibold text-gray-700 focus:outline-none focus:border-[#9c3029]"
+                                         >
+                                           {targetActions.map(action => (
+                                             <option key={action} value={action}>{LIFECYCLE_ACTION_LABELS[action]}</option>
+                                           ))}
+                                         </select>
+                                       </div>
+                                       <div>
+                                         <label className="text-[10px] uppercase font-bold text-gray-500">Number of Days</label>
+                                         <input
+                                           type="number"
+                                           min="1"
+                                           value={rule.days ?? ''}
+                                           onChange={e => updateLifecycleRule(ruleIndex, { days: e.target.value })}
+                                           placeholder="30"
+                                           className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-xs focus:outline-none focus:border-[#9c3029]"
+                                         />
+                                       </div>
+                                       <label className="flex items-center gap-2 text-xs font-semibold text-gray-600 pb-2">
+                                         <input
+                                           type="checkbox"
+                                           checked={rule.enabled !== false}
+                                           onChange={e => updateLifecycleRule(ruleIndex, { enabled: e.target.checked })}
+                                           className="accent-[#9c3029]"
+                                         />
+                                         Enabled
+                                       </label>
+                                       <button
+                                         type="button"
+                                         onClick={() => removeLifecycleRule(ruleIndex)}
+                                         className="h-9 w-9 border border-gray-200 rounded-md text-gray-400 hover:text-[#9c3029] hover:bg-white flex items-center justify-center"
+                                         title="Remove rule"
+                                       >
+                                         <Trash2 size={14} />
+                                       </button>
+                                     </div>
+                                     {rule.target !== 'multipart-uploads' && (
+                                       <div className="p-3 space-y-2">
+                                         <div className="flex items-center justify-between gap-3">
+                                           <div>
+                                             <div className="text-[10px] uppercase font-bold text-gray-500">Object Name Filters</div>
+                                             <div className="text-[10px] text-gray-500">No filters means all objects. Exclude patterns take precedence.</div>
+                                           </div>
+                                           <button
+                                             type="button"
+                                             onClick={() => addLifecycleRuleFilter(ruleIndex)}
+                                             className="bg-white border border-gray-200 px-2.5 py-1.5 rounded-md text-[11px] font-semibold text-gray-600 hover:text-[#9c3029] flex items-center gap-1"
+                                           >
+                                             <Plus size={13} /> Add Filter
+                                           </button>
+                                         </div>
+                                         {filters.length ? (
+                                           filters.map((filter, filterIndex) => (
+                                             <div key={`${filter.type}-${filterIndex}`} className="grid grid-cols-1 md:grid-cols-[220px_1fr_40px] gap-2 items-center">
+                                               <select
+                                                 value={filter.type}
+                                                 onChange={e => updateLifecycleRuleFilter(ruleIndex, filterIndex, { type: e.target.value })}
+                                                 className="bg-white border border-gray-200 p-2 rounded-md text-xs font-semibold text-gray-700 focus:outline-none focus:border-[#9c3029]"
+                                               >
+                                                 {Object.entries(LIFECYCLE_FILTER_LABELS).map(([value, label]) => (
+                                                   <option key={value} value={value}>{label}</option>
+                                                 ))}
+                                               </select>
+                                               <input
+                                                 value={filter.value}
+                                                 onChange={e => updateLifecycleRuleFilter(ruleIndex, filterIndex, { value: e.target.value })}
+                                                 placeholder={filter.type === 'include_prefix' ? 'backup/customer-a/' : '*.tmp'}
+                                                 className="bg-white border border-gray-200 p-2 rounded-md text-xs font-mono focus:outline-none focus:border-[#9c3029]"
+                                               />
+                                               <button
+                                                 type="button"
+                                                 onClick={() => removeLifecycleRuleFilter(ruleIndex, filterIndex)}
+                                                 className="h-9 w-9 border border-gray-200 rounded-md text-gray-400 hover:text-[#9c3029] hover:bg-gray-50 flex items-center justify-center"
+                                                 title="Remove filter"
+                                               >
+                                                 <Trash2 size={14} />
+                                               </button>
+                                             </div>
+                                           ))
+                                         ) : (
+                                           <div className="text-xs text-gray-400">This rule applies to the whole bucket.</div>
+                                         )}
+                                       </div>
+                                     )}
+                                   </div>
+                                 );
+                               })}
+                               {!(bucketLifecycleForm.rules || []).length && (
+                                 <div className="p-4 text-xs text-gray-400 border border-gray-200 rounded-md">No managed lifecycle rules yet.</div>
+                               )}
+                               <div className="text-[10px] text-gray-500">
                                  OCI does not allow Auto-Tiering together with lifecycle rules that move objects to Infrequent Access.
                                </div>
                              </div>
