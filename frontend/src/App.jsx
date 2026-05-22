@@ -2838,52 +2838,58 @@ export default function App() {
                 </div>
                 {storageProfile && (
                    <>
+                   <div className="bg-white border border-gray-200 rounded-md p-5 shadow-sm text-left">
+                     <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2 text-sm"><Plus size={16} className="text-[#9c3029]"/> Create Bucket</h3>
+                     <div className="grid grid-cols-1 lg:grid-cols-[1.5fr_1fr_1fr_1.3fr_auto] gap-3 items-end">
+                       <div>
+                         <label className="text-[10px] uppercase font-bold text-gray-500">Bucket Name</label>
+                         <input value={newBucketName} onChange={e => setNewBucketName(e.target.value)} placeholder="New bucket name" className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
+                       </div>
+                       <div>
+                         <label className="text-[10px] uppercase font-bold text-gray-500">Default Tier</label>
+                         <select
+                           value={newBucketConfig.storageTier}
+                           onChange={e => setNewBucketConfig(prev => ({
+                             ...prev,
+                             storageTier: e.target.value,
+                             autoTiering: e.target.value === 'Standard' ? prev.autoTiering : 'Disabled'
+                           }))}
+                           className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                         >
+                           <option value="Standard">Standard</option>
+                           <option value="Archive">Archive</option>
+                         </select>
+                       </div>
+                       <div>
+                         <label className="text-[10px] uppercase font-bold text-gray-500">Versioning</label>
+                         <select
+                           value={newBucketConfig.versioning}
+                           onChange={e => setNewBucketConfig(prev => ({ ...prev, versioning: e.target.value }))}
+                           className="mt-1 w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                         >
+                           <option value="Disabled">Disabled</option>
+                           <option value="Enabled">Enabled</option>
+                         </select>
+                       </div>
+                       <div>
+                         <label className={`mt-5 flex items-center gap-2 text-xs font-semibold ${newBucketConfig.storageTier === 'Standard' ? 'text-gray-600' : 'text-gray-400'}`}>
+                           <input
+                             type="checkbox"
+                             checked={newBucketConfig.autoTiering === 'InfrequentAccess'}
+                             disabled={newBucketConfig.storageTier !== 'Standard'}
+                             onChange={e => setNewBucketConfig(prev => ({ ...prev, autoTiering: e.target.checked ? 'InfrequentAccess' : 'Disabled' }))}
+                             className="accent-[#9c3029]"
+                           />
+                           Auto-Tiering to Infrequent Access
+                         </label>
+                         <div className="mt-1 text-[10px] text-gray-500">Infrequent Access is reached with Auto-Tiering or lifecycle rules.</div>
+                       </div>
+                       <button onClick={handleCreateBucket} className="bg-[#9c3029] text-white px-4 py-2 rounded-md hover:bg-[#a63d2e] text-sm font-bold flex items-center justify-center gap-2 whitespace-nowrap"><Plus size={15}/> Create Bucket</button>
+                     </div>
+                   </div>
                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                       <div className="bg-white border border-gray-200 rounded-md p-5 h-[600px] flex flex-col text-left shadow-sm">
                          <h3 className="font-bold text-gray-800 mb-4 flex items-center gap-2 text-sm"><Database size={16} className="text-[#9c3029]"/> Buckets</h3>
-                         <div className="space-y-2 mb-4 p-3 bg-gray-50 border border-gray-200 rounded-md">
-                             <input value={newBucketName} onChange={e => setNewBucketName(e.target.value)} placeholder="New bucket name" className="w-full bg-white border border-gray-200 p-2 rounded-md text-xs focus:outline-none focus:border-[#9c3029]" />
-                             <div className="grid grid-cols-2 gap-2">
-                               <div>
-                                 <label className="text-[9px] uppercase font-bold text-gray-500">Default Tier</label>
-                                 <select
-                                   value={newBucketConfig.storageTier}
-                                   onChange={e => setNewBucketConfig(prev => ({
-                                     ...prev,
-                                     storageTier: e.target.value,
-                                     autoTiering: e.target.value === 'Standard' ? prev.autoTiering : 'Disabled'
-                                   }))}
-                                   className="mt-1 w-full bg-white border border-gray-200 p-1.5 rounded-md text-xs focus:outline-none focus:border-[#9c3029]"
-                                 >
-                                   <option value="Standard">Standard</option>
-                                   <option value="Archive">Archive</option>
-                                 </select>
-                               </div>
-                               <div>
-                                 <label className="text-[9px] uppercase font-bold text-gray-500">Versioning</label>
-                                 <select
-                                   value={newBucketConfig.versioning}
-                                   onChange={e => setNewBucketConfig(prev => ({ ...prev, versioning: e.target.value }))}
-                                   className="mt-1 w-full bg-white border border-gray-200 p-1.5 rounded-md text-xs focus:outline-none focus:border-[#9c3029]"
-                                 >
-                                   <option value="Disabled">Disabled</option>
-                                   <option value="Enabled">Enabled</option>
-                                 </select>
-                               </div>
-                             </div>
-                             <label className={`flex items-center gap-2 text-[11px] font-semibold ${newBucketConfig.storageTier === 'Standard' ? 'text-gray-600' : 'text-gray-400'}`}>
-                               <input
-                                 type="checkbox"
-                                 checked={newBucketConfig.autoTiering === 'InfrequentAccess'}
-                                 disabled={newBucketConfig.storageTier !== 'Standard'}
-                                 onChange={e => setNewBucketConfig(prev => ({ ...prev, autoTiering: e.target.checked ? 'InfrequentAccess' : 'Disabled' }))}
-                                 className="accent-[#9c3029]"
-                               />
-                               Auto-Tiering to Infrequent Access
-                             </label>
-                             <div className="text-[10px] text-gray-500">OCI bucket default tier is Standard or Archive; Infrequent Access is reached with Auto-Tiering or lifecycle rules.</div>
-                             <button onClick={handleCreateBucket} className="w-full bg-[#9c3029] text-white px-3 py-2 rounded-md hover:bg-[#a63d2e] text-xs font-bold flex items-center justify-center gap-1"><Plus size={14}/> Create Bucket</button>
-                         </div>
                          <div className="flex-1 overflow-y-auto pr-1">
                              {storageBuckets.map(b => (
                                <div key={b.name} onClick={() => handleBucketClick(b.name)} className={`p-2.5 rounded-md cursor-pointer transition-colors text-sm border ${selectedBucket === b.name ? 'bg-red-50 border-red-200 text-[#9c3029]' : 'hover:bg-gray-50 border-transparent text-gray-600'}`}>{b.name}</div>
