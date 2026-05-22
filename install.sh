@@ -96,7 +96,7 @@ Options:
   --job-log-max-size SIZE     logrotate maxsize for job logs. Default: $JOB_LOG_MAX_SIZE
   --job-log-retention-days N  Number of daily rotated logs to keep. Default: $JOB_LOG_RETENTION_DAYS
   --job-log-helper PATH       Root helper used by the UI for job log rotation. Default: $JOB_LOG_HELPER
-  --local-share-helper PATH   Root helper used by the UI for optional SMB shares. Default: $LOCAL_SHARE_HELPER
+  --local-share-helper PATH   Root helper used by the UI for optional SMB/NFS shares. Default: $LOCAL_SHARE_HELPER
   --time-sync-helper PATH     Root helper used by the UI for timezone/NTP. Default: $TIME_SYNC_HELPER
   --upgrade-helper PATH       Root helper used by the UI for controlled upgrades. Default: $UPGRADE_HELPER
   --timezone ZONE             Server timezone for schedules/logs. Default: $SERVER_TIMEZONE
@@ -781,7 +781,7 @@ install_time_sync_helper() {
 }
 
 install_local_share_helper() {
-  log "Installing optional local SMB share helper"
+  log "Installing optional local SMB/NFS share helper"
 
   case "$LOCAL_SHARE_HELPER" in
     /*)
@@ -812,7 +812,7 @@ install_local_share_helper() {
   sudoers_file="/etc/sudoers.d/$SERVICE_PREFIX-local-share"
   sudoers_temp="$(mktemp)"
   {
-    printf '# Allow OCI Migrator to enable/disable managed local SMB shares only.\n'
+    printf '# Allow OCI Migrator to enable/disable managed local SMB/NFS shares only.\n'
     printf '%s ALL=(root) NOPASSWD: %s\n' "$RUN_USER" "$LOCAL_SHARE_HELPER"
   } > "$sudoers_temp"
 

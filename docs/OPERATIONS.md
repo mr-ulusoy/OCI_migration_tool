@@ -147,13 +147,14 @@ Local remotes have two modes:
 
 The installer creates `/var/lib/oci-migrator/local` for the service user. Use `--local-data-root PATH` to choose another managed root.
 
-When creating a server local folder in the UI, it can optionally be exposed as an SMB share:
+When creating a server local folder in the UI, it can optionally be exposed as SMB, NFSv4, or both:
 
 - `Do Not Share` only creates the local folder.
 - `Share to Everyone` creates a guest-access Samba share and opens TCP `445`.
 - `Share to User` creates/updates the requested SMB user, sets the Samba password, creates the share, and opens TCP `445`.
+- `Enable NFSv4 Share` exports the same local folder with `rw,sync,no_subtree_check,root_squash` and opens TCP `2049`. Add only trusted client IPs, hostnames, or CIDR ranges.
 
-The SMB password is not stored in the app config. Samba stores its own password hash. Deleting a remote that owns a managed share removes the Samba share block, but it does not delete the underlying local data folder.
+The SMB password is not stored in the app config. Samba stores its own password hash. NFS access is controlled by the allowed client list saved with the remote. Deleting a remote that owns a managed share removes the Samba share block and/or NFS export block, but it does not delete the underlying local data folder.
 
 ## Runtime Files
 
@@ -169,6 +170,7 @@ The SMB password is not stored in the app config. Samba stores its own password 
 /usr/local/sbin/oci-migrator-job-log
 /usr/local/sbin/oci-migrator-local-share
 /etc/oci-migrator/local-share.conf
+/etc/exports.d/oci-migrator.exports
 /etc/systemd/timesyncd.conf.d/oci-migrator.conf
 ```
 

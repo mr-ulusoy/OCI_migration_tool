@@ -6,6 +6,8 @@ APP_NAME="${APP_NAME:-oci-migrator}"
 CONFIG_FILE="/etc/oci-migrator/local-share.conf"
 SMB_CONF="/etc/samba/smb.conf"
 SMB_PORT="445"
+NFS_EXPORTS_FILE="/etc/exports.d/oci-migrator.exports"
+NFS_PORT="2049"
 
 ACTION=""
 SHARE_NAME=""
@@ -13,6 +15,7 @@ SHARE_PATH=""
 ACCESS_MODE=""
 SHARE_USER=""
 PASSWORD_FILE=""
+NFS_CLIENTS=""
 
 log() {
   printf '[%s local-share] %s\n' "$APP_NAME" "$*" >&2
@@ -25,11 +28,13 @@ fail() {
 
 usage() {
   cat <<EOF
-OCI Migrator local SMB share helper
+OCI Migrator local SMB/NFS share helper
 
 Usage:
   oci-migrator-local-share enable --share-name NAME --path PATH --access everyone|user [--user USER --password-file PATH]
   oci-migrator-local-share disable --share-name NAME
+  oci-migrator-local-share enable-nfs --share-name NAME --path PATH --clients CLIENT[,CLIENT...]
+  oci-migrator-local-share disable-nfs --share-name NAME
 EOF
 }
 
@@ -68,7 +73,7 @@ validate_share_name() {
 
   case "$(printf '%s' "$SHARE_NAME" | tr '[:upper:]' '[:lower:]')" in
     global|homes|printers|print\$)
-      fail "Reserved Samba share name: $SHARE_NAME"
+      fail "Reserved share name: $SHARE_NAME"
       ;;
   esac
 }
@@ -99,6 +104,26 @@ validate_share_path() {
   SHARE_PATH="$resolved_path"
 }
 
+validate_nfs_clients() {
+  [ -n "$NFS_CLIENTS" ] || fail "NFS client allow list is required."
+
+  local raw token normalized
+  raw="${NFS_CLIENTS//,/ }"
+  normalized=""
+  for token in $raw; do
+    [[ "$token" =~ ^[A-Za-z0-9_.:/-]{1,128}$ ]] || fail "NFS clients must be hostnames, IP addresses, or CIDR ranges."
+    case "$token" in
+      *"*"*|*"("*|*")"*|*"["*|*"]"*)
+        fail "NFS client allow list may not contain wildcards or export options."
+        ;;
+    esac
+    normalized="${normalized:+$normalized }$token"
+  done
+
+  [ -n "$normalized" ] || fail "NFS client allow list is required."
+  NFS_CLIENTS="$normalized"
+}
+
 install_samba() {
   if command -v smbd >/dev/null 2>&1; then
     return
@@ -108,6 +133,17 @@ install_samba() {
   log "Installing Samba"
   env DEBIAN_FRONTEND=noninteractive apt-get update
   env DEBIAN_FRONTEND=noninteractive apt-get install -y samba
+}
+
+install_nfs() {
+  if command -v exportfs >/dev/null 2>&1 && command -v rpc.nfsd >/dev/null 2>&1; then
+    return
+  fi
+
+  command -v apt-get >/dev/null 2>&1 || fail "NFS server is missing and apt-get is not available."
+  log "Installing NFS server"
+  env DEBIAN_FRONTEND=noninteractive apt-get update
+  env DEBIAN_FRONTEND=noninteractive apt-get install -y nfs-kernel-server
 }
 
 ensure_samba_user() {
@@ -281,12 +317,130 @@ PY
   fi
 }
 
+write_nfs_exports() {
+  local backup_file had_file
+  backup_file="$(mktemp)"
+  had_file=0
+  if [ -f "$NFS_EXPORTS_FILE" ]; then
+    cp "$NFS_EXPORTS_FILE" "$backup_file"
+    had_file=1
+  fi
+
+  install -d -o root -g root -m 755 "$(dirname "$NFS_EXPORTS_FILE")"
+
+  SHARE_NAME="$SHARE_NAME" \
+  SHARE_PATH="$SHARE_PATH" \
+  NFS_CLIENTS="$NFS_CLIENTS" \
+  NFS_EXPORTS_FILE="$NFS_EXPORTS_FILE" \
+  python3 - <<'PY'
+import os
+import shutil
+import tempfile
+from pathlib import Path
+
+share_name = os.environ["SHARE_NAME"]
+share_path = os.environ["SHARE_PATH"]
+clients = os.environ["NFS_CLIENTS"].split()
+exports_file = Path(os.environ["NFS_EXPORTS_FILE"])
+
+begin = f"# BEGIN OCI Migrator NFS share {share_name}"
+end = f"# END OCI Migrator NFS share {share_name}"
+
+if exports_file.exists():
+    lines = exports_file.read_text(encoding="utf-8").splitlines()
+else:
+    lines = []
+
+filtered = []
+skip = False
+for line in lines:
+    if line.strip() == begin:
+        skip = True
+        continue
+    if line.strip() == end:
+        skip = False
+        continue
+    if not skip:
+        filtered.append(line)
+
+options = "rw,sync,no_subtree_check,root_squash"
+client_specs = " ".join(f"{client}({options})" for client in clients)
+block = ["", begin, f"{share_path} {client_specs}", end]
+filtered.extend(block)
+
+tmp_fd, tmp_name = tempfile.mkstemp(dir=str(exports_file.parent), text=True)
+with os.fdopen(tmp_fd, "w", encoding="utf-8") as handle:
+    handle.write("\n".join(filtered).rstrip() + "\n")
+
+shutil.move(tmp_name, exports_file)
+PY
+
+  if ! exportfs -ra >/dev/null 2>&1; then
+    if [ "$had_file" -eq 1 ]; then
+      cp "$backup_file" "$NFS_EXPORTS_FILE"
+    else
+      rm -f "$NFS_EXPORTS_FILE"
+    fi
+    exportfs -ra >/dev/null 2>&1 || true
+    rm -f "$backup_file"
+    fail "Generated NFS exports configuration did not pass exportfs."
+  fi
+
+  rm -f "$backup_file"
+}
+
+remove_nfs_exports() {
+  [ -f "$NFS_EXPORTS_FILE" ] || return 0
+
+  SHARE_NAME="$SHARE_NAME" NFS_EXPORTS_FILE="$NFS_EXPORTS_FILE" python3 - <<'PY'
+import os
+import shutil
+import tempfile
+from pathlib import Path
+
+share_name = os.environ["SHARE_NAME"]
+exports_file = Path(os.environ["NFS_EXPORTS_FILE"])
+begin = f"# BEGIN OCI Migrator NFS share {share_name}"
+end = f"# END OCI Migrator NFS share {share_name}"
+
+lines = exports_file.read_text(encoding="utf-8").splitlines()
+filtered = []
+skip = False
+for line in lines:
+    if line.strip() == begin:
+        skip = True
+        continue
+    if line.strip() == end:
+        skip = False
+        continue
+    if not skip:
+        filtered.append(line)
+
+tmp_fd, tmp_name = tempfile.mkstemp(dir=str(exports_file.parent), text=True)
+with os.fdopen(tmp_fd, "w", encoding="utf-8") as handle:
+    handle.write("\n".join(filtered).rstrip() + "\n")
+
+shutil.move(tmp_name, exports_file)
+PY
+
+  exportfs -ra >/dev/null 2>&1 || fail "NFS exports configuration is invalid after removing share."
+}
+
 restart_samba() {
   if command -v systemctl >/dev/null 2>&1; then
     systemctl enable --now smbd.service
     systemctl restart smbd.service
   else
     service smbd restart
+  fi
+}
+
+restart_nfs() {
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl enable --now nfs-server.service >/dev/null 2>&1 || systemctl enable --now nfs-kernel-server.service
+    systemctl restart nfs-server.service >/dev/null 2>&1 || systemctl restart nfs-kernel-server.service
+  else
+    service nfs-kernel-server restart || service nfs-server restart
   fi
 }
 
@@ -303,24 +457,44 @@ open_smb_firewall() {
   fi
 }
 
+open_nfs_firewall() {
+  log "Opening inbound NFSv4 TCP $NFS_PORT"
+  if command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active'; then
+    ufw allow "$NFS_PORT/tcp"
+    return
+  fi
+
+  if command -v iptables >/dev/null 2>&1; then
+    iptables -C INPUT -p tcp --dport "$NFS_PORT" -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp --dport "$NFS_PORT" -j ACCEPT
+    command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save || true
+  fi
+}
+
 print_json() {
   local message="$1"
+  local port="${2:-445}"
+  local protocol="${3:-smb}"
   MESSAGE="$message" \
   SHARE_NAME="$SHARE_NAME" \
   SHARE_PATH="$SHARE_PATH" \
   ACCESS_MODE="$ACCESS_MODE" \
   SHARE_USER="$SHARE_USER" \
+  NFS_CLIENTS="$NFS_CLIENTS" \
+  PORT="$port" \
+  PROTOCOL="$protocol" \
   python3 - <<'PY'
 import json
 import os
 
 payload = {
     "message": os.environ["MESSAGE"],
+    "protocol": os.environ.get("PROTOCOL", ""),
     "share_name": os.environ.get("SHARE_NAME", ""),
     "path": os.environ.get("SHARE_PATH", ""),
     "access": os.environ.get("ACCESS_MODE", ""),
     "user": os.environ.get("SHARE_USER", ""),
-    "port": 445,
+    "clients": os.environ.get("NFS_CLIENTS", ""),
+    "port": int(os.environ.get("PORT", "445")),
 }
 print(json.dumps(payload))
 PY
@@ -331,6 +505,13 @@ parse_args() {
     usage
     exit 1
   }
+
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+  esac
 
   ACTION="$1"
   shift
@@ -355,6 +536,10 @@ parse_args() {
         ;;
       --password-file)
         PASSWORD_FILE="$2"
+        shift 2
+        ;;
+      --clients)
+        NFS_CLIENTS="$2"
         shift 2
         ;;
       -h|--help)
@@ -390,7 +575,7 @@ enable_share() {
   write_samba_config
   restart_samba
   open_smb_firewall
-  print_json "Share enabled"
+  print_json "SMB share enabled" "$SMB_PORT" "smb"
 }
 
 disable_share() {
@@ -399,7 +584,29 @@ disable_share() {
   if command -v smbd >/dev/null 2>&1; then
     restart_samba
   fi
-  print_json "Share disabled"
+  print_json "SMB share disabled" "$SMB_PORT" "smb"
+}
+
+enable_nfs_share() {
+  validate_share_name
+  validate_share_path
+  validate_nfs_clients
+
+  install_nfs
+  install -d -o "$RUN_USER" -g "$RUN_USER" -m 775 "$SHARE_PATH"
+  write_nfs_exports
+  restart_nfs
+  open_nfs_firewall
+  print_json "NFSv4 share enabled" "$NFS_PORT" "nfs4"
+}
+
+disable_nfs_share() {
+  validate_share_name
+  remove_nfs_exports
+  if command -v exportfs >/dev/null 2>&1; then
+    exportfs -ra >/dev/null 2>&1 || true
+  fi
+  print_json "NFSv4 share disabled" "$NFS_PORT" "nfs4"
 }
 
 main() {
@@ -413,6 +620,12 @@ main() {
       ;;
     disable)
       disable_share
+      ;;
+    enable-nfs)
+      enable_nfs_share
+      ;;
+    disable-nfs)
+      disable_nfs_share
       ;;
     *)
       fail "Unknown action: $ACTION"

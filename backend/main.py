@@ -630,6 +630,32 @@ def validate_smb_username(username: str) -> str:
     return username
 
 
+def parse_form_bool(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+
+
+def validate_nfs_clients(clients: str) -> str:
+    normalized_clients = []
+    for token in re.split(r"[\s,]+", clients.strip()):
+        if not token:
+            continue
+        if not re.fullmatch(r"[A-Za-z0-9_.:/-]{1,128}", token):
+            raise HTTPException(
+                status_code=400,
+                detail="NFS clients must be hostnames, IP addresses, or CIDR ranges.",
+            )
+        if any(character in token for character in "*()[]"):
+            raise HTTPException(
+                status_code=400,
+                detail="NFS client allow list may not contain wildcards or export options.",
+            )
+        normalized_clients.append(token)
+
+    if not normalized_clients:
+        raise HTTPException(status_code=400, detail="NFS client allow list is required.")
+    return " ".join(normalized_clients)
+
+
 def share_host_from_request(request: Request) -> str:
     host = request.url.hostname or request.headers.get("host", "server").split(":", 1)[0]
     return host.strip("[]") or "server"
@@ -639,7 +665,7 @@ def local_share_helper_command() -> list[str]:
     if not LOCAL_SHARE_HELPER.is_file():
         raise HTTPException(
             status_code=503,
-            detail="Local SMB share helper is not installed. Rerun ./install.sh and try again.",
+            detail="Local share helper is not installed. Rerun ./install.sh and try again.",
         )
 
     if os.geteuid() == 0:
@@ -649,7 +675,7 @@ def local_share_helper_command() -> list[str]:
     if not sudo_path:
         raise HTTPException(
             status_code=503,
-            detail="sudo is required for local SMB share setup. Rerun ./install.sh and try again.",
+            detail="sudo is required for local share setup. Rerun ./install.sh and try again.",
         )
     return [sudo_path, "-n", str(LOCAL_SHARE_HELPER)]
 
@@ -683,16 +709,16 @@ def run_local_share_helper(args: list[str], password: str = "") -> dict:
     except subprocess.TimeoutExpired as exc:
         raise_operation_error(
             504,
-            "Configure local SMB share",
+            "Configure local share",
             exc,
-            "Samba installation/configuration took too long. Check apt, systemd, and firewall status on the server.",
+            "Local share installation/configuration took too long. Check apt, systemd, and firewall status on the server.",
         )
     except HTTPException:
         raise
     except Exception as exc:
         raise_operation_error(
             500,
-            "Configure local SMB share",
+            "Configure local share",
             exc,
             "Check that install.sh installed /usr/local/sbin/oci-migrator-local-share and sudoers access for the service user.",
         )
@@ -732,6 +758,25 @@ def enable_local_share(
 
 def disable_local_share(share_name: str) -> None:
     run_local_share_helper(["disable", "--share-name", share_name])
+
+
+def enable_local_nfs_share(local_path: Path, share_name: str, clients: str) -> dict:
+    nfs_clients = validate_nfs_clients(clients)
+    return run_local_share_helper(
+        [
+            "enable-nfs",
+            "--share-name",
+            share_name,
+            "--path",
+            str(local_path),
+            "--clients",
+            nfs_clients,
+        ]
+    )
+
+
+def disable_local_nfs_share(share_name: str) -> None:
+    run_local_share_helper(["disable-nfs", "--share-name", share_name])
 
 
 def validate_external_mount_path(raw_path: str) -> Path:
@@ -2911,6 +2956,8 @@ async def list_remotes():
                 "local_path": parser.get(section, "oci_migrator_local_path", fallback=""),
                 "share_name": parser.get(section, "oci_migrator_share_name", fallback=""),
                 "share_access": parser.get(section, "oci_migrator_share_access", fallback=""),
+                "nfs_share_name": parser.get(section, "oci_migrator_nfs_share_name", fallback=""),
+                "nfs_clients": parser.get(section, "oci_migrator_nfs_clients", fallback=""),
             }
         )
     return {"remotes": parser.sections(), "remote_details": remote_details}
@@ -3016,17 +3063,21 @@ async def save_remote(
     local_share_name: str = Form(""),
     local_share_username: str = Form(""),
     local_share_password: str = Form(""),
+    local_nfs_enabled: str = Form("false"),
+    local_nfs_clients: str = Form(""),
     gcp_file: Optional[UploadFile] = File(None)
 ):
     parser = configparser.ConfigParser()
     saved_local_path = None
     saved_share = None
+    saved_nfs_share = None
     try:
         with RCLONE_LOCK:
             if os.path.exists(RCLONE_CONF):
                 parser.read(RCLONE_CONF)
 
             previous_share_name = parser.get(name, 'oci_migrator_share_name', fallback='') if parser.has_section(name) else ''
+            previous_nfs_share_name = parser.get(name, 'oci_migrator_nfs_share_name', fallback='') if parser.has_section(name) else ''
 
             if not parser.has_section(name):
                 parser.add_section(name)
@@ -3038,6 +3089,9 @@ async def save_remote(
                 'oci_migrator_share_access',
                 'oci_migrator_share_name',
                 'oci_migrator_share_username',
+                'oci_migrator_nfs_enabled',
+                'oci_migrator_nfs_share_name',
+                'oci_migrator_nfs_clients',
             ):
                 parser.remove_option(name, option)
 
@@ -3075,21 +3129,28 @@ async def save_remote(
                     display_name = local_path.name or str(local_path)
 
                 share_access = local_share_access.strip().lower() or "none"
-                if local_mode != "server_folder" and share_access != "none":
-                    raise HTTPException(status_code=400, detail="SMB sharing is only supported for server local folders.")
+                nfs_enabled = parse_form_bool(local_nfs_enabled)
+                if local_mode != "server_folder" and (share_access != "none" or nfs_enabled):
+                    raise HTTPException(status_code=400, detail="Managed sharing is only supported for server local folders.")
 
-                if share_access != "none":
-                    if share_access not in {"everyone", "user"}:
-                        raise HTTPException(status_code=400, detail="Unsupported SMB share access mode.")
+                if share_access not in {"none", "everyone", "user"}:
+                    raise HTTPException(status_code=400, detail="Unsupported SMB share access mode.")
 
+                share_name = ""
+                if share_access != "none" or nfs_enabled:
                     share_name = normalize_smb_share_name(local_share_name or display_name)
                     for section in parser.sections():
-                        if section != name and parser.get(section, 'oci_migrator_share_name', fallback='') == share_name:
+                        used_share_names = {
+                            parser.get(section, 'oci_migrator_share_name', fallback=''),
+                            parser.get(section, 'oci_migrator_nfs_share_name', fallback=''),
+                        }
+                        if section != name and share_name in used_share_names:
                             raise HTTPException(
                                 status_code=400,
-                                detail=f"SMB share name is already used by remote '{section}'.",
+                                detail=f"Share name is already used by remote '{section}'.",
                             )
 
+                if share_access != "none":
                     share_username = validate_smb_username(local_share_username) if share_access == "user" else ""
                     helper_result = enable_local_share(
                         local_path,
@@ -3108,6 +3169,20 @@ async def save_remote(
                         "port": helper_result.get("port", 445),
                     }
 
+                if nfs_enabled:
+                    nfs_clients = validate_nfs_clients(local_nfs_clients)
+                    helper_result = enable_local_nfs_share(local_path, share_name, nfs_clients)
+                    host = share_host_from_request(request)
+                    nfs_path = helper_result.get("path", str(local_path))
+                    saved_nfs_share = {
+                        "name": share_name,
+                        "clients": nfs_clients,
+                        "path": nfs_path,
+                        "mount": f"{host}:{nfs_path}",
+                        "mount_command": f"sudo mount -t nfs4 {host}:{nfs_path} /mnt/{share_name}",
+                        "port": helper_result.get("port", 2049),
+                    }
+
                 parser.set(name, 'type', 'local')
                 parser.set(name, 'oci_migrator_local_mode', local_mode)
                 parser.set(name, 'oci_migrator_local_path', str(local_path))
@@ -3117,6 +3192,10 @@ async def save_remote(
                     parser.set(name, 'oci_migrator_share_name', saved_share["name"])
                     if saved_share["username"]:
                         parser.set(name, 'oci_migrator_share_username', saved_share["username"])
+                if saved_nfs_share:
+                    parser.set(name, 'oci_migrator_nfs_enabled', 'true')
+                    parser.set(name, 'oci_migrator_nfs_share_name', saved_nfs_share["name"])
+                    parser.set(name, 'oci_migrator_nfs_clients', saved_nfs_share["clients"])
                 saved_local_path = str(local_path)
             else:
                 raise HTTPException(status_code=400, detail="Unsupported remote provider")
@@ -3124,6 +3203,9 @@ async def save_remote(
             current_share_name = saved_share["name"] if saved_share else ""
             if previous_share_name and previous_share_name != current_share_name:
                 disable_local_share(previous_share_name)
+            current_nfs_share_name = saved_nfs_share["name"] if saved_nfs_share else ""
+            if previous_nfs_share_name and previous_nfs_share_name != current_nfs_share_name:
+                disable_local_nfs_share(previous_nfs_share_name)
 
             write_ini_atomically(parser, RCLONE_CONF)
     except HTTPException:
@@ -3136,6 +3218,8 @@ async def save_remote(
         response["local_path"] = saved_local_path
     if saved_share:
         response["share"] = saved_share
+    if saved_nfs_share:
+        response["nfs_share"] = saved_nfs_share
     return response
 
 # NYTT: Ta bort Remote
@@ -3151,6 +3235,9 @@ async def delete_remote(remote_name: str):
                 share_name = parser.get(remote_name, 'oci_migrator_share_name', fallback='')
                 if share_name:
                     disable_local_share(share_name)
+                nfs_share_name = parser.get(remote_name, 'oci_migrator_nfs_share_name', fallback='')
+                if nfs_share_name:
+                    disable_local_nfs_share(nfs_share_name)
                 parser.remove_section(remote_name)
                 write_ini_atomically(parser, RCLONE_CONF)
     except HTTPException:

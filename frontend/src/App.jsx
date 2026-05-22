@@ -31,7 +31,9 @@ const DEFAULT_REMOTE_CONFIG = {
   localShareAccess: 'none',
   localShareName: '',
   localShareUsername: '',
-  localSharePassword: ''
+  localSharePassword: '',
+  localNfsEnabled: false,
+  localNfsClients: ''
 };
 const createDefaultSyncJob = () => ({
   name: '',
@@ -790,6 +792,10 @@ export default function App() {
         return;
       }
     }
+    if (remoteConfig.provider === 'local' && remoteConfig.localMode === 'server_folder' && remoteConfig.localNfsEnabled && !remoteConfig.localNfsClients.trim()) {
+      setNotice({ type: 'error', title: 'Missing NFS clients', message: 'Add at least one allowed client IP, hostname, or CIDR range for NFSv4.' });
+      return;
+    }
     setLoading(true);
     try {
       const rData = new FormData();
@@ -815,12 +821,25 @@ export default function App() {
         rData.append("local_share_name", remoteConfig.localShareName);
         rData.append("local_share_username", remoteConfig.localShareUsername);
         rData.append("local_share_password", remoteConfig.localSharePassword);
+        rData.append("local_nfs_enabled", remoteConfig.localNfsEnabled ? 'true' : 'false');
+        rData.append("local_nfs_clients", remoteConfig.localNfsClients);
       }
       const res = await api.post(`/save-remote`, rData);
       fetchRemotes();
-      if (res.data.share) {
-        const shareUser = res.data.share.username ? `\nUser: ${res.data.share.username}` : '\nAccess: everyone';
-        showSuccess(`Remote saved: ${res.data.local_path}\nSMB: ${res.data.share.unc_path}\nMac: ${res.data.share.smb_url}${shareUser}`);
+      if (res.data.share || res.data.nfs_share) {
+        const details = [`Remote saved: ${res.data.local_path}`];
+        if (res.data.share) {
+          const shareUser = res.data.share.username ? `User: ${res.data.share.username}` : 'Access: everyone';
+          details.push(`SMB: ${res.data.share.unc_path}`);
+          details.push(`Mac: ${res.data.share.smb_url}`);
+          details.push(shareUser);
+        }
+        if (res.data.nfs_share) {
+          details.push(`NFSv4: ${res.data.nfs_share.mount}`);
+          details.push(`Mount: ${res.data.nfs_share.mount_command}`);
+          details.push(`Allowed clients: ${res.data.nfs_share.clients}`);
+        }
+        showSuccess(details.join('\n'));
       } else {
         showSuccess(res.data.local_path ? `Remote saved: ${res.data.local_path}` : 'Remote saved.');
       }
@@ -1612,7 +1631,7 @@ export default function App() {
                             <div className="space-y-3 p-3 bg-gray-50 rounded-md border border-gray-200">
                               <div>
                                 <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Local Type</label>
-                                <select value={remoteConfig.localMode} onChange={e => setRemoteConfig({...remoteConfig, localMode: e.target.value, localShareAccess: e.target.value === 'server_folder' ? remoteConfig.localShareAccess : 'none'})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
+                                <select value={remoteConfig.localMode} onChange={e => setRemoteConfig({...remoteConfig, localMode: e.target.value, localShareAccess: e.target.value === 'server_folder' ? remoteConfig.localShareAccess : 'none', localNfsEnabled: e.target.value === 'server_folder' ? remoteConfig.localNfsEnabled : false})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
                                   <option value="server_folder">Server Local Folder</option>
                                   <option value="mounted_share">Mounted External Share</option>
                                 </select>
@@ -1631,13 +1650,25 @@ export default function App() {
                                       <option value="user">Share to User</option>
                                     </select>
                                   </div>
-                                  {remoteConfig.localShareAccess !== 'none' && (
+                                  <label className="flex items-center gap-3 rounded-md border border-gray-200 bg-white px-3 py-2 text-sm font-semibold text-gray-700">
+                                    <input
+                                      type="checkbox"
+                                      checked={remoteConfig.localNfsEnabled}
+                                      onChange={e => setRemoteConfig({...remoteConfig, localNfsEnabled: e.target.checked})}
+                                      className="h-4 w-4 rounded border-gray-300 text-[#9c3029] focus:ring-[#9c3029]"
+                                    />
+                                    Enable NFSv4 Share
+                                  </label>
+                                  {remoteConfig.localShareAccess !== 'none' || remoteConfig.localNfsEnabled ? (
                                     <div>
                                       <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Share Name</label>
                                       <input value={remoteConfig.localShareName} onChange={e => setRemoteConfig({...remoteConfig, localShareName: e.target.value})} placeholder={remoteConfig.localFolderName || remoteConfig.name || 'customer-a'} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" />
-                                      <div className="mt-1 text-[10px] text-gray-500">TCP 445 opens when the share is created.</div>
+                                      <div className="mt-1 text-[10px] text-gray-500">
+                                        {remoteConfig.localShareAccess !== 'none' && 'SMB opens TCP 445. '}
+                                        {remoteConfig.localNfsEnabled && 'NFSv4 opens TCP 2049.'}
+                                      </div>
                                     </div>
-                                  )}
+                                  ) : null}
                                   {remoteConfig.localShareAccess === 'user' && (
                                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                       <div>
@@ -1648,6 +1679,13 @@ export default function App() {
                                         <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">SMB Password</label>
                                         <input type="password" value={remoteConfig.localSharePassword} onChange={e => setRemoteConfig({...remoteConfig, localSharePassword: e.target.value})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]" autoComplete="new-password" />
                                       </div>
+                                    </div>
+                                  )}
+                                  {remoteConfig.localNfsEnabled && (
+                                    <div>
+                                      <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Allowed NFS Clients</label>
+                                      <input value={remoteConfig.localNfsClients} onChange={e => setRemoteConfig({...remoteConfig, localNfsClients: e.target.value})} placeholder="10.0.0.0/24, 10.0.1.25" className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]" />
+                                      <div className="mt-1 text-[10px] text-gray-500">Use client IPs, hostnames, or CIDR ranges. Wildcards are blocked.</div>
                                     </div>
                                   )}
                                 </div>
@@ -1693,6 +1731,7 @@ export default function App() {
                                   <div className="min-w-0">
                                     <span className="text-sm text-gray-600 font-medium">{remote.name}</span>
                                     {remote.share_name && <div className="text-[10px] text-gray-400 truncate">SMB: {remote.share_name}</div>}
+                                    {remote.nfs_share_name && <div className="text-[10px] text-gray-400 truncate">NFSv4: {remote.nfs_share_name}</div>}
                                   </div>
                                   <button onClick={() => handleDeleteRemote(remote.name)} className="p-1.5 text-gray-400 hover:text-[#9c3029]"><Trash2 size={14}/></button>
                                </div>

@@ -121,7 +121,7 @@ Rclone job logs are persisted per run and visible/downloadable from Job Dashboar
 
 Timezone and NTP servers are visible and editable from Settings -> Time & NTP.
 
-Server local folders can optionally be shared from the UI with SMB. When a user chooses `Share to Everyone` or `Share to User`, the backend runs the installed root helper to install/configure Samba, expose that folder, and open inbound TCP `445`.
+Server local folders can optionally be shared from the UI with SMB, NFSv4, or both. SMB can be opened as guest access or a named Samba user on TCP `445`. NFSv4 requires an allowed client IP/hostname/CIDR list and opens TCP `2049`. No share is enabled during installation; the installed root helper applies the share only when a user chooses it in `Add Remote`.
 
 ## Documentation
 
