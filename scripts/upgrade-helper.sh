@@ -261,6 +261,7 @@ run_upgrade() {
     --job-log-retention-days "${JOB_LOG_RETENTION_DAYS:-14}"
     --job-log-helper "${JOB_LOG_HELPER:-/usr/local/sbin/oci-migrator-job-log}"
     --local-share-helper "${LOCAL_SHARE_HELPER:-/usr/local/sbin/oci-migrator-local-share}"
+    --time-sync-helper "${TIME_SYNC_HELPER:-/usr/local/sbin/oci-migrator-time-sync}"
     --upgrade-helper "$UPGRADE_HELPER"
     --timezone "${SERVER_TIMEZONE:-Europe/Stockholm}"
     --ntp-servers "${NTP_SERVERS:-0.se.pool.ntp.org 1.se.pool.ntp.org 2.se.pool.ntp.org 3.se.pool.ntp.org}"

@@ -53,6 +53,7 @@ cd OCI_migration_tool
 `--job-log-retention-days` controls how many daily rotated logs are kept. The default is `14`.
 `--timezone` defaults to `Europe/Stockholm`, so Swedish daylight saving time is handled by the OS.
 `--ntp-servers` defaults to the Swedish NTP pool and is written to `systemd-timesyncd`.
+After installation, timezone and NTP servers can also be changed from `Settings` -> `Time & NTP`.
 
 ## Optional SMB Sharing
 

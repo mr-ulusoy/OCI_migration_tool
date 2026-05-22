@@ -203,6 +203,9 @@ export default function App() {
   const [jobLogSettings, setJobLogSettings] = useState(null);
   const [jobLogSettingsForm, setJobLogSettingsForm] = useState({ retentionDays: 14, maxSize: '10M' });
   const [savingJobLogSettings, setSavingJobLogSettings] = useState(false);
+  const [timeSettings, setTimeSettings] = useState(null);
+  const [timeSettingsForm, setTimeSettingsForm] = useState({ timezone: 'UTC', ntpServers: '0.pool.ntp.org 1.pool.ntp.org' });
+  const [savingTimeSettings, setSavingTimeSettings] = useState(false);
   const [upgradeStatus, setUpgradeStatus] = useState(null);
   const [upgradeCheck, setUpgradeCheck] = useState(null);
   const [upgradeLog, setUpgradeLog] = useState('');
@@ -369,6 +372,19 @@ export default function App() {
       setJobLogSettingsForm({
         retentionDays: res.data.retention_days || 14,
         maxSize: res.data.max_size || '10M'
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const fetchTimeSettings = async () => {
+    try {
+      const res = await api.get('/time-settings');
+      setTimeSettings(res.data);
+      setTimeSettingsForm({
+        timezone: res.data.configured_timezone || res.data.timezone || 'UTC',
+        ntpServers: res.data.ntp_servers || '0.pool.ntp.org 1.pool.ntp.org'
       });
     } catch (err) {
       console.error(err);
@@ -548,6 +564,45 @@ export default function App() {
     setSavingJobLogSettings(false);
   };
 
+  const handleSaveTimeSettings = async (event) => {
+    event.preventDefault();
+    const timezone = String(timeSettingsForm.timezone || '').trim();
+    const ntpServers = String(timeSettingsForm.ntpServers || '').trim().replace(/,/g, ' ').replace(/\s+/g, ' ');
+
+    if (!/^[A-Za-z0-9_+.-]+(\/[A-Za-z0-9_+.-]+)*$/.test(timezone)) {
+      setNotice({ type: 'error', title: 'Invalid time settings', message: 'Timezone must be an IANA name, for example Europe/Stockholm or Asia/Singapore.' });
+      return;
+    }
+
+    if (!ntpServers) {
+      setNotice({ type: 'error', title: 'Invalid time settings', message: 'At least one NTP server is required.' });
+      return;
+    }
+
+    if (ntpServers.split(' ').some(server => !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(server))) {
+      setNotice({ type: 'error', title: 'Invalid time settings', message: 'NTP servers may contain hostnames or IP addresses separated by spaces or commas.' });
+      return;
+    }
+
+    setSavingTimeSettings(true);
+    try {
+      const res = await api.put('/time-settings', {
+        timezone,
+        ntp_servers: ntpServers
+      });
+      setTimeSettings(res.data);
+      setTimeSettingsForm({
+        timezone: res.data.configured_timezone || timezone,
+        ntpServers: res.data.ntp_servers || ntpServers
+      });
+      showSuccess('Time sync settings saved.');
+      fetchHealth();
+    } catch (err) {
+      showError('Failed to save time sync settings', err);
+    }
+    setSavingTimeSettings(false);
+  };
+
   useEffect(() => {
     if (!isAuthenticated) return;
     fetchProfiles();
@@ -556,6 +611,7 @@ export default function App() {
     fetchHealth();
     fetchJobRuns();
     fetchJobLogSettings();
+    fetchTimeSettings();
     fetchUpgradeStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, api]);
@@ -1754,6 +1810,71 @@ export default function App() {
                   Import restores runtime env, OCI config, rclone config, backup jobs, job history, and bundled key files. A pre-restore backup is created automatically.
                 </p>
               </div>
+              <form onSubmit={handleSaveTimeSettings} className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
+                <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
+                  <div>
+                    <h3 className="font-bold text-sm text-gray-800 flex items-center gap-2">
+                      <Clock size={16} className="text-[#9c3029]" /> Time & NTP
+                    </h3>
+                    <p className="mt-1 text-[11px] text-gray-500">Controls the server timezone and systemd-timesyncd NTP servers used for schedules and timestamps.</p>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={savingTimeSettings || timeSettings?.helper_installed === false}
+                    className="px-3 py-2 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#7a2520] disabled:opacity-60 flex items-center justify-center gap-2"
+                  >
+                    {savingTimeSettings ? <Loader2 className="animate-spin" size={14} /> : <Save size={14} />}
+                    Save Time
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-[240px_1fr] gap-3">
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Timezone</label>
+                    <input
+                      value={timeSettingsForm.timezone}
+                      onChange={e => setTimeSettingsForm({ ...timeSettingsForm, timezone: e.target.value })}
+                      placeholder="Asia/Singapore"
+                      className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">NTP Servers</label>
+                    <input
+                      value={timeSettingsForm.ntpServers}
+                      onChange={e => setTimeSettingsForm({ ...timeSettingsForm, ntpServers: e.target.value })}
+                      placeholder="0.sg.pool.ntp.org 1.sg.pool.ntp.org"
+                      className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                    />
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-1 md:grid-cols-4 gap-2 text-[11px]">
+                  <div className="bg-gray-50 border border-gray-100 rounded-md px-2 py-1">
+                    <span className="font-bold text-gray-400 uppercase">Current</span>
+                    <div className="font-mono text-gray-700 truncate">{timeSettings?.timezone || 'unknown'}</div>
+                  </div>
+                  <div className="bg-gray-50 border border-gray-100 rounded-md px-2 py-1">
+                    <span className="font-bold text-gray-400 uppercase">NTP</span>
+                    <div className={timeSettings?.ntp_synchronized ? 'text-green-700 font-semibold' : 'text-amber-700 font-semibold'}>
+                      {timeSettings?.ntp_synchronized ? 'Synchronized' : 'Not synchronized'}
+                    </div>
+                  </div>
+                  <div className="bg-gray-50 border border-gray-100 rounded-md px-2 py-1">
+                    <span className="font-bold text-gray-400 uppercase">Service</span>
+                    <div className={timeSettings?.ntp_enabled ? 'text-green-700 font-semibold' : 'text-amber-700 font-semibold'}>
+                      {timeSettings?.ntp_enabled ? 'Enabled' : 'Disabled'}
+                    </div>
+                  </div>
+                  <div className="bg-gray-50 border border-gray-100 rounded-md px-2 py-1">
+                    <span className="font-bold text-gray-400 uppercase">Config</span>
+                    <div className="font-mono text-gray-700 truncate">{timeSettings?.timesyncd_conf || '/etc/systemd/timesyncd.conf.d/oci-migrator.conf'}</div>
+                  </div>
+                </div>
+                {timeSettings?.helper_installed === false && (
+                  <div className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-md p-3">
+                    Time sync helper is missing. Rerun ./install.sh once on the server to enable dashboard time settings.
+                  </div>
+                )}
+              </form>
               <div className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
                 <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
                   <h3 className="font-bold text-sm text-gray-800 flex items-center gap-2">

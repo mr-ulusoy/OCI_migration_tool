@@ -103,11 +103,14 @@ The built frontend is served by the backend, so each install only needs one app/
 - `/var/log/oci-migrator/jobs/`
 - `/etc/logrotate.d/migrator-job-logs`
 - `/usr/local/sbin/oci-migrator-job-log`
+- `/usr/local/sbin/oci-migrator-time-sync`
 - `/etc/systemd/timesyncd.conf.d/oci-migrator.conf`
 
 The backend service also serves the built frontend from `frontend/dist`. Backend dependencies use `backend/requirements.lock` when present.
 
 Rclone job logs are persisted per run and visible/downloadable from Job Dashboard -> Recent Runs. The dashboard also exposes log rotation settings. The installer configures logrotate with `maxsize 10M` and `14` retention days by default.
+
+Timezone and NTP servers are visible and editable from Settings -> Time & NTP.
 
 Server local folders can optionally be shared from the UI with SMB. When a user chooses `Share to Everyone` or `Share to User`, the backend runs the installed root helper to install/configure Samba, expose that folder, and open inbound TCP `445`.
 

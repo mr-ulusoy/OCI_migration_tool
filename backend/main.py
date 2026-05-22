@@ -422,6 +422,8 @@ except ValueError:
     RUNTIME_CONFIG_IMPORT_MAX_BYTES = 25 * 1024 * 1024
 LOCAL_SHARE_HELPER = Path(os.getenv("OCI_MIGRATOR_LOCAL_SHARE_HELPER", "/usr/local/sbin/oci-migrator-local-share")).resolve()
 JOB_LOG_HELPER = Path(os.getenv("OCI_MIGRATOR_JOB_LOG_HELPER", "/usr/local/sbin/oci-migrator-job-log")).resolve()
+TIME_SYNC_HELPER = Path(os.getenv("OCI_MIGRATOR_TIME_SYNC_HELPER", "/usr/local/sbin/oci-migrator-time-sync")).resolve()
+TIMESYNCD_CONF = Path(os.getenv("OCI_MIGRATOR_TIMESYNCD_CONF", "/etc/systemd/timesyncd.conf.d/oci-migrator.conf")).resolve()
 JOB_LOGROTATE_FILE = Path(os.getenv("OCI_MIGRATOR_JOB_LOGROTATE_FILE", "/etc/logrotate.d/migrator-job-logs"))
 UPGRADE_HELPER = Path(os.getenv("OCI_MIGRATOR_UPGRADE_HELPER", "/usr/local/sbin/oci-migrator-upgrade")).resolve()
 UPGRADE_STATUS_FILE = Path(
@@ -439,6 +441,7 @@ try:
 except ValueError:
     LOCAL_SHARE_TIMEOUT_SECONDS = 300
 JOB_LOG_SETTINGS_LOCK = Lock()
+TIME_SETTINGS_LOCK = Lock()
 UPGRADE_LOCK = Lock()
 
 # Säkerställ att mappar finns
@@ -517,6 +520,11 @@ class BulkMigrationJob(BaseModel):
 class JobLogSettingsRequest(BaseModel):
     max_size: str
     retention_days: int
+
+
+class TimeSettingsRequest(BaseModel):
+    timezone: str
+    ntp_servers: str
 
 
 # NYA SCHEMAS FÖR STORAGE EXPLORER
@@ -899,6 +907,51 @@ def validate_job_log_retention_days(value: int) -> int:
     if retention_days < 1 or retention_days > 365:
         raise HTTPException(status_code=400, detail="Retention days must be between 1 and 365.")
     return retention_days
+
+
+def normalize_time_zone(value: str) -> str:
+    timezone_value = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_+.-]+(/[A-Za-z0-9_+.-]+)*", timezone_value):
+        raise HTTPException(status_code=400, detail="Timezone must be a valid IANA name, for example Europe/Stockholm or Asia/Singapore.")
+
+    if not Path("/usr/share/zoneinfo", timezone_value).is_file():
+        raise HTTPException(status_code=400, detail=f"Timezone data not found for {timezone_value}.")
+    return timezone_value
+
+
+def normalize_ntp_servers(value: str) -> str:
+    servers = re.sub(r"[\s,]+", " ", str(value or "").strip())
+    if not servers:
+        raise HTTPException(status_code=400, detail="At least one NTP server is required.")
+
+    for server in servers.split(" "):
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", server):
+            raise HTTPException(status_code=400, detail=f"Invalid NTP server: {server}")
+    return servers
+
+
+def configured_time_settings() -> tuple[str, str]:
+    runtime_env = read_runtime_env()
+    timezone_value = runtime_env.get("OCI_MIGRATOR_TIMEZONE") or os.getenv("OCI_MIGRATOR_TIMEZONE", EXPECTED_TIMEZONE)
+    ntp_servers = runtime_env.get("OCI_MIGRATOR_NTP_SERVERS") or os.getenv("OCI_MIGRATOR_NTP_SERVERS", NTP_SERVERS)
+    return str(timezone_value).strip(), normalize_ntp_servers(ntp_servers)
+
+
+def current_time_settings() -> dict:
+    configured_timezone, configured_ntp_servers = configured_time_settings()
+    current_timezone = timedatectl_value("Timezone")
+    ntp_synchronized = timedatectl_value("NTPSynchronized")
+    ntp_service_active = timedatectl_value("NTP")
+    return {
+        "configured_timezone": configured_timezone,
+        "timezone": current_timezone or configured_timezone,
+        "timezone_matches_config": bool(current_timezone and current_timezone == configured_timezone),
+        "ntp_servers": configured_ntp_servers,
+        "ntp_synchronized": ntp_synchronized == "yes",
+        "ntp_enabled": ntp_service_active == "yes",
+        "timesyncd_conf": str(TIMESYNCD_CONF),
+        "helper_installed": TIME_SYNC_HELPER.is_file(),
+    }
 
 
 def current_job_log_settings() -> dict:
@@ -1361,6 +1414,25 @@ def job_log_helper_command() -> list[str]:
     return [sudo_path, "-n", str(JOB_LOG_HELPER)]
 
 
+def time_sync_helper_command() -> list[str]:
+    if not TIME_SYNC_HELPER.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail="Time sync settings helper is not installed. Rerun ./install.sh and try again.",
+        )
+
+    if os.geteuid() == 0:
+        return [str(TIME_SYNC_HELPER)]
+
+    sudo_path = shutil.which("sudo")
+    if not sudo_path:
+        raise HTTPException(
+            status_code=503,
+            detail="sudo is required for time sync settings. Rerun ./install.sh and try again.",
+        )
+    return [sudo_path, "-n", str(TIME_SYNC_HELPER)]
+
+
 def apply_job_log_rotation_settings(max_size: str, retention_days: int) -> dict:
     run_user = pwd.getpwuid(os.geteuid()).pw_name
     command = job_log_helper_command() + [
@@ -1401,6 +1473,44 @@ def apply_job_log_rotation_settings(max_size: str, retention_days: int) -> dict:
             "Update job log rotation settings",
             exc,
             "Check that install.sh installed /usr/local/sbin/oci-migrator-job-log and sudoers access for the service user.",
+        )
+
+
+def apply_time_sync_settings(timezone_value: str, ntp_servers: str) -> dict:
+    command = time_sync_helper_command() + [
+        "configure",
+        "--timezone",
+        timezone_value,
+        "--ntp-servers",
+        ntp_servers,
+        "--timesyncd-conf",
+        str(TIMESYNCD_CONF),
+    ]
+
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=60)
+        if result.returncode != 0:
+            raise RuntimeError(truncate_text(result.stderr or result.stdout or f"helper exited with code {result.returncode}"))
+
+        try:
+            return json.loads(result.stdout.strip().splitlines()[-1]) if result.stdout.strip() else {}
+        except (json.JSONDecodeError, IndexError):
+            return {"raw_output": truncate_text(result.stdout, 600)}
+    except subprocess.TimeoutExpired as exc:
+        raise_operation_error(
+            504,
+            "Update time sync settings",
+            exc,
+            "The time sync helper took too long. Check sudoers, timedatectl, and systemd-timesyncd on the server.",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise_operation_error(
+            500,
+            "Update time sync settings",
+            exc,
+            "Check that install.sh installed /usr/local/sbin/oci-migrator-time-sync and sudoers access for the service user.",
         )
 
 
@@ -2029,6 +2139,7 @@ async def health():
     frontend_build_exists = (FRONTEND_DIST_DIR / "index.html").is_file()
     job_log_dir_exists = JOB_LOG_DIR.is_dir()
     upgrade_helper_exists = UPGRADE_HELPER.is_file()
+    expected_timezone, configured_ntp_servers = configured_time_settings()
     configured_timezone = timedatectl_value("Timezone")
     ntp_synchronized = timedatectl_value("NTPSynchronized")
     ntp_service_active = timedatectl_value("NTP")
@@ -2067,12 +2178,12 @@ async def health():
             f"Upgrade helper is installed: {UPGRADE_HELPER}" if upgrade_helper_exists else f"Upgrade helper is not installed: {UPGRADE_HELPER}",
         ),
         "timezone": health_check_item(
-            "ok" if configured_timezone == EXPECTED_TIMEZONE else "warn",
-            f"Server timezone is {configured_timezone}." if configured_timezone == EXPECTED_TIMEZONE else f"Expected timezone {EXPECTED_TIMEZONE}, current timezone {configured_timezone or 'unknown'}.",
+            "ok" if configured_timezone == expected_timezone else "warn",
+            f"Server timezone is {configured_timezone}." if configured_timezone == expected_timezone else f"Expected timezone {expected_timezone}, current timezone {configured_timezone or 'unknown'}.",
         ),
         "time_sync": health_check_item(
             "ok" if ntp_synchronized == "yes" else "warn",
-            "NTP is synchronized." if ntp_synchronized == "yes" else f"NTP is not synchronized yet. Configured servers: {NTP_SERVERS}",
+            "NTP is synchronized." if ntp_synchronized == "yes" else f"NTP is not synchronized yet. Configured servers: {configured_ntp_servers}",
         ),
         "ntp_service": health_check_item(
             "ok" if ntp_service_active == "yes" else "warn",
@@ -2101,7 +2212,7 @@ async def health():
         "service": "oci-migrator",
         "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "server_time_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "timezone": configured_timezone or EXPECTED_TIMEZONE,
+        "timezone": configured_timezone or expected_timezone,
         "checks": checks,
     }
 
@@ -2114,6 +2225,32 @@ async def job_history(limit: int = Query(default=100, ge=1, le=300)):
 @app.get("/job-log-settings")
 async def get_job_log_settings():
     return current_job_log_settings()
+
+
+@app.get("/time-settings")
+async def get_time_settings():
+    return current_time_settings()
+
+
+@app.put("/time-settings")
+async def update_time_settings(settings: TimeSettingsRequest):
+    timezone_value = normalize_time_zone(settings.timezone)
+    ntp_servers = normalize_ntp_servers(settings.ntp_servers)
+
+    with TIME_SETTINGS_LOCK:
+        apply_time_sync_settings(timezone_value, ntp_servers)
+        _write_env_values(
+            ENV_FILE_PATH,
+            {
+                "OCI_MIGRATOR_TIMEZONE": timezone_value,
+                "OCI_MIGRATOR_NTP_SERVERS": ntp_servers.replace(" ", ","),
+                "OCI_MIGRATOR_TIME_SYNC_HELPER": str(TIME_SYNC_HELPER),
+            },
+        )
+        os.environ["OCI_MIGRATOR_TIMEZONE"] = timezone_value
+        os.environ["OCI_MIGRATOR_NTP_SERVERS"] = ntp_servers
+
+    return current_time_settings()
 
 
 @app.put("/job-log-settings")

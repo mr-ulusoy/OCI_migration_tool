@@ -36,6 +36,8 @@ Change it by rerunning:
 ./install.sh --timezone Europe/Stockholm --ntp-servers "0.se.pool.ntp.org 1.se.pool.ntp.org"
 ```
 
+It can also be changed from `Settings` -> `Time & NTP`; the UI uses the installed `/usr/local/sbin/oci-migrator-time-sync` helper to update `systemd-timesyncd`.
+
 The doctor checks:
 
 - system dependencies

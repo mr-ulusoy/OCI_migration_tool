@@ -12,6 +12,7 @@ JOB_LOG_MAX_SIZE="${OCI_MIGRATOR_JOB_LOG_MAX_SIZE:-10M}"
 JOB_LOG_RETENTION_DAYS="${OCI_MIGRATOR_JOB_LOG_RETENTION_DAYS:-14}"
 JOB_LOG_HELPER="${OCI_MIGRATOR_JOB_LOG_HELPER:-/usr/local/sbin/oci-migrator-job-log}"
 LOCAL_SHARE_HELPER="${OCI_MIGRATOR_LOCAL_SHARE_HELPER:-/usr/local/sbin/oci-migrator-local-share}"
+TIME_SYNC_HELPER="${OCI_MIGRATOR_TIME_SYNC_HELPER:-/usr/local/sbin/oci-migrator-time-sync}"
 LOCAL_SHARE_CONFIG="/etc/oci-migrator/local-share.conf"
 UPGRADE_HELPER="${OCI_MIGRATOR_UPGRADE_HELPER:-/usr/local/sbin/oci-migrator-upgrade}"
 UPGRADE_CONFIG="${OCI_MIGRATOR_UPGRADE_CONFIG:-/etc/oci-migrator/upgrade.conf}"
@@ -96,6 +97,7 @@ Options:
   --job-log-retention-days N  Number of daily rotated logs to keep. Default: $JOB_LOG_RETENTION_DAYS
   --job-log-helper PATH       Root helper used by the UI for job log rotation. Default: $JOB_LOG_HELPER
   --local-share-helper PATH   Root helper used by the UI for optional SMB shares. Default: $LOCAL_SHARE_HELPER
+  --time-sync-helper PATH     Root helper used by the UI for timezone/NTP. Default: $TIME_SYNC_HELPER
   --upgrade-helper PATH       Root helper used by the UI for controlled upgrades. Default: $UPGRADE_HELPER
   --timezone ZONE             Server timezone for schedules/logs. Default: $SERVER_TIMEZONE
   --ntp-servers "LIST"        Space/comma separated NTP servers. Default: $NTP_SERVERS
@@ -113,7 +115,8 @@ Environment variables with the same names are also supported:
   PUBLIC_HOST, API_PORT, SERVICE_PREFIX, RUN_USER, OCI_MIGRATOR_LOCAL_DATA_ROOT,
   OCI_MIGRATOR_JOB_LOG_DIR, OCI_MIGRATOR_JOB_LOG_MAX_SIZE,
   OCI_MIGRATOR_JOB_LOG_RETENTION_DAYS, OCI_MIGRATOR_JOB_LOG_HELPER,
-  OCI_MIGRATOR_LOCAL_SHARE_HELPER, OCI_MIGRATOR_UPGRADE_HELPER,
+  OCI_MIGRATOR_LOCAL_SHARE_HELPER, OCI_MIGRATOR_TIME_SYNC_HELPER,
+  OCI_MIGRATOR_UPGRADE_HELPER,
   OCI_MIGRATOR_TIMEZONE, OCI_MIGRATOR_NTP_SERVERS,
   OCI_MIGRATOR_ENV_FILE, OPEN_FIREWALL, STOP_LEGACY_PROCESSES,
   CELERY_CONCURRENCY, PRINT_TOKEN,
@@ -174,6 +177,10 @@ parse_args() {
         ;;
       --local-share-helper)
         LOCAL_SHARE_HELPER="$2"
+        shift 2
+        ;;
+      --time-sync-helper)
+        TIME_SYNC_HELPER="$2"
         shift 2
         ;;
       --upgrade-helper)
@@ -278,6 +285,14 @@ validate_job_log_settings() {
       ;;
     *)
       fail "--job-log-helper must be an absolute path."
+      ;;
+  esac
+
+  case "$TIME_SYNC_HELPER" in
+    /*)
+      ;;
+    *)
+      fail "--time-sync-helper must be an absolute path."
       ;;
   esac
 }
@@ -548,6 +563,7 @@ ensure_env_file() {
       printf 'OCI_MIGRATOR_JOB_LOGROTATE_FILE=/etc/logrotate.d/%s-job-logs\n' "$SERVICE_PREFIX"
       printf 'OCI_MIGRATOR_LOCAL_SHARE_HELPER=%s\n' "$LOCAL_SHARE_HELPER"
       printf 'OCI_MIGRATOR_LOCAL_SHARE_TIMEOUT_SECONDS=300\n'
+      printf 'OCI_MIGRATOR_TIME_SYNC_HELPER=%s\n' "$TIME_SYNC_HELPER"
       printf 'OCI_MIGRATOR_UPGRADE_HELPER=%s\n' "$UPGRADE_HELPER"
       printf 'OCI_MIGRATOR_UPGRADE_STATUS_FILE=%s\n' "$UPGRADE_STATUS_FILE"
       printf 'OCI_MIGRATOR_UPGRADE_LOG_FILE=%s\n' "$UPGRADE_LOG_FILE"
@@ -574,6 +590,7 @@ ensure_env_file() {
     grep -q '^OCI_MIGRATOR_JOB_LOGROTATE_FILE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_JOB_LOGROTATE_FILE=/etc/logrotate.d/%s-job-logs\n' "$SERVICE_PREFIX" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_LOCAL_SHARE_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_LOCAL_SHARE_HELPER=%s\n' "$LOCAL_SHARE_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_LOCAL_SHARE_TIMEOUT_SECONDS=' "$ENV_FILE" || printf 'OCI_MIGRATOR_LOCAL_SHARE_TIMEOUT_SECONDS=300\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_TIME_SYNC_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_TIME_SYNC_HELPER=%s\n' "$TIME_SYNC_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UPGRADE_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_HELPER=%s\n' "$UPGRADE_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UPGRADE_STATUS_FILE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_STATUS_FILE=%s\n' "$UPGRADE_STATUS_FILE" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UPGRADE_LOG_FILE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_LOG_FILE=%s\n' "$UPGRADE_LOG_FILE" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
@@ -656,6 +673,16 @@ load_job_log_settings_from_env() {
   fi
 }
 
+load_time_sync_helper_from_env() {
+  [ -f "$ENV_FILE" ] || return 0
+
+  local configured_time_sync_helper
+  configured_time_sync_helper="$(grep '^OCI_MIGRATOR_TIME_SYNC_HELPER=' "$ENV_FILE" | tail -1 | cut -d= -f2- || true)"
+  if [ -n "$configured_time_sync_helper" ]; then
+    TIME_SYNC_HELPER="$configured_time_sync_helper"
+  fi
+}
+
 ensure_local_data_root() {
   log "Preparing managed local data root"
   "${SUDO[@]}" install -d -o "$RUN_USER" -g "$RUN_USER" -m 775 "$LOCAL_DATA_ROOT"
@@ -713,6 +740,37 @@ install_job_log_helper() {
   {
     printf '# Allow OCI Migrator to update its managed job logrotate settings only.\n'
     printf '%s ALL=(root) NOPASSWD: %s\n' "$RUN_USER" "$JOB_LOG_HELPER"
+  } > "$sudoers_temp"
+
+  "${SUDO[@]}" visudo -cf "$sudoers_temp" >/dev/null
+  "${SUDO[@]}" install -o root -g root -m 440 "$sudoers_temp" "$sudoers_file"
+  rm -f "$sudoers_temp"
+}
+
+install_time_sync_helper() {
+  log "Installing time sync settings helper"
+
+  case "$TIME_SYNC_HELPER" in
+    /*)
+      ;;
+    *)
+      fail "--time-sync-helper must be an absolute path."
+      ;;
+  esac
+
+  local helper_source
+  helper_source="$PROJECT_DIR/scripts/time-sync-helper.sh"
+  [ -f "$helper_source" ] || fail "Missing helper source: $helper_source"
+
+  "${SUDO[@]}" install -d -o root -g root -m 755 "$(dirname "$TIME_SYNC_HELPER")"
+  "${SUDO[@]}" install -o root -g root -m 755 "$helper_source" "$TIME_SYNC_HELPER"
+
+  local sudoers_file sudoers_temp
+  sudoers_file="/etc/sudoers.d/$SERVICE_PREFIX-time-sync"
+  sudoers_temp="$(mktemp)"
+  {
+    printf '# Allow OCI Migrator to update its managed timezone/NTP settings only.\n'
+    printf '%s ALL=(root) NOPASSWD: %s\n' "$RUN_USER" "$TIME_SYNC_HELPER"
   } > "$sudoers_temp"
 
   "${SUDO[@]}" visudo -cf "$sudoers_temp" >/dev/null
@@ -804,6 +862,7 @@ install_upgrade_helper() {
     printf 'JOB_LOG_RETENTION_DAYS=%q\n' "$JOB_LOG_RETENTION_DAYS"
     printf 'JOB_LOG_HELPER=%q\n' "$JOB_LOG_HELPER"
     printf 'LOCAL_SHARE_HELPER=%q\n' "$LOCAL_SHARE_HELPER"
+    printf 'TIME_SYNC_HELPER=%q\n' "$TIME_SYNC_HELPER"
     printf 'UPGRADE_HELPER=%q\n' "$UPGRADE_HELPER"
     printf 'UPGRADE_STATE_DIR=%q\n' "$UPGRADE_STATE_DIR"
     printf 'UPGRADE_STATUS_FILE=%q\n' "$UPGRADE_STATUS_FILE"
@@ -1046,6 +1105,7 @@ main() {
   validate_job_log_settings
   ensure_env_file
   load_time_settings_from_env
+  load_time_sync_helper_from_env
   load_job_log_settings_from_env
   validate_time_settings
   validate_job_log_settings
@@ -1054,6 +1114,7 @@ main() {
   ensure_job_log_dir
   install_job_logrotate_config
   install_job_log_helper
+  install_time_sync_helper
   install_local_share_helper
   install_upgrade_helper
   install_backend
