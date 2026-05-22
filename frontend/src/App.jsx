@@ -3055,12 +3055,6 @@ export default function App() {
                          ) : (
                            <div className="text-xs text-gray-400">{bucketProtectionLoading ? 'Loading bucket settings...' : 'Bucket settings are not loaded.'}</div>
                          )}
-                         {bucketProtection && (
-                           <div className="text-[11px] text-gray-600 bg-gray-50 border border-gray-200 rounded-md p-3">
-                             Immutable/WORM retention rules are managed in the OCI Console. OCI Migrator only shows the current WORM rule count here; enable or change retention rules from the OCI bucket page when immutable protection is required.
-                           </div>
-                         )}
-
                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                            <button
                              type="button"
@@ -3100,6 +3094,29 @@ export default function App() {
                              Object Versioning cannot be enabled while OCI retention rules are active on this bucket.
                            </div>
                          )}
+
+                         <div className="border border-gray-200 rounded-md overflow-hidden bg-gray-50 opacity-75">
+                           <div className="px-4 py-3 border-b border-gray-200 flex items-center justify-between gap-3">
+                             <div>
+                               <h4 className="text-sm font-bold text-gray-700 flex items-center gap-2"><Shield size={16}/> OCI Retention Rules (WORM)</h4>
+                               <p className="mt-1 text-[11px] text-gray-500">Immutable/WORM retention rules are managed in the OCI Dashboard. OCI Migrator only shows the current WORM rule count here.</p>
+                             </div>
+                             <div className="flex items-center gap-2 shrink-0">
+                               <span className="px-2 py-1 rounded-full border border-gray-200 bg-white text-[10px] font-bold uppercase text-gray-500">{bucketProtection?.retention_rule_count || 0} WORM</span>
+                               <button
+                                 type="button"
+                                 disabled
+                                 className="px-2.5 py-1.5 bg-white border border-gray-200 rounded-md text-[11px] font-semibold text-gray-400 cursor-not-allowed flex items-center gap-1"
+                               >
+                                 <Plus size={13} /> Create Rule in OCI Dashboard
+                               </button>
+                             </div>
+                           </div>
+                           <div className="p-4 text-xs text-gray-500 leading-5">
+                             <p>Enable or change retention rules from the OCI bucket page when immutable protection is required.</p>
+                             <p className="mt-2">If you have active retention rules, you cannot update, overwrite, or delete objects and their metadata, or delete buckets, until the retention duration expires, or the retention rule is deleted. Learn more about data retention rules in the OCI Dashboard.</p>
+                           </div>
+                         </div>
 
                          <div className="border border-gray-200 rounded-md overflow-hidden">
                            <div className="px-4 py-3 bg-gray-50 border-b border-gray-100 flex items-center justify-between gap-3">
