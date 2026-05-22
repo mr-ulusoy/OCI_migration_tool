@@ -888,9 +888,9 @@ def normalize_metadata_tags(tags: list[MetadataTag | dict]) -> list[dict]:
         if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,118}", suffix):
             raise HTTPException(
                 status_code=400,
-                detail="Metadata keys are saved as opc-meta-* and may contain lowercase letters, numbers, dot, underscore, and dash.",
+                detail="Metadata names may contain lowercase letters, numbers, dot, underscore, and dash. OCI stores them as opc-meta-*.",
             )
-        return f"opc-meta-{suffix}"
+        return suffix
 
     for tag in tags or []:
         raw_key = tag.key if isinstance(tag, MetadataTag) else str(tag.get("key", ""))

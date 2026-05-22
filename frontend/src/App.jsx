@@ -114,16 +114,16 @@ function remoteTargetFromPath(value = '') {
   return separatorIndex >= 0 ? rawValue.slice(separatorIndex + 1) : '';
 }
 
-function normalizeObjectMetadataKey(value = '') {
+function normalizeObjectMetadataName(value = '') {
   const key = String(value || '').trim().toLowerCase();
   if (!key) return '';
-  return key.startsWith('opc-meta-') ? key : `opc-meta-${key}`;
+  return key.startsWith('opc-meta-') ? key.slice('opc-meta-'.length) : key;
 }
 
 function normalizeMetadataTags(tags = []) {
   return tags
     .map(tag => ({
-      key: normalizeObjectMetadataKey(tag?.key),
+      key: normalizeObjectMetadataName(tag?.key),
       value: String(tag?.value || '').trim()
     }))
     .filter(tag => tag.key || tag.value);
@@ -786,8 +786,8 @@ export default function App() {
       setNotice({ type: 'error', title: 'Invalid metadata', message: 'Metadata tags need both a key and a value.' });
       return;
     }
-    if (metadataTags.some(tag => !/^opc-meta-[a-z0-9][a-z0-9._-]{0,118}$/.test(tag.key))) {
-      setNotice({ type: 'error', title: 'Invalid metadata', message: 'Metadata keys are saved as opc-meta-* and may contain lowercase letters, numbers, dot, underscore, and dash.' });
+    if (metadataTags.some(tag => !/^[a-z0-9][a-z0-9._-]{0,118}$/.test(tag.key))) {
+      setNotice({ type: 'error', title: 'Invalid metadata', message: 'Metadata names may contain lowercase letters, numbers, dot, underscore, and dash. OCI will store them as opc-meta-*.' });
       return;
     }
     const metadataKeys = metadataTags.map(tag => tag.key);
@@ -1749,7 +1749,7 @@ export default function App() {
                               nextTags[index] = { ...nextTags[index], key: e.target.value };
                               return { ...prev, metadata_tags: nextTags };
                             })}
-                            placeholder="site or opc-meta-site"
+                            placeholder="site"
                             className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
                           />
                           <input
@@ -1777,7 +1777,7 @@ export default function App() {
                       ))}
                     </div>
                   ) : (
-                    <div className="p-4 text-xs text-gray-400">No object metadata configured. Keys are stored in OCI as opc-meta-*.</div>
+                    <div className="p-4 text-xs text-gray-400">No object metadata configured. Enter names like site or ticket-id; OCI stores them as opc-meta-site and opc-meta-ticket-id.</div>
                   )}
                 </div>
                 
