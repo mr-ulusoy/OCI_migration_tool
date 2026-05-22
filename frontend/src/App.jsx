@@ -175,6 +175,7 @@ export default function App() {
   const [jobRuns, setJobRuns] = useState([]);
   const [exportingConfig, setExportingConfig] = useState(false);
   const [importingConfig, setImportingConfig] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState(null);
   const [jobLogSettings, setJobLogSettings] = useState(null);
   const [jobLogSettingsForm, setJobLogSettingsForm] = useState({ retentionDays: 14, maxSize: '10M' });
   const [savingJobLogSettings, setSavingJobLogSettings] = useState(false);
@@ -304,6 +305,18 @@ export default function App() {
 
   const showSuccess = (message) => {
     setNotice({ type: 'success', title: 'Done', message });
+  };
+
+  const closeConfirmDialog = () => {
+    setConfirmDialog(null);
+  };
+
+  const confirmDialogAction = async () => {
+    const action = confirmDialog?.onConfirm;
+    setConfirmDialog(null);
+    if (action) {
+      await action();
+    }
   };
 
   const fetchHealth = async () => {
@@ -866,47 +879,59 @@ export default function App() {
   const handleEnableBucketVersioning = async () => {
     const bucketName = bucketNameFromPath(selectedBucket);
     if (!storageProfile || !bucketName) return;
-    if (!window.confirm(`Enable Object Versioning on bucket '${bucketName}'? This is configured at bucket level in OCI.`)) {
-      return;
-    }
-
-    setBucketProtectionLoading(true);
-    try {
-      await api.post('/bucket-versioning/enable', {
-        profile_name: storageProfile,
-        bucket_name: bucketName
-      });
-      showSuccess('Object Versioning enabled.');
-      await fetchBucketProtection(storageProfile, bucketName);
-    } catch (err) {
-      showError('Failed to enable Object Versioning', err);
-    } finally {
-      setBucketProtectionLoading(false);
-    }
+    setConfirmDialog({
+      title: 'Enable Object Versioning',
+      message: `This enables Object Versioning on bucket "${bucketName}" in OCI. Previous object versions are kept when data is overwritten or deleted.`,
+      detail: 'This is a bucket-level protection setting.',
+      confirmLabel: 'Enable Versioning',
+      icon: 'shield',
+      onConfirm: async () => {
+        setBucketProtectionLoading(true);
+        try {
+          await api.post('/bucket-versioning/enable', {
+            profile_name: storageProfile,
+            bucket_name: bucketName
+          });
+          showSuccess('Object Versioning enabled.');
+          await fetchBucketProtection(storageProfile, bucketName);
+        } catch (err) {
+          showError('Failed to enable Object Versioning', err);
+        } finally {
+          setBucketProtectionLoading(false);
+        }
+      }
+    });
   };
 
   const handleSetBucketAutoTiering = async (autoTiering) => {
     const bucketName = bucketNameFromPath(selectedBucket);
     if (!storageProfile || !bucketName) return;
-    const label = autoTiering === 'InfrequentAccess' ? 'Enable Auto-Tiering' : 'Disable Auto-Tiering';
-    if (!window.confirm(`${label} on bucket '${bucketName}'? This is configured at bucket level in OCI.`)) {
-      return;
-    }
-
-    setBucketProtectionLoading(true);
-    try {
-      await api.post('/bucket-auto-tiering', {
-        profile_name: storageProfile,
-        bucket_name: bucketName,
-        auto_tiering: autoTiering
-      });
-      showSuccess(autoTiering === 'InfrequentAccess' ? 'Auto-Tiering enabled.' : 'Auto-Tiering disabled.');
-      await fetchBucketProtection(storageProfile, bucketName);
-    } catch (err) {
-      showError('Failed to update Auto-Tiering', err);
-    } finally {
-      setBucketProtectionLoading(false);
-    }
+    const isEnabling = autoTiering === 'InfrequentAccess';
+    setConfirmDialog({
+      title: isEnabling ? 'Enable Auto-Tiering' : 'Disable Auto-Tiering',
+      message: `${isEnabling ? 'Enable' : 'Disable'} Auto-Tiering on bucket "${bucketName}"?`,
+      detail: isEnabling
+        ? 'OCI can automatically move eligible Standard objects to Infrequent Access based on access patterns.'
+        : 'OCI will stop automatically moving objects between Standard and Infrequent Access for this bucket.',
+      confirmLabel: isEnabling ? 'Enable Auto-Tiering' : 'Disable Auto-Tiering',
+      icon: 'archive',
+      onConfirm: async () => {
+        setBucketProtectionLoading(true);
+        try {
+          await api.post('/bucket-auto-tiering', {
+            profile_name: storageProfile,
+            bucket_name: bucketName,
+            auto_tiering: autoTiering
+          });
+          showSuccess(isEnabling ? 'Auto-Tiering enabled.' : 'Auto-Tiering disabled.');
+          await fetchBucketProtection(storageProfile, bucketName);
+        } catch (err) {
+          showError('Failed to update Auto-Tiering', err);
+        } finally {
+          setBucketProtectionLoading(false);
+        }
+      }
+    });
   };
 
   const startNewSyncJob = () => {
@@ -1242,6 +1267,49 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-white text-gray-800 flex overflow-hidden font-sans">
+      {confirmDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/45 p-4">
+          <div className="w-full max-w-lg bg-white border border-gray-200 rounded-md shadow-2xl">
+            <div className="flex items-start gap-4 p-5 border-b border-gray-100 text-left">
+              <div className="mt-0.5 h-10 w-10 rounded-md bg-red-50 border border-red-100 flex items-center justify-center text-[#9c3029] shrink-0">
+                {confirmDialog.icon === 'shield' ? <Shield size={20} /> : <Archive size={20} />}
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-base font-bold text-gray-900">{confirmDialog.title}</h3>
+                <p className="mt-1 text-sm text-gray-600 leading-6">{confirmDialog.message}</p>
+                {confirmDialog.detail && (
+                  <p className="mt-2 text-xs text-gray-500 leading-5">{confirmDialog.detail}</p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={closeConfirmDialog}
+                className="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-gray-50 rounded-md"
+                title="Close"
+                aria-label="Close"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="flex items-center justify-end gap-3 p-4 bg-gray-50 rounded-b-md">
+              <button
+                type="button"
+                onClick={closeConfirmDialog}
+                className="px-4 py-2 bg-white border border-gray-200 rounded-md text-sm font-semibold text-gray-700 hover:bg-gray-100"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmDialogAction}
+                className="px-4 py-2 bg-[#9c3029] text-white rounded-md text-sm font-semibold hover:bg-[#7a2520] shadow-sm"
+              >
+                {confirmDialog.confirmLabel || 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Sidebar - MJUK SALVIAGRÖN (#e1ebd5) */}
       <nav className="w-64 bg-[#e1ebd5] flex flex-col p-6 z-10 border-r border-[#d1dcca]">
         <div className="flex items-center gap-3 mb-10 px-2">
