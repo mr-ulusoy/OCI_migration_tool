@@ -16,7 +16,7 @@ import time
 import uuid
 import zipfile
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from threading import Lock
 
 import oci
@@ -27,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from job_logs import JOB_LOG_DIR, job_log_path, legacy_job_log_path, resolve_readable_log_path, tail_file
-from job_store import JOB_HISTORY_FILE, get_job_run, list_job_runs, upsert_job_run
+from job_store import JOB_HISTORY_FILE, get_job_run, list_job_runs, locked_history_file, upsert_job_run
 from worker import migrate_single_vm, rclone_sync_task
 from celery.result import AsyncResult 
 
@@ -413,6 +413,13 @@ CONFIG_PATH = os.path.join(OCI_DIR, "config")
 RCLONE_CONF = os.path.expanduser("~/.config/rclone/rclone.conf")
 JOBS_FILE = os.path.join(OCI_DIR, "jobs.json")
 LOCAL_DATA_ROOT = Path(os.getenv("OCI_MIGRATOR_LOCAL_DATA_ROOT", "/var/lib/oci-migrator/local")).resolve()
+RUNTIME_RESTORE_BACKUP_DIR = Path(
+    os.getenv("OCI_MIGRATOR_RESTORE_BACKUP_DIR", os.path.join(OCI_DIR, "runtime-restore-backups"))
+).expanduser()
+try:
+    RUNTIME_CONFIG_IMPORT_MAX_BYTES = int(os.getenv("OCI_MIGRATOR_IMPORT_MAX_BYTES", str(25 * 1024 * 1024)))
+except ValueError:
+    RUNTIME_CONFIG_IMPORT_MAX_BYTES = 25 * 1024 * 1024
 LOCAL_SHARE_HELPER = Path(os.getenv("OCI_MIGRATOR_LOCAL_SHARE_HELPER", "/usr/local/sbin/oci-migrator-local-share")).resolve()
 JOB_LOG_HELPER = Path(os.getenv("OCI_MIGRATOR_JOB_LOG_HELPER", "/usr/local/sbin/oci-migrator-job-log")).resolve()
 JOB_LOGROTATE_FILE = Path(os.getenv("OCI_MIGRATOR_JOB_LOGROTATE_FILE", "/etc/logrotate.d/migrator-job-logs"))
@@ -1122,6 +1129,370 @@ def add_file_to_zip(archive: zipfile.ZipFile, manifest: dict, source_path: str, 
         manifest["missing"].append(archive_name)
 
 
+def runtime_config_import_targets() -> dict[str, Path]:
+    return {
+        "runtime/.oci-migrator.env": Path(ENV_FILE_PATH).expanduser(),
+        "oci/config": Path(CONFIG_PATH).expanduser(),
+        "oci/jobs.json": Path(JOBS_FILE).expanduser(),
+        "oci/job_history.json": Path(JOB_HISTORY_FILE).expanduser(),
+        "rclone/rclone.conf": Path(RCLONE_CONF).expanduser(),
+    }
+
+
+def build_runtime_config_archive() -> tuple[io.BytesIO, str]:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    archive_buffer = io.BytesIO()
+    manifest = {
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "included": [],
+        "missing": [],
+        "notes": [
+            "This archive may contain secrets such as API keys, rclone credentials, and the admin password hash.",
+            "Store it securely and delete old copies when they are no longer needed.",
+        ],
+    }
+
+    with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        add_file_to_zip(archive, manifest, ENV_FILE_PATH, "runtime/.oci-migrator.env")
+        add_file_to_zip(archive, manifest, CONFIG_PATH, "oci/config")
+        add_file_to_zip(archive, manifest, JOBS_FILE, "oci/jobs.json")
+        add_file_to_zip(archive, manifest, JOB_HISTORY_FILE, "oci/job_history.json")
+        add_file_to_zip(archive, manifest, RCLONE_CONF, "rclone/rclone.conf")
+
+        added_paths = {
+            os.path.realpath(path)
+            for path in (ENV_FILE_PATH, CONFIG_PATH, JOBS_FILE, JOB_HISTORY_FILE, RCLONE_CONF)
+        }
+
+        if os.path.isfile(CONFIG_PATH):
+            parser = configparser.ConfigParser()
+            parser.read(CONFIG_PATH)
+            for section in parser.sections():
+                key_file = parser.get(section, "key_file", fallback="")
+                if key_file and os.path.isfile(os.path.expanduser(key_file)):
+                    real_path = os.path.realpath(os.path.expanduser(key_file))
+                    if real_path not in added_paths:
+                        archive_name = (
+                            f"oci/keys/{sanitize_filename(section, 'profile')}_"
+                            f"{sanitize_filename(os.path.basename(key_file), 'api_key.pem')}"
+                        )
+                        add_file_to_zip(archive, manifest, key_file, archive_name)
+                        added_paths.add(real_path)
+
+        if os.path.isfile(RCLONE_CONF):
+            parser = configparser.ConfigParser()
+            parser.read(RCLONE_CONF)
+            for section in parser.sections():
+                service_account_file = parser.get(section, "service_account_file", fallback="")
+                if service_account_file and os.path.isfile(os.path.expanduser(service_account_file)):
+                    real_path = os.path.realpath(os.path.expanduser(service_account_file))
+                    if real_path not in added_paths:
+                        archive_name = (
+                            f"rclone/service-accounts/{sanitize_filename(section, 'remote')}_"
+                            f"{sanitize_filename(os.path.basename(service_account_file), 'service_account.json')}"
+                        )
+                        add_file_to_zip(archive, manifest, service_account_file, archive_name)
+                        added_paths.add(real_path)
+
+        archive.writestr("manifest.json", json.dumps(manifest, indent=2))
+
+    archive_buffer.seek(0)
+    return archive_buffer, timestamp
+
+
+def validate_text_file(content: bytes, archive_name: str) -> str:
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"{archive_name} must be UTF-8 text.") from exc
+
+
+def validate_runtime_env_content(content: bytes, archive_name: str) -> None:
+    text = validate_text_file(content, archive_name)
+    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            raise HTTPException(status_code=400, detail=f"{archive_name}:{line_number} is not a KEY=value line.")
+        key = line.split("=", 1)[0].strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            raise HTTPException(status_code=400, detail=f"{archive_name}:{line_number} has an invalid env key.")
+
+
+def validate_ini_content(content: bytes, archive_name: str) -> None:
+    text = validate_text_file(content, archive_name)
+    parser = configparser.ConfigParser()
+    try:
+        parser.read_string(text)
+    except configparser.Error as exc:
+        raise HTTPException(status_code=400, detail=f"{archive_name} is not a valid INI config.") from exc
+
+
+def validate_json_content(content: bytes, archive_name: str):
+    text = validate_text_file(content, archive_name)
+    try:
+        return json.loads(text or "null")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"{archive_name} is not valid JSON.") from exc
+
+
+def validate_runtime_import_content(archive_name: str, content: bytes) -> None:
+    if archive_name == "runtime/.oci-migrator.env":
+        validate_runtime_env_content(content, archive_name)
+    elif archive_name in {"oci/config", "rclone/rclone.conf"}:
+        validate_ini_content(content, archive_name)
+    elif archive_name == "oci/jobs.json":
+        data = validate_json_content(content, archive_name)
+        if not isinstance(data, list):
+            raise HTTPException(status_code=400, detail="oci/jobs.json must contain a JSON list.")
+    elif archive_name == "oci/job_history.json":
+        data = validate_json_content(content, archive_name)
+        if not isinstance(data, dict) or not isinstance(data.get("runs", []), list):
+            raise HTTPException(status_code=400, detail="oci/job_history.json must contain a JSON object with a runs list.")
+
+
+def normalize_zip_member_name(info: zipfile.ZipInfo) -> str:
+    raw_name = info.filename
+    if "\\" in raw_name:
+        raise HTTPException(status_code=400, detail=f"Unsupported ZIP path: {raw_name}")
+
+    path = PurePosixPath(raw_name)
+    if path.is_absolute():
+        raise HTTPException(status_code=400, detail=f"Absolute ZIP paths are not allowed: {raw_name}")
+    if any(part in {"", ".", ".."} or ":" in part for part in path.parts):
+        raise HTTPException(status_code=400, detail=f"Unsafe ZIP path: {raw_name}")
+
+    return path.as_posix()
+
+
+def runtime_import_member_is_allowed(archive_name: str) -> bool:
+    return (
+        archive_name == "manifest.json"
+        or archive_name in runtime_config_import_targets()
+        or archive_name.startswith("oci/keys/")
+        or archive_name.startswith("rclone/service-accounts/")
+    )
+
+
+def parse_runtime_import_zip(payload: bytes) -> tuple[dict[str, bytes], dict[str, bytes], dict[str, bytes]]:
+    config_files: dict[str, bytes] = {}
+    oci_keys: dict[str, bytes] = {}
+    service_accounts: dict[str, bytes] = {}
+    seen: set[str] = set()
+    total_uncompressed = 0
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            for info in archive.infolist():
+                archive_name = normalize_zip_member_name(info)
+                if info.is_dir():
+                    continue
+                if archive_name in seen:
+                    raise HTTPException(status_code=400, detail=f"Duplicate ZIP entry: {archive_name}")
+                seen.add(archive_name)
+                if info.flag_bits & 0x1:
+                    raise HTTPException(status_code=400, detail=f"Encrypted ZIP entries are not supported: {archive_name}")
+                if ((info.external_attr >> 16) & 0o170000) == 0o120000:
+                    raise HTTPException(status_code=400, detail=f"Symlinks are not allowed in runtime backups: {archive_name}")
+                if not runtime_import_member_is_allowed(archive_name):
+                    raise HTTPException(status_code=400, detail=f"Unsupported file in runtime backup: {archive_name}")
+
+                total_uncompressed += info.file_size
+                if total_uncompressed > RUNTIME_CONFIG_IMPORT_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail="Runtime backup is too large after extraction.")
+
+                if archive_name == "manifest.json":
+                    continue
+
+                content = archive.read(info)
+                validate_runtime_import_content(archive_name, content)
+                if archive_name in runtime_config_import_targets():
+                    config_files[archive_name] = content
+                elif archive_name.startswith("oci/keys/"):
+                    oci_keys[archive_name] = content
+                elif archive_name.startswith("rclone/service-accounts/"):
+                    service_accounts[archive_name] = content
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(status_code=400, detail="Uploaded file is not a valid ZIP archive.") from exc
+
+    if not (config_files or oci_keys or service_accounts):
+        raise HTTPException(status_code=400, detail="No supported runtime config files were found in the ZIP archive.")
+
+    return config_files, oci_keys, service_accounts
+
+
+def write_bytes_atomically(path: Path, content: bytes, mode: int = 0o600) -> None:
+    path = path.expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    file_descriptor, temp_path = tempfile.mkstemp(dir=str(path.parent))
+    try:
+        with os.fdopen(file_descriptor, "wb") as temp_file:
+            temp_file.write(content)
+        os.chmod(temp_path, mode)
+        os.replace(temp_path, path)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+
+
+def runtime_secret_destination(root: Path, archive_name: str, default_name: str) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    safe_name = sanitize_filename(PurePosixPath(archive_name).name, default_name)
+    target = (root / safe_name).resolve()
+    if root.resolve() not in target.parents:
+        raise HTTPException(status_code=400, detail=f"Unsafe runtime backup filename: {archive_name}")
+    return target
+
+
+def rewrite_oci_key_file_paths(imported_keys: dict[str, Path]) -> bool:
+    if not imported_keys or not os.path.isfile(CONFIG_PATH):
+        return False
+
+    parser = configparser.ConfigParser()
+    parser.read(CONFIG_PATH)
+    changed = False
+    for section in parser.sections():
+        key_file = parser.get(section, "key_file", fallback="")
+        if not key_file:
+            continue
+        expected_archive_name = (
+            f"oci/keys/{sanitize_filename(section, 'profile')}_"
+            f"{sanitize_filename(os.path.basename(key_file), 'api_key.pem')}"
+        )
+        imported_path = imported_keys.get(expected_archive_name)
+        if imported_path:
+            parser.set(section, "key_file", str(imported_path))
+            changed = True
+
+    if changed:
+        write_ini_atomically(parser, CONFIG_PATH)
+    return changed
+
+
+def rewrite_rclone_service_account_paths(imported_accounts: dict[str, Path]) -> bool:
+    if not imported_accounts or not os.path.isfile(RCLONE_CONF):
+        return False
+
+    parser = configparser.ConfigParser()
+    parser.read(RCLONE_CONF)
+    changed = False
+    for section in parser.sections():
+        service_account_file = parser.get(section, "service_account_file", fallback="")
+        if not service_account_file:
+            continue
+        expected_archive_name = (
+            f"rclone/service-accounts/{sanitize_filename(section, 'remote')}_"
+            f"{sanitize_filename(os.path.basename(service_account_file), 'service_account.json')}"
+        )
+        imported_path = imported_accounts.get(expected_archive_name)
+        if imported_path:
+            parser.set(section, "service_account_file", str(imported_path))
+            changed = True
+
+    if changed:
+        write_ini_atomically(parser, RCLONE_CONF)
+    return changed
+
+
+def save_pre_restore_runtime_backup() -> Path:
+    RUNTIME_RESTORE_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    os.chmod(RUNTIME_RESTORE_BACKUP_DIR, 0o700)
+    archive_buffer, timestamp = build_runtime_config_archive()
+    backup_path = RUNTIME_RESTORE_BACKUP_DIR / f"pre-restore-{timestamp}.zip"
+    with open(backup_path, "wb") as backup_file:
+        backup_file.write(archive_buffer.getvalue())
+    os.chmod(backup_path, 0o600)
+    return backup_path
+
+
+def restore_runtime_config_archive(payload: bytes) -> dict:
+    config_files, oci_keys, service_accounts = parse_runtime_import_zip(payload)
+    pre_restore_backup = save_pre_restore_runtime_backup()
+    targets = runtime_config_import_targets()
+    restored: list[dict[str, str]] = []
+    warnings: list[str] = []
+    imported_key_paths: dict[str, Path] = {}
+    imported_account_paths: dict[str, Path] = {}
+
+    with CONFIG_LOCK:
+        for archive_name in ("runtime/.oci-migrator.env", "oci/config"):
+            content = config_files.get(archive_name)
+            if content is None:
+                continue
+            write_bytes_atomically(targets[archive_name], content)
+            restored.append({"name": archive_name, "target": str(targets[archive_name])})
+            if archive_name == "runtime/.oci-migrator.env":
+                with _CONFIG_CACHE_LOCK:
+                    _CONFIG_CACHE["mtime"] = "__not_loaded__"
+
+        key_root = Path(OCI_DIR).expanduser() / "keys"
+        for archive_name, content in sorted(oci_keys.items()):
+            target = runtime_secret_destination(key_root, archive_name, "api_key.pem")
+            write_bytes_atomically(target, content)
+            imported_key_paths[archive_name] = target
+            restored.append({"name": archive_name, "target": str(target)})
+
+        if rewrite_oci_key_file_paths(imported_key_paths):
+            restored.append({"name": "oci/config key_file paths", "target": CONFIG_PATH})
+
+    with RCLONE_LOCK:
+        content = config_files.get("rclone/rclone.conf")
+        if content is not None:
+            write_bytes_atomically(targets["rclone/rclone.conf"], content)
+            restored.append({"name": "rclone/rclone.conf", "target": str(targets["rclone/rclone.conf"])})
+
+        account_root = Path(RCLONE_CONF).expanduser().parent / "service-accounts"
+        for archive_name, content in sorted(service_accounts.items()):
+            target = runtime_secret_destination(account_root, archive_name, "service_account.json")
+            write_bytes_atomically(target, content)
+            imported_account_paths[archive_name] = target
+            restored.append({"name": archive_name, "target": str(target)})
+
+        if rewrite_rclone_service_account_paths(imported_account_paths):
+            restored.append({"name": "rclone/rclone.conf service_account_file paths", "target": RCLONE_CONF})
+
+    with JOBS_LOCK:
+        content = config_files.get("oci/jobs.json")
+        if content is not None:
+            write_bytes_atomically(targets["oci/jobs.json"], content)
+            restored.append({"name": "oci/jobs.json", "target": str(targets["oci/jobs.json"])})
+
+    content = config_files.get("oci/job_history.json")
+    if content is not None:
+        with locked_history_file():
+            write_bytes_atomically(targets["oci/job_history.json"], content)
+        restored.append({"name": "oci/job_history.json", "target": str(targets["oci/job_history.json"])})
+
+    try:
+        settings = current_job_log_settings()
+        apply_job_log_rotation_settings(settings["max_size"], settings["retention_days"])
+    except Exception as exc:
+        warnings.append(f"Job log rotation settings were restored but could not be applied automatically: {truncate_text(str(exc), 300)}")
+
+    with SESSION_LOCK:
+        REVOKED_SESSIONS.clear()
+
+    new_config = get_runtime_config()
+    session_payload = {}
+    if new_config.get("admin_password_hash"):
+        session_payload = {
+            "token": create_session_token(),
+            "token_type": "bearer",
+            "username": str(new_config.get("admin_username", "admin")),
+            "expires_in": int(new_config.get("session_ttl_seconds", 43200)),
+        }
+
+    return {
+        "message": "Runtime config restored.",
+        "restored": restored,
+        "restored_count": len(restored),
+        "pre_restore_backup": str(pre_restore_backup),
+        "warnings": warnings,
+        **session_payload,
+    }
+
+
 def sync_oci_to_rclone(profile_name, region, storage_compartment_ocid):
     try:
         config = oci.config.from_file(CONFIG_PATH, profile_name)
@@ -1457,65 +1828,33 @@ async def download_job_history_log(run_id: str):
 
 @app.get("/runtime-config/export")
 async def export_runtime_config():
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    archive_buffer = io.BytesIO()
-    manifest = {
-        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        "included": [],
-        "missing": [],
-        "notes": [
-            "This archive may contain secrets such as API keys, rclone credentials, and the admin password hash.",
-            "Store it securely and delete old copies when they are no longer needed.",
-        ],
-    }
-
-    with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        add_file_to_zip(archive, manifest, ENV_FILE_PATH, "runtime/.oci-migrator.env")
-        add_file_to_zip(archive, manifest, CONFIG_PATH, "oci/config")
-        add_file_to_zip(archive, manifest, JOBS_FILE, "oci/jobs.json")
-        add_file_to_zip(archive, manifest, JOB_HISTORY_FILE, "oci/job_history.json")
-        add_file_to_zip(archive, manifest, RCLONE_CONF, "rclone/rclone.conf")
-
-        added_paths = {
-            os.path.realpath(path)
-            for path in (ENV_FILE_PATH, CONFIG_PATH, JOBS_FILE, JOB_HISTORY_FILE, RCLONE_CONF)
-        }
-
-        if os.path.isfile(CONFIG_PATH):
-            parser = configparser.ConfigParser()
-            parser.read(CONFIG_PATH)
-            for section in parser.sections():
-                key_file = parser.get(section, "key_file", fallback="")
-                if key_file and os.path.isfile(os.path.expanduser(key_file)):
-                    real_path = os.path.realpath(os.path.expanduser(key_file))
-                    if real_path not in added_paths:
-                        archive_name = (
-                            f"oci/keys/{sanitize_filename(section, 'profile')}_"
-                            f"{sanitize_filename(os.path.basename(key_file), 'api_key.pem')}"
-                        )
-                        add_file_to_zip(archive, manifest, key_file, archive_name)
-                        added_paths.add(real_path)
-
-        if os.path.isfile(RCLONE_CONF):
-            parser = configparser.ConfigParser()
-            parser.read(RCLONE_CONF)
-            for section in parser.sections():
-                service_account_file = parser.get(section, "service_account_file", fallback="")
-                if service_account_file and os.path.isfile(os.path.expanduser(service_account_file)):
-                    real_path = os.path.realpath(os.path.expanduser(service_account_file))
-                    if real_path not in added_paths:
-                        archive_name = (
-                            f"rclone/service-accounts/{sanitize_filename(section, 'remote')}_"
-                            f"{sanitize_filename(os.path.basename(service_account_file), 'service_account.json')}"
-                        )
-                        add_file_to_zip(archive, manifest, service_account_file, archive_name)
-                        added_paths.add(real_path)
-
-        archive.writestr("manifest.json", json.dumps(manifest, indent=2))
-
-    archive_buffer.seek(0)
+    archive_buffer, timestamp = build_runtime_config_archive()
     headers = {"Content-Disposition": f'attachment; filename="oci-migrator-runtime-{timestamp}.zip"'}
     return StreamingResponse(archive_buffer, media_type="application/zip", headers=headers)
+
+
+@app.post("/runtime-config/import")
+async def import_runtime_config(file: UploadFile = File(...)):
+    safe_name = sanitize_filename(file.filename or "runtime-config.zip", "runtime-config.zip")
+    if not safe_name.lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Upload a ZIP file created by Runtime Config Backup.")
+
+    payload = await file.read(RUNTIME_CONFIG_IMPORT_MAX_BYTES + 1)
+    await file.close()
+    if len(payload) > RUNTIME_CONFIG_IMPORT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Runtime backup ZIP is too large.")
+
+    try:
+        return restore_runtime_config_archive(payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise_operation_error(
+            500,
+            "Import runtime config",
+            exc,
+            "A pre-restore backup is created before files are replaced. Check service permissions and the uploaded ZIP.",
+        )
 
 # --- 1. OCI Profile Management ---
 @app.post("/upload-key")

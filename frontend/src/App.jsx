@@ -4,7 +4,7 @@ import {
   Cloud, Shield, Database, Search, Key, Loader2, CheckCircle,
   ArrowRight, FileText, Archive, Edit, Trash2,
   Folder, Plus, RefreshCw, Globe, Cpu, Clock, Activity, Terminal,
-  Lock, LogOut, Download, HeartPulse, AlertCircle, X, Settings, Save, Tags
+  Lock, LogOut, Download, Upload, HeartPulse, AlertCircle, X, Settings, Save, Tags
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (
@@ -135,6 +135,7 @@ export default function App() {
   const [health, setHealth] = useState(null);
   const [jobRuns, setJobRuns] = useState([]);
   const [exportingConfig, setExportingConfig] = useState(false);
+  const [importingConfig, setImportingConfig] = useState(false);
   const [jobLogSettings, setJobLogSettings] = useState(null);
   const [jobLogSettingsForm, setJobLogSettingsForm] = useState({ retentionDays: 14, maxSize: '10M' });
   const [savingJobLogSettings, setSavingJobLogSettings] = useState(false);
@@ -371,6 +372,41 @@ export default function App() {
       showError('Failed to export runtime config', err);
     }
     setExportingConfig(false);
+  };
+
+  const handleImportRuntimeConfig = async (event) => {
+    const selectedFile = event.target.files?.[0];
+    event.target.value = '';
+    if (!selectedFile) return;
+
+    if (!window.confirm('Restore runtime config from this ZIP? Current config will be backed up first. This may replace admin credentials, OCI profiles, rclone remotes, jobs, and job history.')) {
+      return;
+    }
+
+    const uploadData = new FormData();
+    uploadData.append('file', selectedFile);
+    setImportingConfig(true);
+    try {
+      const res = await api.post('/runtime-config/import', uploadData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+
+      if (res.data.token) {
+        localStorage.setItem(SESSION_TOKEN_KEY, res.data.token);
+        localStorage.setItem(SESSION_USERNAME_KEY, res.data.username || authState.username);
+        setAuthState({ token: res.data.token, mode: 'session', username: res.data.username || authState.username });
+      }
+
+      const warningText = (res.data.warnings || []).length ? `\nWarnings: ${res.data.warnings.join(' ')}` : '';
+      setNotice({
+        type: 'success',
+        title: 'Runtime config restored',
+        message: `Restored ${res.data.restored_count || 0} item(s). Pre-restore backup: ${res.data.pre_restore_backup || 'created'}.${warningText}`
+      });
+    } catch (err) {
+      showError('Failed to import runtime config', err);
+    }
+    setImportingConfig(false);
   };
 
   const handleDownloadRunLog = async (run) => {
@@ -1318,16 +1354,32 @@ export default function App() {
                     </div>
                     <p className="mt-2 text-[11px] text-amber-700">The ZIP file contains secrets and should be stored securely.</p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={handleExportRuntimeConfig}
-                    disabled={exportingConfig}
-                    className="px-3 py-2 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#7a2520] disabled:opacity-60 flex items-center justify-center gap-2"
-                  >
-                    {exportingConfig ? <Loader2 className="animate-spin" size={14} /> : <Download size={14} />}
-                    Export Backup
-                  </button>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleExportRuntimeConfig}
+                      disabled={exportingConfig || importingConfig}
+                      className="px-3 py-2 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#7a2520] disabled:opacity-60 flex items-center justify-center gap-2"
+                    >
+                      {exportingConfig ? <Loader2 className="animate-spin" size={14} /> : <Download size={14} />}
+                      Export Backup
+                    </button>
+                    <label className={`px-3 py-2 bg-white border border-gray-200 text-gray-600 rounded-md font-semibold text-xs hover:text-[#9c3029] hover:bg-gray-50 flex items-center justify-center gap-2 ${importingConfig ? 'opacity-60 pointer-events-none' : 'cursor-pointer'}`}>
+                      {importingConfig ? <Loader2 className="animate-spin" size={14} /> : <Upload size={14} />}
+                      Import Backup
+                      <input
+                        type="file"
+                        accept=".zip,application/zip"
+                        onChange={handleImportRuntimeConfig}
+                        disabled={importingConfig || exportingConfig}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
                 </div>
+                <p className="mt-3 text-[11px] text-gray-500">
+                  Import restores runtime env, OCI config, rclone config, sync jobs, job history, and bundled key files. A pre-restore backup is created automatically.
+                </p>
               </div>
               <div className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
                 <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
