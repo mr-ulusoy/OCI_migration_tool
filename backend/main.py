@@ -569,6 +569,11 @@ class TimeSettingsRequest(BaseModel):
     ntp_servers: str
 
 
+class RcloneDefaultSettingsRequest(BaseModel):
+    bwlimit: str = ""
+    tpslimit: Optional[float] = None
+
+
 # NYA SCHEMAS FÖR STORAGE EXPLORER
 class CreateBucketReq(BaseModel):
     profile_name: str
@@ -1167,6 +1172,20 @@ def validate_rclone_limits(job: DataSyncJob) -> dict:
     return {
         "bwlimit": validate_rclone_bwlimit(job.bwlimit),
         "tpslimit": validate_rclone_tpslimit(job.tpslimit),
+    }
+
+
+def current_rclone_default_settings() -> dict:
+    runtime_env = read_runtime_env()
+    return {
+        "bwlimit": validate_rclone_bwlimit(
+            runtime_env.get("OCI_MIGRATOR_DEFAULT_BWLIMIT")
+            or os.getenv("OCI_MIGRATOR_DEFAULT_BWLIMIT", "")
+        ),
+        "tpslimit": validate_rclone_tpslimit(
+            runtime_env.get("OCI_MIGRATOR_DEFAULT_TPSLIMIT")
+            or os.getenv("OCI_MIGRATOR_DEFAULT_TPSLIMIT", "")
+        ),
     }
 
 
@@ -2909,6 +2928,27 @@ async def get_local_disk_settings():
 @app.get("/time-settings")
 async def get_time_settings():
     return current_time_settings()
+
+
+@app.get("/rclone-default-settings")
+async def get_rclone_default_settings():
+    return current_rclone_default_settings()
+
+
+@app.put("/rclone-default-settings")
+async def update_rclone_default_settings(settings: RcloneDefaultSettingsRequest):
+    bwlimit = validate_rclone_bwlimit(settings.bwlimit)
+    tpslimit = validate_rclone_tpslimit(settings.tpslimit)
+    _write_env_values(
+        ENV_FILE_PATH,
+        {
+            "OCI_MIGRATOR_DEFAULT_BWLIMIT": bwlimit,
+            "OCI_MIGRATOR_DEFAULT_TPSLIMIT": "" if tpslimit is None else f"{tpslimit:g}",
+        },
+    )
+    os.environ["OCI_MIGRATOR_DEFAULT_BWLIMIT"] = bwlimit
+    os.environ["OCI_MIGRATOR_DEFAULT_TPSLIMIT"] = "" if tpslimit is None else f"{tpslimit:g}"
+    return current_rclone_default_settings()
 
 
 @app.put("/time-settings")

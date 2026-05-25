@@ -145,6 +145,8 @@ Each backup job can set optional traffic limits:
 
 These limits are saved per job in `~/.oci/jobs.json` and are used by both manual and scheduled runs.
 
+Settings -> Backup Job Defaults can set default `Bandwidth Limit` and `API TPS Limit` values for new backup jobs. They are stored in `~/.oci-migrator.env` as `OCI_MIGRATOR_DEFAULT_BWLIMIT` and `OCI_MIGRATOR_DEFAULT_TPSLIMIT`. Existing jobs keep their own saved limits until edited.
+
 ## Runtime Config Export
 
 After logging in, use the download button in the top bar to export a zip backup. It includes the runtime env file, OCI config, job definitions/history, rclone config, and referenced key files when present.

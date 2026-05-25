@@ -4,7 +4,7 @@ import {
   Cloud, Shield, Database, Search, Key, Loader2, CheckCircle,
   ArrowRight, FileText, Archive, Edit, Trash2,
   Folder, Plus, RefreshCw, Globe, Cpu, Clock, Activity, Terminal,
-  Lock, LogOut, Download, Upload, HeartPulse, AlertCircle, X, Settings, Save, Tags, HardDrive
+  Lock, LogOut, Download, Upload, HeartPulse, AlertCircle, X, Settings, Save, Tags, HardDrive, Moon, Sun
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (
@@ -14,6 +14,7 @@ const API_BASE = import.meta.env.VITE_API_BASE || (
 );
 const SESSION_TOKEN_KEY = 'OCI_MIGRATOR_SESSION_TOKEN';
 const SESSION_USERNAME_KEY = 'OCI_MIGRATOR_SESSION_USERNAME';
+const THEME_KEY = 'OCI_MIGRATOR_THEME';
 const DEFAULT_REMOTE_CONFIG = {
   name: '',
   provider: 'oci',
@@ -116,6 +117,10 @@ function getInitialAuth() {
   }
 
   return { token: '', mode: '', username: 'admin' };
+}
+
+function getInitialTheme() {
+  return localStorage.getItem(THEME_KEY) === 'dark' ? 'dark' : 'light';
 }
 
 function formatApiError(err, fallback = 'Request failed.') {
@@ -335,6 +340,7 @@ function normalizeLifecyclePolicy(policy = {}) {
 
 export default function App() {
   const [authState, setAuthState] = useState(getInitialAuth);
+  const [theme, setTheme] = useState(getInitialTheme);
   const [loginForm, setLoginForm] = useState({ username: 'admin', password: '' });
   const [loginError, setLoginError] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
@@ -355,6 +361,9 @@ export default function App() {
   const [timeSettings, setTimeSettings] = useState(null);
   const [timeSettingsForm, setTimeSettingsForm] = useState({ timezone: 'UTC', ntpServers: '0.pool.ntp.org 1.pool.ntp.org' });
   const [savingTimeSettings, setSavingTimeSettings] = useState(false);
+  const [rcloneDefaultSettings, setRcloneDefaultSettings] = useState({ bwlimit: '', tpslimit: null });
+  const [rcloneDefaultSettingsForm, setRcloneDefaultSettingsForm] = useState({ bwlimit: '', tpslimit: '' });
+  const [savingRcloneDefaultSettings, setSavingRcloneDefaultSettings] = useState(false);
   const [upgradeStatus, setUpgradeStatus] = useState(null);
   const [upgradeCheck, setUpgradeCheck] = useState(null);
   const [upgradeLog, setUpgradeLog] = useState('');
@@ -424,6 +433,11 @@ export default function App() {
   const [destBuckets, setDestBuckets] = useState([]);
   const [bucketProtection, setBucketProtection] = useState(null);
   const [bucketProtectionLoading, setBucketProtectionLoading] = useState(false);
+
+  useEffect(() => {
+    localStorage.setItem(THEME_KEY, theme);
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
 
   const [syncJob, setSyncJob] = useState(createDefaultSyncJob);
   const [editingJobName, setEditingJobName] = useState('');
@@ -559,6 +573,21 @@ export default function App() {
       });
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const fetchRcloneDefaultSettings = async () => {
+    try {
+      const res = await api.get('/rclone-default-settings');
+      setRcloneDefaultSettings(res.data);
+      setRcloneDefaultSettingsForm({
+        bwlimit: res.data.bwlimit || '',
+        tpslimit: res.data.tpslimit ?? ''
+      });
+      return res.data;
+    } catch (err) {
+      console.error(err);
+      return { bwlimit: '', tpslimit: null };
     }
   };
 
@@ -807,6 +836,36 @@ export default function App() {
     setSavingTimeSettings(false);
   };
 
+  const handleSaveRcloneDefaultSettings = async (event) => {
+    event.preventDefault();
+    const limits = normalizeRcloneLimits(rcloneDefaultSettingsForm);
+    if (limits.bwlimit && !/^(off|\d+(\.\d+)?[KkMmGgTtPp]?)$/.test(limits.bwlimit)) {
+      setNotice({ type: 'error', title: 'Invalid bandwidth limit', message: 'Bandwidth limit must be empty, off, or a value like 700M, 1G, or 500K.' });
+      return;
+    }
+    if (limits.tpslimit !== null && (!Number.isFinite(limits.tpslimit) || limits.tpslimit < 0 || limits.tpslimit > 10000)) {
+      setNotice({ type: 'error', title: 'Invalid TPS limit', message: 'TPS limit must be empty or a number between 0 and 10000.' });
+      return;
+    }
+
+    setSavingRcloneDefaultSettings(true);
+    try {
+      const res = await api.put('/rclone-default-settings', {
+        bwlimit: limits.bwlimit,
+        tpslimit: limits.tpslimit
+      });
+      setRcloneDefaultSettings(res.data);
+      setRcloneDefaultSettingsForm({
+        bwlimit: res.data.bwlimit || '',
+        tpslimit: res.data.tpslimit ?? ''
+      });
+      showSuccess('Backup job defaults saved.');
+    } catch (err) {
+      showError('Failed to save backup job defaults', err);
+    }
+    setSavingRcloneDefaultSettings(false);
+  };
+
   useEffect(() => {
     if (!isAuthenticated) return;
     fetchProfiles();
@@ -817,6 +876,7 @@ export default function App() {
     fetchJobLogSettings();
     fetchLocalDiskSettings();
     fetchTimeSettings();
+    fetchRcloneDefaultSettings();
     fetchUpgradeStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, api]);
@@ -1237,7 +1297,11 @@ export default function App() {
 
   const startNewSyncJob = () => {
     setEditingJobName('');
-    setSyncJob(createDefaultSyncJob());
+    setSyncJob({
+      ...createDefaultSyncJob(),
+      bwlimit: rcloneDefaultSettings?.bwlimit || '',
+      tpslimit: rcloneDefaultSettings?.tpslimit ?? ''
+    });
     setSourceBuckets([]);
     setDestBuckets([]);
     setView('builder');
@@ -1626,7 +1690,7 @@ export default function App() {
 
   if (!isAuthenticated) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-6 font-sans">
+      <div data-theme={theme} className="min-h-screen bg-gray-50 flex items-center justify-center p-6 font-sans">
         <form onSubmit={handleLogin} className="w-full max-w-sm bg-white border border-gray-200 rounded-md shadow-sm p-6">
           <div className="flex items-center gap-3 mb-6">
             <div className="bg-[#9c3029] p-2 rounded-md"><Lock size={20} className="text-white" /></div>
@@ -1666,7 +1730,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-white text-gray-800 flex overflow-hidden font-sans">
+    <div data-theme={theme} className="min-h-screen bg-white text-gray-800 flex overflow-hidden font-sans">
       {confirmDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/45 p-4">
           <div className="w-full max-w-lg bg-white border border-gray-200 rounded-md shadow-2xl">
@@ -1724,6 +1788,39 @@ export default function App() {
           <button onClick={() => setView('storage')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'storage' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Archive size={18} /> <span>OCI Object Storage</span></button>
           <button onClick={() => setView('settings')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'settings' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Settings size={18} /> <span>Settings</span></button>
         </div>
+        <div className="mt-auto pt-4 border-t border-[#d1dcca] space-y-3">
+          <div className="grid grid-cols-2 gap-1 rounded-md bg-white/50 border border-[#d1dcca] p-1">
+            <button
+              type="button"
+              onClick={() => setTheme('light')}
+              aria-pressed={theme === 'light'}
+              className={`flex items-center justify-center gap-2 rounded px-2 py-2 text-xs font-semibold transition-colors ${theme === 'light' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:bg-[#d5e2c8]'}`}
+              title="Light theme"
+            >
+              <Sun size={14} />
+              Light
+            </button>
+            <button
+              type="button"
+              onClick={() => setTheme('dark')}
+              aria-pressed={theme === 'dark'}
+              className={`flex items-center justify-center gap-2 rounded px-2 py-2 text-xs font-semibold transition-colors ${theme === 'dark' ? 'bg-gray-900 text-white shadow-sm' : 'text-gray-600 hover:bg-[#d5e2c8]'}`}
+              title="Dark theme"
+            >
+              <Moon size={14} />
+              Dark
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={handleLogout}
+            className="w-full flex items-center gap-3 p-3 rounded-md text-sm font-semibold text-gray-700 transition-colors hover:bg-[#d5e2c8] hover:text-[#9c3029]"
+            title="Logout"
+          >
+            <LogOut size={18} />
+            <span>Logout</span>
+          </button>
+        </div>
       </nav>
 
       <main className="flex-1 flex flex-col relative overflow-y-auto bg-gray-50/50">
@@ -1733,9 +1830,6 @@ export default function App() {
             <button onClick={fetchHealth} className={`px-2.5 py-2 border rounded-md text-xs font-semibold flex items-center gap-2 ${!health?.status ? 'border-gray-200 text-gray-600 bg-white' : health.status === 'ok' ? 'border-green-200 text-green-700 bg-green-50' : health.status === 'warn' ? 'border-amber-200 text-amber-700 bg-amber-50' : 'border-red-200 text-red-700 bg-red-50'}`} title="Refresh health status">
               <HeartPulse size={15} />
               {health?.status || 'health'}
-            </button>
-            <button onClick={handleLogout} className="p-2 bg-white border border-gray-200 text-gray-600 rounded-md hover:text-[#9c3029] hover:bg-gray-50" title="Logout">
-              <LogOut size={16} />
             </button>
           </div>
         </header>
@@ -2175,6 +2269,58 @@ export default function App() {
                     Time sync helper is missing. Rerun ./install.sh once on the server to enable dashboard time settings.
                   </div>
                 )}
+              </form>
+              <form onSubmit={handleSaveRcloneDefaultSettings} className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
+                <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
+                  <div>
+                    <h3 className="font-bold text-sm text-gray-800 flex items-center gap-2">
+                      <Activity size={16} className="text-[#9c3029]" /> Backup Job Defaults
+                    </h3>
+                    <p className="mt-1 text-[11px] text-gray-500">Used as defaults when creating new backup jobs. Existing jobs keep their own limits.</p>
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={savingRcloneDefaultSettings}
+                    className="px-3 py-2 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#7a2520] disabled:opacity-60 flex items-center justify-center gap-2"
+                  >
+                    {savingRcloneDefaultSettings ? <Loader2 className="animate-spin" size={14} /> : <Save size={14} />}
+                    Save Defaults
+                  </button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Bandwidth Limit</label>
+                    <input
+                      value={rcloneDefaultSettingsForm.bwlimit}
+                      onChange={e => setRcloneDefaultSettingsForm({ ...rcloneDefaultSettingsForm, bwlimit: e.target.value.trim() })}
+                      placeholder="Unlimited"
+                      className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">API TPS Limit</label>
+                    <input
+                      type="number"
+                      min="0"
+                      max="10000"
+                      step="1"
+                      value={rcloneDefaultSettingsForm.tpslimit}
+                      onChange={e => setRcloneDefaultSettingsForm({ ...rcloneDefaultSettingsForm, tpslimit: e.target.value })}
+                      placeholder="Unlimited"
+                      className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                    />
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">
+                  <div className="bg-gray-50 border border-gray-100 rounded-md px-2 py-1">
+                    <span className="font-bold text-gray-400 uppercase">Current Bandwidth</span>
+                    <div className="font-mono text-gray-700">{rcloneDefaultSettings?.bwlimit || 'Unlimited'}</div>
+                  </div>
+                  <div className="bg-gray-50 border border-gray-100 rounded-md px-2 py-1">
+                    <span className="font-bold text-gray-400 uppercase">Current TPS</span>
+                    <div className="font-mono text-gray-700">{rcloneDefaultSettings?.tpslimit ?? 'Unlimited'}</div>
+                  </div>
+                </div>
               </form>
               <form onSubmit={handleSaveLocalDiskSettings} className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
                 <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
