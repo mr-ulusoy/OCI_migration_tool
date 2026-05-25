@@ -124,6 +124,8 @@ def main():
                                 "scheduled",
                                 job.get("metadata_tags", []),
                                 job.get("local_retention", {}),
+                                job.get("bwlimit", ""),
+                                job.get("tpslimit"),
                             ],
                             task_id=run_id,
                         )

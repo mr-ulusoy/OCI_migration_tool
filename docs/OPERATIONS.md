@@ -116,7 +116,9 @@ Each rclone run writes a persistent log file under:
 /var/log/oci-migrator/jobs/
 ```
 
-In the Job Dashboard, use `Recent Runs` -> terminal button to view the log tail, or the download button to download the full log file for that run.
+Rclone is run with JSON logging. OCI Migrator parses each run into a compact `rclone_summary` in `~/.oci/job_history.json` with transferred bytes, files, deletes, errors, elapsed time, and average speed. The Job Dashboard shows that summary on active jobs and recent runs.
+
+Use `Recent Runs` -> terminal button to view a readable log tail, or the download button to download the full raw log file for that run.
 The same dashboard shows `Retention Days` and `Max Size`; saving those fields updates the managed logrotate config.
 
 Log rotation is installed at:
@@ -133,6 +135,15 @@ Default policy:
 - `maxsize 10M`
 
 Change these values in the UI, with `./install.sh --job-log-max-size 25M --job-log-retention-days 30`, or by editing the logrotate file directly.
+
+## Rclone Transfer Controls
+
+Each backup job can set optional traffic limits:
+
+- `Bandwidth Limit` maps to rclone `--bwlimit`, for example `700M` or `1G`. Empty means unlimited.
+- `API TPS Limit` maps to rclone `--tpslimit`. Empty or `0` means unlimited.
+
+These limits are saved per job in `~/.oci/jobs.json` and are used by both manual and scheduled runs.
 
 ## Runtime Config Export
 

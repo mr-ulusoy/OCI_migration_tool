@@ -49,6 +49,8 @@ const createDefaultSyncJob = () => ({
   transfers: 16,
   checkers: 32,
   buffer_size: '128M',
+  bwlimit: '',
+  tpslimit: '',
   metadata_tags: [],
   local_retention: { ...DEFAULT_LOCAL_RETENTION },
   schedule: { frequency: 'none', time: '02:00', day_of_week: 'monday', day_of_month: '1' }
@@ -166,6 +168,37 @@ function formatBytes(value) {
   return `${unitIndex === 0 ? Math.round(size) : size.toFixed(1)} ${units[unitIndex]}`;
 }
 
+function formatRate(value) {
+  const bytes = Number(value || 0);
+  return bytes > 0 ? `${formatBytes(bytes)}/s` : '';
+}
+
+function formatDurationSeconds(value) {
+  const rawSeconds = Number(value || 0);
+  if (!Number.isFinite(rawSeconds) || rawSeconds <= 0) return '';
+  if (rawSeconds < 1) return '<1s';
+  const seconds = Math.round(rawSeconds);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  if (hours) return `${hours}h ${minutes}m`;
+  if (minutes) return `${minutes}m ${secs}s`;
+  return `${secs}s`;
+}
+
+function backupSummaryParts(summary = {}) {
+  const parts = [];
+  if (Number(summary.bytes) > 0) parts.push(`${formatBytes(summary.bytes)} transferred`);
+  if (Number(summary.files_transferred) > 0) parts.push(`${summary.files_transferred} files`);
+  if (Number(summary.deletes) > 0) parts.push(`${summary.deletes} deleted`);
+  const duration = formatDurationSeconds(summary.elapsed_seconds);
+  if (duration) parts.push(duration);
+  const speed = formatRate(summary.speed_bps);
+  if (speed) parts.push(`${speed} avg`);
+  if (Number(summary.errors) > 0) parts.push(`${summary.errors} errors`);
+  return parts;
+}
+
 function cleanJobMessage(value = '') {
   const message = String(value || '').replace(/^rclone\s+/i, '').trim();
   return message ? `${message.charAt(0).toUpperCase()}${message.slice(1)}` : '';
@@ -212,6 +245,13 @@ function normalizeLocalRetention(policy = {}) {
     delete_after_days: Number(policy.delete_after_days || DEFAULT_LOCAL_RETENTION.delete_after_days),
     min_file_age_hours: Number(policy.min_file_age_hours || DEFAULT_LOCAL_RETENTION.min_file_age_hours)
   };
+}
+
+function normalizeRcloneLimits(job = {}) {
+  const bwlimit = String(job.bwlimit || '').trim();
+  const tpsRaw = job.tpslimit;
+  const tpslimit = tpsRaw === '' || tpsRaw === null || tpsRaw === undefined ? null : Number(tpsRaw);
+  return { bwlimit, tpslimit };
 }
 
 function normalizeLifecycleFilters(policy = {}) {
@@ -1235,6 +1275,15 @@ export default function App() {
         return;
       }
     }
+    const rcloneLimits = normalizeRcloneLimits(syncJob);
+    if (rcloneLimits.bwlimit && !/^(off|\d+(\.\d+)?[KkMmGgTtPp]?)$/.test(rcloneLimits.bwlimit)) {
+      setNotice({ type: 'error', title: 'Invalid bandwidth limit', message: 'Bandwidth limit must be empty, off, or a value like 700M, 1G, or 500K.' });
+      return;
+    }
+    if (rcloneLimits.tpslimit !== null && (!Number.isFinite(rcloneLimits.tpslimit) || rcloneLimits.tpslimit < 0 || rcloneLimits.tpslimit > 10000)) {
+      setNotice({ type: 'error', title: 'Invalid TPS limit', message: 'TPS limit must be empty or a number between 0 and 10000.' });
+      return;
+    }
     const localRetention = normalizeLocalRetention(syncJob.local_retention);
     if (localRetention.enabled) {
       if (!selectedSyncSourceIsManagedLocal) {
@@ -1256,7 +1305,15 @@ export default function App() {
     }
     setLoading(true);
     try {
-      await api.post(`/save-job`, { ...syncJob, previous_name: editingJobName, metadata_tags: metadataTags, local_retention: localRetention, lifecycle_policy: createDefaultLifecyclePolicy() });
+      await api.post(`/save-job`, {
+        ...syncJob,
+        previous_name: editingJobName,
+        metadata_tags: metadataTags,
+        local_retention: localRetention,
+        lifecycle_policy: createDefaultLifecyclePolicy(),
+        bwlimit: rcloneLimits.bwlimit,
+        tpslimit: rcloneLimits.tpslimit
+      });
       if (editingJobName && editingJobName !== syncJob.name) {
         await api.delete(`/delete-job/${encodeURIComponent(editingJobName)}`);
       }
@@ -2317,7 +2374,7 @@ export default function App() {
             <div className="max-w-[1500px] mx-auto space-y-6 animate-in fade-in">
               <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800"><Activity size={24} className="text-[#9c3029]"/> Active Backup Jobs</h2>
               <div className="bg-white border border-gray-200 rounded-md shadow-sm overflow-hidden">
-                <div className="hidden lg:grid grid-cols-[minmax(150px,0.8fr)_minmax(320px,1.7fr)_minmax(170px,0.85fr)_minmax(110px,0.55fr)_128px] gap-4 px-4 py-2.5 bg-gray-50 border-b border-gray-100 text-[10px] uppercase font-bold tracking-wider text-gray-400">
+                <div className="hidden lg:grid grid-cols-[minmax(150px,0.8fr)_minmax(300px,1.45fr)_minmax(160px,0.75fr)_minmax(220px,1fr)_128px] gap-4 px-4 py-2.5 bg-gray-50 border-b border-gray-100 text-[10px] uppercase font-bold tracking-wider text-gray-400">
                   <div>Job</div>
                   <div>Pipeline</div>
                   <div>Schedule</div>
@@ -2330,6 +2387,7 @@ export default function App() {
                     const latestMessage = cleanJobMessage(latestRun?.error || latestRun?.details || '');
                     const latestStatus = String(latestRun?.status || '').toLowerCase();
                     const showLatestMessage = latestRun && latestStatus !== 'success' && latestMessage;
+                    const latestSummaryParts = backupSummaryParts(latestRun?.rclone_summary).slice(0, 3);
                     const scheduleText = (() => {
                       const schedule = job.schedule || {};
                       if (schedule.frequency === 'none') return 'manual';
@@ -2341,7 +2399,7 @@ export default function App() {
 
                     return (
                       <div key={job.name}>
-                        <div className="grid grid-cols-1 lg:grid-cols-[minmax(150px,0.8fr)_minmax(320px,1.7fr)_minmax(170px,0.85fr)_minmax(110px,0.55fr)_128px] gap-4 items-center px-4 py-4 text-left min-h-[150px]">
+                        <div className="grid grid-cols-1 lg:grid-cols-[minmax(150px,0.8fr)_minmax(300px,1.45fr)_minmax(160px,0.75fr)_minmax(220px,1fr)_128px] gap-4 items-center px-4 py-4 text-left min-h-[150px]">
                           <div className="flex items-start gap-3 min-w-0">
                             <RefreshCw className="text-[#9c3029] mt-1 shrink-0" size={16} />
                             <div className="min-w-0">
@@ -2377,6 +2435,16 @@ export default function App() {
                                   cleanup {job.local_retention.delete_after_days || 30}d
                                 </span>
                               )}
+                              {job.bwlimit && (
+                                <span className="text-[10px] px-2 py-0.5 rounded-full border border-blue-100 bg-blue-50 text-blue-700 font-bold uppercase">
+                                  bw {job.bwlimit}
+                                </span>
+                              )}
+                              {Number(job.tpslimit) > 0 && (
+                                <span className="text-[10px] px-2 py-0.5 rounded-full border border-blue-100 bg-blue-50 text-blue-700 font-bold uppercase">
+                                  tps {job.tpslimit}
+                                </span>
+                              )}
                             </div>
                           </div>
                           <div className="min-w-0">
@@ -2390,6 +2458,15 @@ export default function App() {
                                   <span className="text-[11px] text-gray-500 truncate max-w-full" title={latestMessage}>
                                     {latestMessage}
                                   </span>
+                                )}
+                                {latestSummaryParts.length > 0 && (
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {latestSummaryParts.map((part) => (
+                                      <span key={part} className="text-[10px] px-1.5 py-0.5 rounded border border-gray-200 bg-gray-50 text-gray-500">
+                                        {part}
+                                      </span>
+                                    ))}
+                                  </div>
                                 )}
                               </div>
                             ) : (
@@ -2428,6 +2505,7 @@ export default function App() {
                     const isDataSyncRun = run.kind === 'data_sync';
                     const runMessage = cleanJobMessage(run.error || run.details);
                     const showRunMessage = String(run.status || '').toLowerCase() !== 'success' && runMessage;
+                    const runSummaryParts = backupSummaryParts(run.rclone_summary);
                     return (
                       <div key={run.id}>
                         <div className="p-4 flex items-start justify-between gap-4 text-left">
@@ -2438,6 +2516,15 @@ export default function App() {
                               <span className="text-[11px] text-gray-400 uppercase">{run.trigger || 'manual'}</span>
                             </div>
                             {showRunMessage && <div className="mt-1 text-xs text-gray-500 truncate">{runMessage}</div>}
+                            {runSummaryParts.length > 0 && (
+                              <div className="mt-2 flex flex-wrap gap-1.5">
+                                {runSummaryParts.map((part) => (
+                                  <span key={part} className="text-[10px] px-2 py-0.5 rounded border border-gray-200 bg-gray-50 text-gray-500">
+                                    {part}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
                             <div className="mt-1 text-[10px] text-gray-400 font-mono truncate">{run.id}</div>
                           </div>
                           <div className="flex items-center gap-2 shrink-0">
@@ -2687,6 +2774,36 @@ export default function App() {
                     <select value={syncJob.buffer_size} onChange={e => setSyncJob({...syncJob, buffer_size: e.target.value})} className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]">
                       <option value="16M">16M</option><option value="128M">128M</option><option value="512M">512M</option>
                     </select>
+                  </div>
+                </div>
+
+                <div className="mb-6 border border-gray-200 rounded-md overflow-hidden">
+                  <div className="px-4 py-3 bg-gray-50 border-b border-gray-100">
+                    <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Activity size={16}/> Traffic Limits</h4>
+                  </div>
+                  <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-4 text-left">
+                    <div className="space-y-1">
+                      <label className="text-[11px] uppercase font-bold text-gray-500">Bandwidth Limit</label>
+                      <input
+                        value={syncJob.bwlimit || ''}
+                        onChange={e => setSyncJob({...syncJob, bwlimit: e.target.value.trim()})}
+                        placeholder="Unlimited"
+                        className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[11px] uppercase font-bold text-gray-500">API TPS Limit</label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="10000"
+                        step="1"
+                        value={syncJob.tpslimit ?? ''}
+                        onChange={e => setSyncJob({...syncJob, tpslimit: e.target.value})}
+                        placeholder="Unlimited"
+                        className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                      />
+                    </div>
                   </div>
                 </div>
 

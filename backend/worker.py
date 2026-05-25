@@ -8,7 +8,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from celery import Celery
 import oci
-from job_logs import ensure_job_log_dir, job_log_path, tail_file
+from job_logs import ensure_job_log_dir, job_log_path, summarize_rclone_json_log, tail_file
 from job_store import update_job_run
 
 logging.basicConfig(level=os.getenv("OCI_MIGRATOR_LOG_LEVEL", "INFO"))
@@ -156,6 +156,29 @@ def normalize_local_retention(local_retention=None):
     }
 
 
+def normalize_rclone_bwlimit(value=None):
+    bwlimit = str(value or "").strip()
+    if not bwlimit or bwlimit.lower() == "off":
+        return bwlimit.lower()
+    if any(char in bwlimit for char in "\r\n\0") or bwlimit.startswith("-"):
+        return ""
+    if re.fullmatch(r"\d+(?:\.\d+)?[KkMmGgTtPp]?", bwlimit):
+        return bwlimit
+    return ""
+
+
+def normalize_rclone_tpslimit(value=None):
+    if value in (None, ""):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed <= 0 or parsed > 10000:
+        return None
+    return parsed
+
+
 def local_cleanup_source_path(source: str) -> Path | None:
     source_value = str(source or "")
     separator_index = source_value.find(":")
@@ -264,11 +287,13 @@ def run_local_retention_cleanup(source: str, local_retention=None, log_file: Pat
 
 
 @celery_app.task(bind=True, name="worker.rclone_sync_task")
-def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", transfers=4, checkers=8, buffer_size="16M", job_name="default", run_id=None, trigger="manual", metadata_tags=None, local_retention=None):
+def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", transfers=4, checkers=8, buffer_size="16M", job_name="default", run_id=None, trigger="manual", metadata_tags=None, local_retention=None, bwlimit="", tpslimit=None):
     run_id = run_id or self.request.id
     dest = f"{dest_profile}_rclone:{dest_bucket}"
     metadata_tags = normalize_metadata_tags(metadata_tags)
     local_retention = normalize_local_retention(local_retention)
+    bwlimit = normalize_rclone_bwlimit(bwlimit)
+    tpslimit = normalize_rclone_tpslimit(tpslimit)
     ensure_job_log_dir()
     log_file = job_log_path(job_name, run_id)
     update_job_run(
@@ -298,18 +323,24 @@ def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", trans
         "--buffer-size", buffer_size,
         "--log-file", str(log_file),     # Skriver loggen till fil för backend-läsning
         "--log-level", "INFO",
+        "--use-json-log",
         "--stats", "2s",                 # Uppdaterar hastighet/procent varannan sekund
         "--stats-one-line",
         "--fast-list", 
         "--retries", "10", 
         "--use-mmap"
     ]
+    if bwlimit:
+        cmd.extend(["--bwlimit", bwlimit])
+    if tpslimit:
+        cmd.extend(["--tpslimit", f"{tpslimit:g}"])
     if metadata_tags:
         cmd.append("--metadata")
         for tag in metadata_tags:
             cmd.extend(["--metadata-set", f"{tag['key']}={tag['value']}"])
     
     timeout = rclone_timeout_seconds()
+    started_monotonic = time.monotonic()
 
     # Kör processen. Loggning sköts direkt till filen via --log-file.
     # stdout/stderr discardas för att undvika att processen blockar pga full buffer.
@@ -327,17 +358,26 @@ def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", trans
             process.kill()
             process.wait()
 
+        rclone_summary = summarize_rclone_json_log(
+            log_file,
+            elapsed_seconds=time.monotonic() - started_monotonic,
+        )
         update_job_run(
             run_id,
             status="timeout",
             details=f"Timed out after {timeout} seconds.",
             error=f"Timeout after {timeout} seconds.",
+            rclone_summary=rclone_summary,
             finished_at=datetime.utcnow().isoformat() + "Z",
         )
         return {"status": "timeout", "code": None, "timeout_seconds": timeout}
 
     status = "success" if process.returncode == 0 else "failed"
-    log_tail = tail_file(log_file, max_lines=12)
+    rclone_summary = summarize_rclone_json_log(
+        log_file,
+        elapsed_seconds=time.monotonic() - started_monotonic,
+    )
+    log_tail = tail_file(log_file, max_lines=12, humanize_json=True)
     local_cleanup_result = {"enabled": local_retention.get("enabled", False), "status": "skipped"}
     if process.returncode == 0:
         try:
@@ -371,6 +411,7 @@ def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", trans
         status=status,
         details=details,
         error="" if process.returncode == 0 else (log_tail or details),
+        rclone_summary=rclone_summary,
         local_cleanup=local_cleanup_result,
         finished_at=datetime.utcnow().isoformat() + "Z",
     )

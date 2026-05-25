@@ -539,6 +539,8 @@ class DataSyncJob(BaseModel):
     transfers: int = 4
     checkers: int = 8
     buffer_size: str = "16M"
+    bwlimit: str = ""
+    tpslimit: Optional[float] = None
     is_active: bool = True
     metadata_tags: List[MetadataTag] = Field(default_factory=list)
     lifecycle_policy: LifecyclePolicyConfig = Field(default_factory=LifecyclePolicyConfig)
@@ -1131,6 +1133,40 @@ def validate_local_retention_config(local_retention: LocalRetentionConfig | dict
         "enabled": enabled,
         "delete_after_days": delete_after_days,
         "min_file_age_hours": min_file_age_hours,
+    }
+
+
+def validate_rclone_bwlimit(value: str | None) -> str:
+    bwlimit = str(value or "").strip()
+    if not bwlimit:
+        return ""
+    if any(char in bwlimit for char in "\r\n\0") or bwlimit.startswith("-"):
+        raise HTTPException(status_code=400, detail="Bandwidth limit is invalid.")
+    if bwlimit.lower() == "off":
+        return "off"
+    if not re.fullmatch(r"\d+(?:\.\d+)?[KkMmGgTtPp]?", bwlimit):
+        raise HTTPException(status_code=400, detail="Bandwidth limit must be empty, off, or a value like 700M, 1G, or 500K.")
+    return bwlimit
+
+
+def validate_rclone_tpslimit(value: float | int | str | None) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="TPS limit must be a number.")
+    if parsed == 0:
+        return None
+    if parsed < 0 or parsed > 10000:
+        raise HTTPException(status_code=400, detail="TPS limit must be between 0 and 10000.")
+    return parsed
+
+
+def validate_rclone_limits(job: DataSyncJob) -> dict:
+    return {
+        "bwlimit": validate_rclone_bwlimit(job.bwlimit),
+        "tpslimit": validate_rclone_tpslimit(job.tpslimit),
     }
 
 
@@ -3027,7 +3063,7 @@ def job_run_log_payload(run: dict, max_lines: int = 500) -> dict:
         }
 
     return {
-        "log": tail_file(path, max_lines=max_lines),
+        "log": tail_file(path, max_lines=max_lines, humanize_json=True),
         "exists": True,
         "log_file": str(path),
     }
@@ -3196,6 +3232,7 @@ async def delete_profile(profile_name: str):
 @app.post("/save-job")
 async def save_job(job: DataSyncJob):
     metadata_tags = normalize_metadata_tags(job.metadata_tags)
+    rclone_limits = validate_rclone_limits(job)
     lifecycle_policy = normalize_lifecycle_policy(job.lifecycle_policy, job.name)
     local_retention = validate_local_retention_config(job.local_retention)
     jobs_snapshot = load_jobs()
@@ -3239,6 +3276,7 @@ async def save_job(job: DataSyncJob):
         job_dict = job.model_dump()
         job_dict.pop("previous_name", None)
         job_dict["metadata_tags"] = metadata_tags
+        job_dict.update(rclone_limits)
         job_dict["lifecycle_policy"] = lifecycle_policy
         job_dict["local_retention"] = local_retention
         existing = next((i for i, j in enumerate(jobs) if j['name'] == job.name), None)
@@ -3298,7 +3336,7 @@ async def get_job_log(job_name: str):
     if not legacy_path.exists():
         return {"log": "Waiting for job to start reporting...", "exists": False, "log_file": str(legacy_path)}
 
-    return {"log": tail_file(legacy_path, max_lines=500), "exists": True, "log_file": str(legacy_path)}
+    return {"log": tail_file(legacy_path, max_lines=500, humanize_json=True), "exists": True, "log_file": str(legacy_path)}
 
 # --- 4. Rclone Remotes & Buckets ---
 @app.get("/list-remotes")
@@ -3366,6 +3404,7 @@ async def start_sync_manual(job: DataSyncJob):
     safe_job_name = normalize_job_name(job.name)
     destination = f"{job.dest_profile}_rclone:{job.dest_bucket}"
     metadata_tags = normalize_metadata_tags(job.metadata_tags)
+    rclone_limits = validate_rclone_limits(job)
     local_retention = validate_local_retention_config(job.local_retention)
     upsert_job_run(
         {
@@ -3397,6 +3436,8 @@ async def start_sync_manual(job: DataSyncJob):
                 "manual",
                 metadata_tags,
                 local_retention,
+                rclone_limits["bwlimit"],
+                rclone_limits["tpslimit"],
             ],
             task_id=run_id,
         )
