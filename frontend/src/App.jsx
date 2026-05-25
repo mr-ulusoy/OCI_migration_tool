@@ -2118,6 +2118,74 @@ export default function App() {
           {view === 'settings' && (
             <div className="max-w-7xl mx-auto space-y-6 animate-in fade-in">
               <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800"><Settings size={24} className="text-[#9c3029]"/> Settings</h2>
+              <div className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
+                <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
+                  <h3 className="font-bold text-sm text-gray-800 flex items-center gap-2">
+                    <Download size={16} className="text-[#9c3029]" /> System Upgrade
+                  </h3>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleCheckUpgrade}
+                      disabled={checkingUpgrade || upgradeStatus?.status === 'running'}
+                      className="px-3 py-2 bg-white border border-gray-200 text-gray-600 rounded-md font-semibold text-xs hover:text-[#9c3029] hover:bg-gray-50 disabled:opacity-60 flex items-center gap-2"
+                    >
+                      {checkingUpgrade ? <Loader2 className="animate-spin" size={14} /> : <RefreshCw size={14} />}
+                      Check
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleStartUpgrade}
+                      disabled={startingUpgrade || upgradeStatus?.status === 'running' || upgradeStatus?.helper_installed === false}
+                      className="px-3 py-2 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#7a2520] disabled:opacity-60 flex items-center gap-2"
+                    >
+                      {startingUpgrade || upgradeStatus?.status === 'running' ? <Loader2 className="animate-spin" size={14} /> : <Download size={14} />}
+                      Upgrade
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const next = !showUpgradeLog;
+                        setShowUpgradeLog(next);
+                        if (next) fetchUpgradeLog();
+                      }}
+                      className="px-3 py-2 bg-white border border-gray-200 text-gray-600 rounded-md font-semibold text-xs hover:text-[#9c3029] hover:bg-gray-50 flex items-center gap-2"
+                    >
+                      <Terminal size={14} />
+                      Log
+                    </button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="bg-gray-50 border border-gray-100 rounded-md p-3">
+                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Installed</div>
+                    <div className="text-sm font-mono text-gray-800">{upgradeStatus?.current_short || 'unknown'}</div>
+                    <div className="text-[11px] text-gray-500 truncate mt-1">{upgradeStatus?.branch || 'main'}</div>
+                  </div>
+                  <div className="bg-gray-50 border border-gray-100 rounded-md p-3">
+                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Latest GitHub</div>
+                    <div className="text-sm font-mono text-gray-800">{upgradeCheck?.latest_short || 'not checked'}</div>
+                    <div className="text-[11px] text-gray-500 truncate mt-1">{upgradeCheck?.up_to_date === true ? 'You are on the latest version.' : upgradeCheck?.up_to_date === false ? 'A new version is available.' : 'Run check when needed'}</div>
+                  </div>
+                  <div className="bg-gray-50 border border-gray-100 rounded-md p-3">
+                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Status</div>
+                    <span className={`inline-flex text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase ${runStatusClass(upgradeStatus?.status || 'idle')}`}>
+                      {upgradeStatus?.status || 'idle'}
+                    </span>
+                    <div className="text-[11px] text-gray-500 truncate mt-2" title={upgradeStatus?.message || ''}>{upgradeStatus?.message || 'No upgrade has run yet.'}</div>
+                  </div>
+                </div>
+                {upgradeStatus?.helper_installed === false && (
+                  <div className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-md p-3">
+                    Upgrade helper is missing. Rerun ./install.sh once on the server to enable dashboard upgrades.
+                  </div>
+                )}
+                {showUpgradeLog && (
+                  <div className="mt-4 bg-gray-900 border border-gray-800 rounded-md p-4 shadow-inner">
+                    <pre className="text-[11px] font-mono text-gray-300 h-44 overflow-y-auto text-left whitespace-pre-wrap">{upgradeLog || 'No upgrade log yet.'}</pre>
+                  </div>
+                )}
+              </div>
               {authState.mode === 'session' && (
                 <form onSubmit={handleChangePassword} className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
                   <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
@@ -2399,74 +2467,6 @@ export default function App() {
                   </div>
                 </div>
               </form>
-              <div className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
-                <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
-                  <h3 className="font-bold text-sm text-gray-800 flex items-center gap-2">
-                    <Download size={16} className="text-[#9c3029]" /> System Upgrade
-                  </h3>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={handleCheckUpgrade}
-                      disabled={checkingUpgrade || upgradeStatus?.status === 'running'}
-                      className="px-3 py-2 bg-white border border-gray-200 text-gray-600 rounded-md font-semibold text-xs hover:text-[#9c3029] hover:bg-gray-50 disabled:opacity-60 flex items-center gap-2"
-                    >
-                      {checkingUpgrade ? <Loader2 className="animate-spin" size={14} /> : <RefreshCw size={14} />}
-                      Check
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleStartUpgrade}
-                      disabled={startingUpgrade || upgradeStatus?.status === 'running' || upgradeStatus?.helper_installed === false}
-                      className="px-3 py-2 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#7a2520] disabled:opacity-60 flex items-center gap-2"
-                    >
-                      {startingUpgrade || upgradeStatus?.status === 'running' ? <Loader2 className="animate-spin" size={14} /> : <Download size={14} />}
-                      Upgrade
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const next = !showUpgradeLog;
-                        setShowUpgradeLog(next);
-                        if (next) fetchUpgradeLog();
-                      }}
-                      className="px-3 py-2 bg-white border border-gray-200 text-gray-600 rounded-md font-semibold text-xs hover:text-[#9c3029] hover:bg-gray-50 flex items-center gap-2"
-                    >
-                      <Terminal size={14} />
-                      Log
-                    </button>
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <div className="bg-gray-50 border border-gray-100 rounded-md p-3">
-                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Installed</div>
-                    <div className="text-sm font-mono text-gray-800">{upgradeStatus?.current_short || 'unknown'}</div>
-                    <div className="text-[11px] text-gray-500 truncate mt-1">{upgradeStatus?.branch || 'main'}</div>
-                  </div>
-                  <div className="bg-gray-50 border border-gray-100 rounded-md p-3">
-                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Latest GitHub</div>
-                    <div className="text-sm font-mono text-gray-800">{upgradeCheck?.latest_short || 'not checked'}</div>
-                    <div className="text-[11px] text-gray-500 truncate mt-1">{upgradeCheck?.up_to_date === true ? 'You are on the latest version.' : upgradeCheck?.up_to_date === false ? 'A new version is available.' : 'Run check when needed'}</div>
-                  </div>
-                  <div className="bg-gray-50 border border-gray-100 rounded-md p-3">
-                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Status</div>
-                    <span className={`inline-flex text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase ${runStatusClass(upgradeStatus?.status || 'idle')}`}>
-                      {upgradeStatus?.status || 'idle'}
-                    </span>
-                    <div className="text-[11px] text-gray-500 truncate mt-2" title={upgradeStatus?.message || ''}>{upgradeStatus?.message || 'No upgrade has run yet.'}</div>
-                  </div>
-                </div>
-                {upgradeStatus?.helper_installed === false && (
-                  <div className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-md p-3">
-                    Upgrade helper is missing. Rerun ./install.sh once on the server to enable dashboard upgrades.
-                  </div>
-                )}
-                {showUpgradeLog && (
-                  <div className="mt-4 bg-gray-900 border border-gray-800 rounded-md p-4 shadow-inner">
-                    <pre className="text-[11px] font-mono text-gray-300 h-44 overflow-y-auto text-left whitespace-pre-wrap">{upgradeLog || 'No upgrade log yet.'}</pre>
-                  </div>
-                )}
-              </div>
               <form onSubmit={handleSaveJobLogSettings} className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
                 <div className="flex items-center justify-between gap-4 mb-4">
                   <h3 className="font-bold text-sm text-gray-800 flex items-center gap-2"><Settings size={16} className="text-[#9c3029]" /> Job Log Rotation</h3>
