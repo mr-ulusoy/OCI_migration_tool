@@ -4,7 +4,7 @@ import {
   Cloud, Shield, Database, Search, Key, Loader2, CheckCircle,
   ArrowRight, FileText, Archive, Edit, Trash2,
   Folder, Plus, RefreshCw, Globe, Cpu, Clock, Activity, Terminal,
-  Lock, LogOut, Download, Upload, HeartPulse, AlertCircle, X, Settings, Save, Tags, HardDrive, Moon, Sun
+  Lock, LogOut, Download, Upload, HeartPulse, AlertCircle, X, Settings, Save, Tags, HardDrive, Moon
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (
@@ -1788,44 +1788,46 @@ export default function App() {
           <button onClick={() => setView('storage')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'storage' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Archive size={18} /> <span>OCI Object Storage</span></button>
           <button onClick={() => setView('settings')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'settings' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Settings size={18} /> <span>Settings</span></button>
         </div>
-        <div className="mt-auto pt-4 border-t border-[#d1dcca] space-y-3">
-          <div className="grid grid-cols-2 gap-1 rounded-md bg-white/50 border border-[#d1dcca] p-1">
-            <button
-              type="button"
-              onClick={() => setTheme('light')}
-              aria-pressed={theme === 'light'}
-              className={`flex items-center justify-center gap-2 rounded px-2 py-2 text-xs font-semibold transition-colors ${theme === 'light' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:bg-[#d5e2c8]'}`}
-              title="Light theme"
-            >
-              <Sun size={14} />
-              Light
-            </button>
-            <button
-              type="button"
-              onClick={() => setTheme('dark')}
-              aria-pressed={theme === 'dark'}
-              className={`flex items-center justify-center gap-2 rounded px-2 py-2 text-xs font-semibold transition-colors ${theme === 'dark' ? 'bg-gray-900 text-white shadow-sm' : 'text-gray-600 hover:bg-[#d5e2c8]'}`}
-              title="Dark theme"
-            >
-              <Moon size={14} />
-              Dark
-            </button>
+        <div className="mt-auto pt-5 border-t border-[#d1dcca] space-y-4">
+          <div className="flex items-center gap-3 px-1">
+            <div className="h-10 w-10 rounded-full bg-[#9c3029] text-white flex items-center justify-center text-sm font-bold shrink-0">
+              {(authState.username || 'admin').slice(0, 1).toUpperCase()}
+            </div>
+            <div className="min-w-0">
+              <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Signed in as</div>
+              <div className="text-sm font-bold text-gray-900 truncate">{authState.username}</div>
+            </div>
           </div>
+          <button
+            type="button"
+            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+            role="switch"
+            aria-checked={theme === 'dark'}
+            className={`w-full flex items-center justify-between gap-3 rounded-md border p-3 text-left transition-colors ${theme === 'dark' ? 'bg-[#2f3a4a] border-[#465366] text-white' : 'bg-white/55 border-[#d1dcca] text-gray-800 hover:bg-white/75'}`}
+            title="Toggle dark mode"
+          >
+            <span className="flex items-center gap-3 text-sm font-bold">
+              <Moon size={18} />
+              Dark Mode
+            </span>
+            <span className={`relative h-7 w-12 rounded-full transition-colors ${theme === 'dark' ? 'bg-[#0b0f14]' : 'bg-gray-300'}`}>
+              <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${theme === 'dark' ? 'translate-x-6' : 'translate-x-1'}`} />
+            </span>
+          </button>
           <button
             type="button"
             onClick={handleLogout}
             className="w-full flex items-center gap-3 p-3 rounded-md text-sm font-semibold text-gray-700 transition-colors hover:bg-[#d5e2c8] hover:text-[#9c3029]"
-            title="Logout"
+            title="Log out"
           >
             <LogOut size={18} />
-            <span>Logout</span>
+            <span>Log out</span>
           </button>
         </div>
       </nav>
 
       <main className="flex-1 flex flex-col relative overflow-y-auto bg-gray-50/50">
-        <header className="h-16 flex items-center justify-between px-10 bg-white sticky top-0 z-20 shadow-sm border-b border-gray-100">
-          <div className="text-xs font-semibold text-gray-500">Signed in as <span className="text-gray-800">{authState.username}</span></div>
+        <header className="h-16 flex items-center justify-end px-10 bg-white sticky top-0 z-20 shadow-sm border-b border-gray-100">
           <div className="flex items-center gap-3">
             <button onClick={fetchHealth} className={`px-2.5 py-2 border rounded-md text-xs font-semibold flex items-center gap-2 ${!health?.status ? 'border-gray-200 text-gray-600 bg-white' : health.status === 'ok' ? 'border-green-200 text-green-700 bg-green-50' : health.status === 'warn' ? 'border-amber-200 text-amber-700 bg-amber-50' : 'border-red-200 text-red-700 bg-red-50'}`} title="Refresh health status">
               <HeartPulse size={15} />
