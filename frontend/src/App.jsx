@@ -1803,15 +1803,15 @@ export default function App() {
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
             role="switch"
             aria-checked={theme === 'dark'}
-            className={`w-full flex items-center justify-between gap-3 rounded-md border p-3 text-left transition-colors ${theme === 'dark' ? 'bg-[#2f3a4a] border-[#465366] text-white' : 'bg-white/55 border-[#d1dcca] text-gray-800 hover:bg-white/75'}`}
+            className={`w-full flex items-center justify-between gap-3 rounded-2xl border px-3 py-2.5 text-left transition-colors ${theme === 'dark' ? 'bg-[#2b3544] border-[#4b5565] text-white' : 'bg-white/55 border-[#d1dcca] text-gray-800 hover:bg-white/75'}`}
             title="Toggle dark mode"
           >
-            <span className="flex items-center gap-3 text-sm font-bold">
-              <Moon size={18} />
+            <span className="flex items-center gap-2.5 text-sm font-bold">
+              <Moon size={17} />
               Dark Mode
             </span>
-            <span className={`relative h-7 w-12 rounded-full transition-colors ${theme === 'dark' ? 'bg-[#0b0f14]' : 'bg-gray-300'}`}>
-              <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${theme === 'dark' ? 'translate-x-6' : 'translate-x-1'}`} />
+            <span className={`relative h-6 w-11 rounded-full transition-colors ${theme === 'dark' ? 'bg-slate-300' : 'bg-gray-300'}`}>
+              <span className={`absolute top-1 h-4 w-4 rounded-full shadow-sm transition-transform ${theme === 'dark' ? 'translate-x-6 bg-slate-800' : 'translate-x-1 bg-white'}`} />
             </span>
           </button>
           <button
