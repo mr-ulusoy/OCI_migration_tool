@@ -1,6 +1,6 @@
 # OCI Migrator Pro
 
-Admin tool for OCI migration and cloud data sync.
+Self-hosted admin console for moving file and object data into Oracle Cloud Infrastructure (OCI) Object Storage, and for migrating OCI VM images between OCI tenants.
 
 - React/Vite frontend
 - FastAPI backend
@@ -8,6 +8,28 @@ Admin tool for OCI migration and cloud data sync.
 - rclone sync/copy jobs
 - OCI SDK VM and Object Storage operations
 - persistent job run history and runtime config export
+
+## Main Use Cases
+
+- Move or back up data from AWS S3, Google Cloud Storage, Azure Blob Storage, S3-compatible storage, OCI Object Storage, and on-premises/server-local folders into OCI Object Storage.
+- Use the server as a controlled ingest point for local data, with optional SMB and NFSv4 shares for users or systems that need to drop files into managed local folders.
+- Create scheduled backup jobs with copy/sync mode, bandwidth and API TPS limits, OCI object metadata, local cleanup after successful jobs, persistent run history, and downloadable job logs.
+- Manage OCI Object Storage buckets, folders, object versioning state, auto-tiering state, and bucket lifecycle policy rules.
+- Export and import runtime configuration backups for easier rebuilds, upgrades, and repeated installations.
+- Migrate OCI VM images from one OCI tenant/profile to another tenant/profile. VM image migration is separate from file backup jobs and can stop selected source VMs before creating and moving images.
+
+## Supported Data Paths
+
+| Source | Target |
+| --- | --- |
+| AWS S3 | OCI Object Storage bucket |
+| Google Cloud Storage | OCI Object Storage bucket |
+| Azure Blob Storage | OCI Object Storage bucket |
+| OCI Object Storage | OCI Object Storage bucket |
+| S3-compatible object storage | OCI Object Storage bucket |
+| Server local folder, SMB/NFS ingest folder, or mounted on-premises share | OCI Object Storage bucket |
+
+For VM image migration, the source is an OCI tenant/profile with compute instances and the destination is another OCI tenant/profile with an Object Storage bucket for the exported image workflow.
 
 ## Quick Install
 
