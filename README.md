@@ -159,6 +159,14 @@ Server local folders can optionally be shared from the UI with SMB, NFSv4, or bo
 - [Recommendations](docs/RECOMMENDATIONS.md)
 - [GitHub Actions CI template](docs/ci/github-actions.yml)
 
+## License
+
+OCI Migrator Pro is source-available proprietary software owned by Mr. Ulusoy (`mr-ulusoy`).
+You may download, install, and run unmodified copies, but you may not modify, redistribute, publish, sublicense, sell, or provide modified versions without prior written permission.
+
+Attribution is required: `OCI Migrator Pro by Mr. Ulusoy (mr-ulusoy)`.
+See [LICENSE](LICENSE) for the full terms.
+
 ## Security Note
 
 This is an admin tool. Run it behind VPN or a private network when possible. If it ever becomes internet-facing, add HTTPS and restrict inbound access.
