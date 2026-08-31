@@ -220,6 +220,58 @@ function backupSummaryParts(summary = {}) {
   return parts;
 }
 
+function localDateKey(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function buildBackupActivity(runs = [], dayCount = 7, now = new Date()) {
+  const firstDay = new Date(now);
+  firstDay.setHours(0, 0, 0, 0);
+  firstDay.setDate(firstDay.getDate() - (dayCount - 1));
+
+  const days = Array.from({ length: dayCount }, (_, index) => {
+    const date = new Date(firstDay);
+    date.setDate(firstDay.getDate() + index);
+    return {
+      key: localDateKey(date),
+      label: date.toLocaleDateString(undefined, { weekday: 'short' }),
+      dateLabel: date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }),
+      bytes: 0,
+      success: 0,
+      failed: 0,
+      other: 0
+    };
+  });
+  const daysByKey = new Map(days.map(day => [day.key, day]));
+
+  runs.forEach(run => {
+    if (run.kind !== 'data_sync') return;
+    const timestamp = run.finished_at || run.updated_at || run.created_at;
+    const day = daysByKey.get(localDateKey(timestamp));
+    if (!day) return;
+
+    day.bytes += Math.max(0, Number(run.rclone_summary?.bytes) || 0);
+    const status = String(run.status || '').toLowerCase();
+    if (status === 'success') day.success += 1;
+    else if (status === 'failed' || status === 'timeout') day.failed += 1;
+    else day.other += 1;
+  });
+
+  return {
+    days,
+    totalBytes: days.reduce((total, day) => total + day.bytes, 0),
+    success: days.reduce((total, day) => total + day.success, 0),
+    failed: days.reduce((total, day) => total + day.failed, 0),
+    other: days.reduce((total, day) => total + day.other, 0),
+    maxBytes: Math.max(...days.map(day => day.bytes), 0)
+  };
+}
+
 function cleanJobMessage(value = '') {
   const message = String(value || '').replace(/^rclone\s+/i, '').trim();
   return message ? `${message.charAt(0).toUpperCase()}${message.slice(1)}` : '';
@@ -562,7 +614,7 @@ export default function App() {
 
   const fetchJobRuns = async () => {
     try {
-      const res = await api.get('/job-history?limit=60');
+      const res = await api.get('/job-history?limit=300');
       setJobRuns(res.data.runs || []);
     } catch (err) {
       console.error(err);
@@ -747,6 +799,30 @@ export default function App() {
       lastSuccessAt: lastSuccess?.finished_at || lastSuccess?.updated_at || lastSuccess?.created_at || ''
     };
   }, [jobRuns, jobs, latestRunByJob]);
+
+  const backupActivity = useMemo(() => buildBackupActivity(jobRuns), [jobRuns]);
+  const activityChart = useMemo(() => {
+    const width = 760;
+    const height = 190;
+    const left = 58;
+    const right = 18;
+    const top = 18;
+    const bottom = 28;
+    const baseline = height - bottom;
+    const plotWidth = width - left - right;
+    const plotHeight = baseline - top;
+    const scaleMax = backupActivity.maxBytes || 1;
+    const points = backupActivity.days.map((day, index) => ({
+      ...day,
+      x: left + (plotWidth * index) / Math.max(backupActivity.days.length - 1, 1),
+      y: baseline - (day.bytes / scaleMax) * plotHeight
+    }));
+    const linePath = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
+    const areaPath = points.length
+      ? `M ${points[0].x} ${baseline} L ${points.map(point => `${point.x} ${point.y}`).join(' L ')} L ${points[points.length - 1].x} ${baseline} Z`
+      : '';
+    return { width, height, left, right, top, baseline, points, linePath, areaPath, scaleMax };
+  }, [backupActivity]);
 
   const handleExportRuntimeConfig = async () => {
     setExportingConfig(true);
@@ -3124,6 +3200,86 @@ export default function App() {
                   <div className="mt-2 flex items-start gap-2">
                     <CheckCircle size={16} className="mt-0.5 shrink-0 text-green-600" />
                     <span className="text-sm font-semibold leading-5 text-gray-700">{formatTimestamp(dashboardStats.lastSuccessAt)}</span>
+                  </div>
+                </div>
+              </section>
+
+              <section className="ui-panel overflow-hidden" aria-labelledby="backup-activity-title">
+                <div className="flex flex-col gap-3 border-b border-gray-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+                  <div className="flex items-start gap-2.5 text-left">
+                    <Activity size={17} className="mt-0.5 text-[#a9342d]" />
+                    <div>
+                      <h3 id="backup-activity-title" className="text-sm font-bold text-gray-900">Backup Activity</h3>
+                      <p className="mt-0.5 text-xs text-gray-500">Transferred data and run outcomes over the last seven days.</p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-[10px] font-semibold">
+                    <span className="ui-mini-tag"><span className="h-2 w-2 rounded-full bg-blue-600" />{formatBytes(backupActivity.totalBytes)} transferred</span>
+                    <span className="ui-mini-tag"><span className="h-2 w-2 rounded-full bg-green-600" />{backupActivity.success} successful</span>
+                    <span className="ui-mini-tag"><span className="h-2 w-2 rounded-full bg-red-600" />{backupActivity.failed} failed</span>
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto px-4 pb-4 pt-3 sm:px-5">
+                  <div className="min-w-[680px]">
+                    <svg
+                      viewBox={`0 0 ${activityChart.width} ${activityChart.height}`}
+                      className="block h-[190px] w-full"
+                      role="img"
+                      aria-label="Transferred backup data for each of the last seven days"
+                    >
+                      <title>Transferred backup data for each of the last seven days</title>
+                      {[0, 0.5, 1].map(ratio => {
+                        const y = activityChart.top + (activityChart.baseline - activityChart.top) * ratio;
+                        const value = backupActivity.maxBytes * (1 - ratio);
+                        return (
+                          <g key={ratio}>
+                            <line
+                              x1={activityChart.left}
+                              x2={activityChart.width - activityChart.right}
+                              y1={y}
+                              y2={y}
+                              className="backup-chart-grid"
+                            />
+                            <text x={activityChart.left - 10} y={y + 4} textAnchor="end" className="backup-chart-axis-label">
+                              {formatBytes(value)}
+                            </text>
+                          </g>
+                        );
+                      })}
+                      <path d={activityChart.areaPath} className="backup-chart-area" />
+                      <path d={activityChart.linePath} className="backup-chart-line" />
+                      {activityChart.points.map(point => (
+                        <g key={point.key}>
+                          <title>{`${point.dateLabel}: ${formatBytes(point.bytes)}, ${point.success} successful, ${point.failed} failed`}</title>
+                          <circle cx={point.x} cy={point.y} r="4" className="backup-chart-point" />
+                          <text x={point.x} y={activityChart.height - 7} textAnchor="middle" className="backup-chart-day-label">
+                            {point.label}
+                          </text>
+                        </g>
+                      ))}
+                    </svg>
+
+                    <div className="ml-[58px] mr-[18px] grid grid-cols-7 border-t border-gray-100 pt-3">
+                      {backupActivity.days.map(day => {
+                        const runCount = day.success + day.failed + day.other;
+                        return (
+                          <div key={day.key} className="border-r border-gray-100 px-2 text-center last:border-r-0">
+                            <div className="text-[10px] font-semibold text-gray-500">{day.dateLabel}</div>
+                            <div className="mt-1 text-xs font-bold text-gray-800">{runCount} {runCount === 1 ? 'run' : 'runs'}</div>
+                            <div className="mx-auto mt-2 flex h-1.5 max-w-14 overflow-hidden rounded-full bg-gray-100" aria-hidden="true">
+                              {runCount > 0 && (
+                                <>
+                                  <span className="bg-green-500" style={{ flexGrow: day.success }} />
+                                  <span className="bg-red-500" style={{ flexGrow: day.failed }} />
+                                  <span className="bg-amber-400" style={{ flexGrow: day.other }} />
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
               </section>

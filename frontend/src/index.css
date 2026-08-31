@@ -175,6 +175,37 @@ textarea {
   -webkit-line-clamp: 3;
 }
 
+.backup-chart-grid {
+  stroke: #e6e9ee;
+  stroke-width: 1;
+  stroke-dasharray: 3 5;
+}
+
+.backup-chart-area {
+  fill: rgba(37, 99, 235, 0.12);
+}
+
+.backup-chart-line {
+  fill: none;
+  stroke: #2563eb;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.backup-chart-point {
+  fill: #ffffff;
+  stroke: #2563eb;
+  stroke-width: 2.5;
+}
+
+.backup-chart-axis-label,
+.backup-chart-day-label {
+  fill: #7c8798;
+  font-size: 10px;
+  font-weight: 600;
+}
+
 [data-theme="dark"] {
   color: #d8dee9 !important;
 }
@@ -228,6 +259,28 @@ textarea {
   border-color: #343b47;
   background: #1b2029;
   color: #aeb7c5;
+}
+
+[data-theme="dark"] .backup-chart-grid {
+  stroke: #2b323d;
+}
+
+[data-theme="dark"] .backup-chart-area {
+  fill: rgba(96, 165, 250, 0.14);
+}
+
+[data-theme="dark"] .backup-chart-line {
+  stroke: #60a5fa;
+}
+
+[data-theme="dark"] .backup-chart-point {
+  fill: #151922;
+  stroke: #60a5fa;
+}
+
+[data-theme="dark"] .backup-chart-axis-label,
+[data-theme="dark"] .backup-chart-day-label {
+  fill: #8d98a8;
 }
 
 [data-theme="dark"] .bg-white {
