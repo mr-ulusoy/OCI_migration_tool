@@ -88,7 +88,7 @@ fi
 if [ "$PURGE_PROJECT" = "1" ]; then
   echo "Removing project directory: $PROJECT_DIR"
   cd /
-  rm -rf "$PROJECT_DIR"
+  "${SUDO[@]}" rm -rf "$PROJECT_DIR"
 else
   echo "Project directory preserved: $PROJECT_DIR"
 fi
