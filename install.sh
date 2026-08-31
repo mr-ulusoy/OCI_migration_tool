@@ -507,6 +507,7 @@ install_system_dependencies() {
   fi
   "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
     ca-certificates \
+    cifs-utils \
     curl \
     gnupg \
     iproute2 \
@@ -514,6 +515,7 @@ install_system_dependencies() {
     iptables-persistent \
     logrotate \
     netplan.io \
+    nfs-common \
     openssl \
     python3 \
     python3-pip \
