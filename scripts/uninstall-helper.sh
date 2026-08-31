@@ -40,6 +40,8 @@ execute_uninstall() {
   OCI_MIGRATOR_ENV_FILE="$ENV_FILE" \
   OCI_MIGRATOR_LOCAL_DATA_ROOT="$LOCAL_DATA_ROOT" \
     "$uninstall_script" "${args[@]}"
+
+  rm -f "/etc/sudoers.d/${SERVICE_PREFIX}-uninstall" "$CONFIG_FILE" "$HELPER_PATH"
 }
 
 schedule_uninstall() {
@@ -71,6 +73,7 @@ case "${1:-}" in
     ;;
   execute)
     load_config
+    trap 'rmdir "$SCHEDULE_LOCK" 2>/dev/null || true' EXIT
     case "${2:-0}" in
       0|1) execute_uninstall "${2:-0}" ;;
       *) fail "Invalid purge flag." ;;
