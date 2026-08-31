@@ -854,16 +854,23 @@ export default function App() {
     const byteScaleMax = backupActivity.maxBytes || 1;
     const fileScaleMax = backupActivity.maxFiles || 1;
     const columnWidth = width / Math.max(backupActivity.days.length, 1);
-    const points = backupActivity.days.map((day, index) => ({
+    const points = backupActivity.days.map((day) => ({
       ...day,
-      x: columnWidth * index + columnWidth / 2,
       byteY: baseline - (day.bytes / byteScaleMax) * plotHeight,
       fileY: baseline - (day.files / fileScaleMax) * plotHeight
     }));
     const buildPaths = (yKey) => {
-      const linePath = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point[yKey]}`).join(' ');
+      const linePath = points.map((point, index) => {
+        const left = columnWidth * index;
+        const right = left + columnWidth;
+        return `${index === 0 ? 'M' : 'L'} ${left} ${point[yKey]} L ${right} ${point[yKey]}`;
+      }).join(' ');
       const areaPath = points.length
-        ? `M 0 ${baseline} L 0 ${points[0][yKey]} L ${points.map(point => `${point.x} ${point[yKey]}`).join(' L ')} L ${width} ${points[points.length - 1][yKey]} L ${width} ${baseline} Z`
+        ? `M 0 ${baseline} ${points.map((point, index) => {
+          const left = columnWidth * index;
+          const right = left + columnWidth;
+          return `L ${left} ${point[yKey]} L ${right} ${point[yKey]}`;
+        }).join(' ')} L ${width} ${baseline} Z`
         : '';
       return { linePath, areaPath };
     };
