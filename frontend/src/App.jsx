@@ -1,11 +1,12 @@
-import { useMemo, useState, useEffect } from 'react';
+import { useMemo, useRef, useState, useEffect } from 'react';
 import axios from 'axios';
 import loginHeroImage from './assets/oci-migrator-pro-hero.png';
 import { 
   Cloud, Shield, Database, Search, Key, Loader2, CheckCircle,
   ArrowRight, FileText, Archive, Edit, Trash2,
   Folder, Plus, RefreshCw, Globe, Cpu, Clock, Activity, Terminal,
-  Lock, LogOut, Download, Upload, HeartPulse, AlertCircle, X, Settings, Save, Tags, HardDrive, Moon, Network
+  Lock, LogOut, Download, Upload, HeartPulse, AlertCircle, X, Settings, Save, Tags, HardDrive, Moon, Network,
+  LayoutDashboard, Menu, Play, Sun
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (
@@ -96,6 +97,15 @@ const DEFAULT_NEW_BUCKET_CONFIG = {
   storageTier: 'Standard',
   autoTiering: 'Disabled',
   versioning: 'Disabled'
+};
+const VIEW_META = {
+  keys: { group: 'Infrastructure', title: 'Credentials' },
+  datasync: { group: 'Operations', title: 'Job Dashboard' },
+  jobs: { group: 'Operations', title: 'Backup Jobs' },
+  builder: { group: 'Operations', title: 'Backup Job' },
+  explorer: { group: 'Infrastructure', title: 'VM Image Migration' },
+  storage: { group: 'Infrastructure', title: 'OCI Object Storage' },
+  settings: { group: 'System', title: 'Settings' }
 };
 
 function getLegacyApiToken() {
@@ -345,8 +355,10 @@ function normalizeLifecyclePolicy(policy = {}) {
 }
 
 export default function App() {
+  const mainScrollRef = useRef(null);
   const [authState, setAuthState] = useState(getInitialAuth);
   const [theme, setTheme] = useState(getInitialTheme);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loginForm, setLoginForm] = useState({ username: 'admin', password: '' });
   const [loginError, setLoginError] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
@@ -430,7 +442,7 @@ export default function App() {
   const [vms, setVms] = useState([]);
   const [selectedVms, setSelectedVms] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [view, setView] = useState('keys'); 
+  const [view, setView] = useState('datasync');
   const [searchTerm, setSearchTerm] = useState('');
   
   // Multi-Tenant State (OCI Profiles)
@@ -669,7 +681,7 @@ export default function App() {
     }
   };
 
-  const handleCheckUpgrade = async () => {
+  const fetchUpgradeCheck = async (silent = false) => {
     setCheckingUpgrade(true);
     try {
       const res = await api.post('/upgrade/check');
@@ -681,11 +693,17 @@ export default function App() {
         status: res.data.up_to_date ? 'success' : 'idle',
         message: res.data.up_to_date ? 'You are on the latest version.' : 'A new version is available.'
       }));
+      return res.data;
     } catch (err) {
-      showError('Failed to check for updates', err);
+      if (silent) console.error(err);
+      else showError('Failed to check for updates', err);
+      return null;
+    } finally {
+      setCheckingUpgrade(false);
     }
-    setCheckingUpgrade(false);
   };
+
+  const handleCheckUpgrade = () => fetchUpgradeCheck(false);
 
   const handleStartUpgrade = async () => {
     if (!window.confirm('Start upgrade from GitHub now? The service may restart during installation.')) {
@@ -716,6 +734,19 @@ export default function App() {
     });
     return byJob;
   }, [jobRuns]);
+
+  const dashboardStats = useMemo(() => {
+    const activeLatestRuns = jobs.map(job => latestRunByJob[job.name]).filter(Boolean);
+    const running = activeLatestRuns.filter(run => ['queued', 'running', 'retrying'].includes(String(run.status || '').toLowerCase())).length;
+    const attention = activeLatestRuns.filter(run => ['failed', 'timeout'].includes(String(run.status || '').toLowerCase())).length;
+    const lastSuccess = jobRuns.find(run => run.kind === 'data_sync' && String(run.status || '').toLowerCase() === 'success');
+    return {
+      total: jobs.length,
+      running,
+      attention,
+      lastSuccessAt: lastSuccess?.finished_at || lastSuccess?.updated_at || lastSuccess?.created_at || ''
+    };
+  }, [jobRuns, jobs, latestRunByJob]);
 
   const handleExportRuntimeConfig = async () => {
     setExportingConfig(true);
@@ -1011,6 +1042,7 @@ export default function App() {
     fetchNetworkSettings();
     fetchRcloneDefaultSettings();
     fetchUpgradeStatus();
+    fetchUpgradeCheck(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, api]);
 
@@ -1857,6 +1889,45 @@ export default function App() {
     && !bucketProtection.auto_tiering_enabled
     && bucketProtection.has_infrequent_access_lifecycle_rule
   );
+  const currentViewMeta = VIEW_META[view] || VIEW_META.datasync;
+  const healthChecks = Object.values(health?.checks || {});
+  const healthIssueCount = healthChecks.filter(check => check?.status !== 'ok').length;
+  const updateAvailable = upgradeCheck?.up_to_date === false;
+  const upgradeRunning = upgradeStatus?.status === 'running';
+  const navigationGroups = [
+    {
+      label: 'Operations',
+      items: [
+        { id: 'datasync', label: 'Job Dashboard', icon: LayoutDashboard },
+        { id: 'jobs', label: 'Backup Jobs', icon: Activity },
+        { id: 'builder', label: 'New Backup Job', icon: Plus }
+      ]
+    },
+    {
+      label: 'Infrastructure',
+      items: [
+        { id: 'keys', label: 'Credentials', icon: Key },
+        { id: 'storage', label: 'OCI Object Storage', icon: Archive },
+        { id: 'explorer', label: 'VM Image Migration', icon: Database }
+      ]
+    },
+    {
+      label: 'System',
+      items: [
+        { id: 'settings', label: 'Settings', icon: Settings }
+      ]
+    }
+  ];
+
+  const handleNavigate = (targetView) => {
+    if (targetView === 'builder') {
+      startNewSyncJob();
+    } else {
+      setView(targetView);
+    }
+    setSidebarOpen(false);
+    window.requestAnimationFrame(() => mainScrollRef.current?.scrollTo({ top: 0, left: 0 }));
+  };
 
   if (!isAuthenticated) {
     return (
@@ -1922,7 +1993,7 @@ export default function App() {
   }
 
   return (
-    <div data-theme={theme} className="min-h-screen bg-white text-gray-800 flex overflow-hidden font-sans">
+    <div data-theme={theme} className="app-shell flex h-screen overflow-hidden font-sans text-gray-800">
       {confirmDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/45 p-4">
           <div className="w-full max-w-lg bg-white border border-gray-200 rounded-md shadow-2xl">
@@ -1966,28 +2037,60 @@ export default function App() {
           </div>
         </div>
       )}
-      {/* Sidebar - MJUK SALVIAGRÖN (#e1ebd5) */}
-      <nav className="w-64 bg-[#e1ebd5] flex flex-col p-6 z-10 border-r border-[#d1dcca]">
-        <div className="flex items-center gap-3 mb-10 px-2">
-          <div className="bg-[#9c3029] p-1.5 rounded-md"><Cpu size={20} className="text-white" /></div>
-          <h1 className="text-lg font-bold tracking-tight text-gray-900">OCI Migrator Pro</h1>
+      {sidebarOpen && (
+        <button
+          type="button"
+          className="fixed inset-0 z-30 bg-gray-950/45 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+          aria-label="Close navigation"
+        />
+      )}
+
+      <nav className={`app-sidebar fixed inset-y-0 left-0 z-40 flex w-[248px] flex-col overflow-hidden border-r px-4 py-5 transition-transform lg:static lg:translate-x-0 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+        <div className="flex items-center justify-between gap-3 px-2 pb-6">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[#a9342d] shadow-sm"><Cpu size={19} className="text-white" /></div>
+            <div className="min-w-0">
+              <h1 className="truncate text-sm font-bold text-white">OCI Migrator Pro</h1>
+              <p className="mt-0.5 text-[11px] text-gray-500">Backup operations</p>
+            </div>
+          </div>
+          <button type="button" onClick={() => setSidebarOpen(false)} className="app-sidebar-icon mobile-only" title="Close navigation"><X size={17} /></button>
         </div>
-        <div className="space-y-1 font-medium text-sm text-gray-700">
-          <button onClick={() => setView('keys')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'keys' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Key size={18} /> <span>Credentials</span></button>
-          <button onClick={() => setView('datasync')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'datasync' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Activity size={18} /> <span>Job Dashboard</span></button>
-          <button onClick={startNewSyncJob} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'builder' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Plus size={18} /> <span>New Backup Job</span></button>
-          <button onClick={() => setView('explorer')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'explorer' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Database size={18} /> <span>VM Image Migration</span></button>
-          <button onClick={() => setView('storage')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'storage' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Archive size={18} /> <span>OCI Object Storage</span></button>
-          <button onClick={() => setView('settings')} className={`w-full flex items-center gap-3 p-3 rounded-md transition-colors ${view === 'settings' ? 'bg-[#cddac0] font-semibold text-gray-900' : 'hover:bg-[#d5e2c8]'}`}><Settings size={18} /> <span>Settings</span></button>
+
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto pb-5">
+          {navigationGroups.map(group => (
+            <div key={group.label}>
+              <div className="px-3 pb-1.5 text-[10px] font-bold uppercase text-gray-600">{group.label}</div>
+              <div className="space-y-1">
+                {group.items.map(item => {
+                  const Icon = item.icon;
+                  const isActive = view === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => handleNavigate(item.id)}
+                      className={`app-nav-link ${isActive ? 'is-active' : ''}`}
+                    >
+                      <Icon size={17} />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </div>
-        <div className="mt-auto pt-5 border-t border-[#d1dcca] space-y-4">
-          <div className="flex items-center gap-3 px-1">
-            <div className="h-10 w-10 rounded-full bg-[#9c3029] text-white flex items-center justify-center text-sm font-bold shrink-0">
+
+        <div className="shrink-0 border-t border-white/10 pt-4">
+          <div className="mb-3 flex items-center gap-3 px-2">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#a9342d] text-xs font-bold text-white">
               {(authState.username || 'admin').slice(0, 1).toUpperCase()}
             </div>
             <div className="min-w-0">
-              <div className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Signed in as</div>
-              <div className="text-sm font-bold text-gray-900 truncate">{authState.username}</div>
+              <div className="truncate text-sm font-semibold text-white">{authState.username}</div>
+              <div className="text-[11px] text-gray-500">Administrator</div>
             </div>
           </div>
           <button
@@ -1995,41 +2098,42 @@ export default function App() {
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
             role="switch"
             aria-checked={theme === 'dark'}
-            className={`w-full flex items-center justify-between gap-3 rounded-2xl border px-3 py-2.5 text-left transition-colors ${theme === 'dark' ? 'bg-[#2b3544] border-[#4b5565] text-white' : 'bg-white/55 border-[#d1dcca] text-gray-800 hover:bg-white/75'}`}
-            title="Toggle dark mode"
+            className="app-theme-toggle"
+            title="Toggle color theme"
           >
-            <span className="flex items-center gap-2.5 text-sm font-bold">
-              <Moon size={17} />
-              Dark Mode
+            <span className="flex items-center gap-2 text-xs font-semibold">
+              {theme === 'dark' ? <Moon size={15} /> : <Sun size={15} />}
+              {theme === 'dark' ? 'Dark mode' : 'Light mode'}
             </span>
-            <span className={`relative h-6 w-11 rounded-full transition-colors ${theme === 'dark' ? 'bg-slate-300' : 'bg-gray-300'}`}>
-              <span className={`absolute top-1 h-4 w-4 rounded-full shadow-sm transition-transform ${theme === 'dark' ? 'translate-x-6 bg-slate-800' : 'translate-x-1 bg-white'}`} />
+            <span className={`relative h-5 w-9 rounded-full transition-colors ${theme === 'dark' ? 'bg-gray-300' : 'bg-gray-600'}`}>
+              <span className={`absolute left-0 top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${theme === 'dark' ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
             </span>
           </button>
-          <button
-            type="button"
-            onClick={handleLogout}
-            className="w-full flex items-center gap-3 p-3 rounded-md text-sm font-semibold text-gray-700 transition-colors hover:bg-[#d5e2c8] hover:text-[#9c3029]"
-            title="Log out"
-          >
-            <LogOut size={18} />
+          <button type="button" onClick={handleLogout} className="app-nav-link mt-1" title="Log out">
+            <LogOut size={17} />
             <span>Log out</span>
           </button>
         </div>
       </nav>
 
-      <main className="flex-1 flex flex-col relative overflow-y-auto bg-gray-50/50">
-        <header className="h-16 flex items-center justify-end px-10 bg-white sticky top-0 z-20 shadow-sm border-b border-gray-100">
-          <div className="flex items-center gap-3">
-            <button onClick={fetchHealth} className={`px-2.5 py-2 border rounded-md text-xs font-semibold flex items-center gap-2 ${!health?.status ? 'border-gray-200 text-gray-600 bg-white' : health.status === 'ok' ? 'border-green-200 text-green-700 bg-green-50' : health.status === 'warn' ? 'border-amber-200 text-amber-700 bg-amber-50' : 'border-red-200 text-red-700 bg-red-50'}`} title="Refresh health status">
-              <HeartPulse size={15} />
-              {health?.status || 'health'}
-            </button>
+      <main ref={mainScrollRef} className="app-main relative flex h-screen min-w-0 flex-1 flex-col overflow-y-auto">
+        <header className="app-topbar sticky top-0 z-20 flex h-16 shrink-0 items-center justify-between border-b px-4 sm:px-6 xl:px-8">
+          <div className="flex min-w-0 items-center gap-3">
+            <button type="button" onClick={() => setSidebarOpen(true)} className="ui-icon-button mobile-only" title="Open navigation"><Menu size={18} /></button>
+            <div className="min-w-0">
+              <div className="text-[10px] font-semibold uppercase text-gray-400">{currentViewMeta.group}</div>
+              <div className="truncate text-sm font-bold text-gray-900">{currentViewMeta.title}</div>
+            </div>
           </div>
+          <button onClick={fetchHealth} className={`h-9 px-3 border rounded-md text-xs font-semibold flex items-center gap-2 ${!health?.status ? 'border-gray-200 text-gray-600 bg-white' : health.status === 'ok' ? 'border-green-200 text-green-700 bg-green-50' : health.status === 'warn' ? 'border-amber-200 text-amber-700 bg-amber-50' : 'border-red-200 text-red-700 bg-red-50'}`} title="Refresh health status">
+            <HeartPulse size={15} />
+            <span className="hidden sm:inline">System</span>
+            {health?.status || 'health'}
+          </button>
         </header>
 
         {notice && (
-          <div className="mx-8 mt-4 bg-white border border-gray-200 rounded-md shadow-sm p-4 flex items-start gap-3 text-left">
+          <div className="fixed right-4 top-20 z-30 flex w-[min(420px,calc(100vw-2rem))] items-start gap-3 rounded-md border border-gray-200 bg-white p-4 text-left shadow-xl sm:right-6">
             <AlertCircle size={18} className={notice.type === 'success' ? 'text-green-600 mt-0.5' : 'text-red-600 mt-0.5'} />
             <div className="flex-1 min-w-0">
               <div className={`text-sm font-bold ${notice.type === 'success' ? 'text-green-700' : 'text-red-700'}`}>{notice.title}</div>
@@ -2041,7 +2145,7 @@ export default function App() {
           </div>
         )}
 
-        <div className="p-8 pb-40 min-h-screen">
+        <div className="min-h-screen p-4 pb-32 sm:p-6 sm:pb-32 xl:p-8 xl:pb-40">
           {/* VIEW: CREDENTIALS */}
           {view === 'keys' && (
              <div className="max-w-7xl animate-in fade-in">
@@ -2912,198 +3016,316 @@ export default function App() {
 
           {/* VIEW: JOB DASHBOARD */}
           {view === 'datasync' && (
-            <div className="max-w-[1500px] mx-auto space-y-6 animate-in fade-in">
-              <h2 className="text-xl font-bold mb-6 flex items-center gap-2 text-gray-800"><Activity size={24} className="text-[#9c3029]"/> Active Backup Jobs</h2>
-              <div className="bg-white border border-gray-200 rounded-md shadow-sm overflow-hidden">
-                <div className="hidden lg:grid grid-cols-[minmax(150px,0.8fr)_minmax(300px,1.45fr)_minmax(160px,0.75fr)_minmax(220px,1fr)_128px] gap-4 px-4 py-2.5 bg-gray-50 border-b border-gray-100 text-[10px] uppercase font-bold tracking-wider text-gray-400">
-                  <div>Job</div>
-                  <div>Pipeline</div>
-                  <div>Schedule</div>
-                  <div>Last Run</div>
-                  <div className="text-right">Actions</div>
+            <div className="mx-auto max-w-[1560px] space-y-5 animate-in fade-in">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+                <div className="text-left">
+                  <div className="text-[11px] font-bold uppercase text-[#a9342d]">Backup operations</div>
+                  <h2 className="mt-1 text-2xl font-bold text-gray-900">Job Dashboard</h2>
+                  <p className="mt-1 text-sm text-gray-500">Monitor scheduled backups, run jobs, and inspect recent activity.</p>
                 </div>
-                <div className="divide-y divide-gray-100">
-                  {jobs.map(job => {
-                    const latestRun = latestRunByJob[job.name];
-                    const latestMessage = cleanJobMessage(latestRun?.error || latestRun?.details || '');
-                    const latestStatus = String(latestRun?.status || '').toLowerCase();
-                    const showLatestMessage = latestRun && latestStatus !== 'success' && latestMessage;
-                    const latestSummaryParts = backupSummaryParts(latestRun?.rclone_summary).slice(0, 3);
-                    const scheduleText = (() => {
-                      const schedule = job.schedule || {};
-                      if (schedule.frequency === 'none') return 'manual';
-                      if (schedule.frequency === 'weekly') return `weekly ${schedule.day_of_week || 'monday'} @ ${schedule.time || '02:00'}`;
-                      if (schedule.frequency === 'monthly') return `monthly day ${schedule.day_of_month || '1'} @ ${schedule.time || '02:00'}`;
-                      return `${schedule.frequency || 'manual'} @ ${schedule.time || '02:00'}`;
-                    })();
-                    const destination = `${job.dest_profile || ''}${job.dest_profile ? ':' : ''}${job.dest_bucket || ''}`;
-
-                    return (
-                      <div key={job.name}>
-                        <div className="grid grid-cols-1 lg:grid-cols-[minmax(150px,0.8fr)_minmax(300px,1.45fr)_minmax(160px,0.75fr)_minmax(220px,1fr)_128px] gap-4 items-center px-4 py-4 text-left min-h-[150px]">
-                          <div className="flex items-start gap-3 min-w-0">
-                            <RefreshCw className="text-[#9c3029] mt-1 shrink-0" size={16} />
-                            <div className="min-w-0">
-                              <div className="lg:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Job</div>
-                              <h3 className="font-bold text-sm text-gray-800 truncate">{job.name}</h3>
-                            </div>
-                          </div>
-                          <div className="min-w-0">
-                            <div className="lg:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Pipeline</div>
-                            <div className="space-y-1.5 font-mono">
-                              <div className="min-w-0">
-                                <div className="text-[9px] uppercase font-bold text-gray-400 font-sans leading-none">Source</div>
-                                <div className="text-xs text-gray-600 truncate mt-0.5" title={job.source_remote}>{job.source_remote}</div>
-                              </div>
-                              <div className="min-w-0">
-                                <div className="text-[9px] uppercase font-bold text-gray-400 font-sans leading-none">Destination</div>
-                                <div className="text-xs text-gray-700 font-semibold truncate mt-0.5" title={destination}>{destination}</div>
-                              </div>
-                            </div>
-                          </div>
-                          <div className="min-w-0">
-                            <div className="lg:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Schedule</div>
-                            <div className="flex flex-wrap items-center gap-2 min-w-0">
-                              <span className="text-xs text-gray-600 truncate flex items-center gap-1" title={scheduleText}><Clock size={12} className="shrink-0" />{scheduleText}</span>
-                              <span className="text-[10px] px-2 py-0.5 rounded-full border border-gray-200 bg-gray-50 text-gray-600 font-bold uppercase">{job.sync_mode || 'copy'}</span>
-                              {Boolean(job.metadata_tags?.length) && (
-                                <span className="text-[10px] text-gray-400 flex items-center gap-1">
-                                  <Tags size={11} /> {job.metadata_tags.length}
-                                </span>
-                              )}
-                              {job.local_retention?.enabled && (
-                                <span className="text-[10px] px-2 py-0.5 rounded-full border border-amber-200 bg-amber-50 text-amber-700 font-bold uppercase">
-                                  cleanup {job.local_retention.delete_after_days || 30}d
-                                </span>
-                              )}
-                              {job.bwlimit && (
-                                <span className="text-[10px] px-2 py-0.5 rounded-full border border-blue-100 bg-blue-50 text-blue-700 font-bold uppercase">
-                                  bw {job.bwlimit}
-                                </span>
-                              )}
-                              {Number(job.tpslimit) > 0 && (
-                                <span className="text-[10px] px-2 py-0.5 rounded-full border border-blue-100 bg-blue-50 text-blue-700 font-bold uppercase">
-                                  tps {job.tpslimit}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                          <div className="min-w-0">
-                            <div className="lg:hidden text-[9px] uppercase font-bold text-gray-400 mb-0.5">Last Run</div>
-                            {latestRun ? (
-                              <div className="min-w-0 flex flex-col items-start gap-1">
-                                <span className={`text-[9px] px-2 py-0.5 rounded-full border font-bold uppercase ${runStatusClass(latestRun.status)}`}>
-                                  {latestRun.status}
-                                </span>
-                                {showLatestMessage && (
-                                  <span className="text-[11px] text-gray-500 truncate max-w-full" title={latestMessage}>
-                                    {latestMessage}
-                                  </span>
-                                )}
-                                {latestSummaryParts.length > 0 && (
-                                  <div className="flex flex-wrap gap-1.5">
-                                    {latestSummaryParts.map((part) => (
-                                      <span key={part} className="text-[10px] px-1.5 py-0.5 rounded border border-gray-200 bg-gray-50 text-gray-500">
-                                        {part}
-                                      </span>
-                                    ))}
-                                  </div>
-                                )}
-                              </div>
-                            ) : (
-                              <span className="text-xs text-gray-400">Never</span>
-                            )}
-                          </div>
-                          <div className="flex flex-col gap-1.5 lg:items-stretch">
-                            <button onClick={() => handleEditJob(job)} className="h-8 w-full px-2 bg-white border border-gray-200 text-gray-600 rounded-md hover:text-[#9c3029] hover:bg-gray-50 text-xs font-semibold flex items-center justify-center gap-1.5" title="Edit job"><Edit size={13}/> Edit</button>
-                            <button onClick={() => handleRunManual(job)} className="h-8 w-full px-2 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#a63d2e] flex items-center justify-center gap-1.5"><RefreshCw size={13} /> Run Now</button>
-                            <button onClick={() => activeLogJob === job.name ? setActiveLogJob(null) : setActiveLogJob(job.name)} className={`h-8 w-full px-2 rounded-md transition-colors text-xs font-semibold flex items-center justify-center gap-1.5 ${activeLogJob === job.name ? 'bg-gray-100 text-gray-800 border border-gray-300' : 'bg-white border border-gray-200 text-gray-600 hover:text-[#9c3029] hover:bg-gray-50'}`} title="View latest log"><Terminal size={13}/> Log</button>
-                            <button onClick={() => handleDeleteJob(job.name)} className="h-8 w-full px-2 bg-white border border-gray-200 text-gray-500 rounded-md hover:text-[#9c3029] hover:bg-gray-50 text-xs font-semibold flex items-center justify-center gap-1.5" title="Delete job"><Trash2 size={13}/> Delete</button>
-                          </div>
-                        </div>
-                        {activeLogJob === job.name && (
-                          <div className="px-4 pb-4">
-                            <div className="bg-gray-900 border border-gray-800 rounded-md p-4 relative animate-in slide-in-from-top-2 shadow-inner">
-                              <pre className="text-[11px] font-mono text-gray-300 h-32 overflow-y-auto text-left">{liveLogData || "Awaiting process..."}</pre>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                  {jobs.length === 0 && <div className="text-center p-12 text-gray-500">No jobs saved.</div>}
-                </div>
-              </div>
-              <div className="bg-white border border-gray-200 rounded-md shadow-sm overflow-hidden">
-                <div className="flex items-center justify-between p-4 border-b border-gray-100">
-                  <h3 className="font-bold text-sm text-gray-800 flex items-center gap-2"><Clock size={16} className="text-[#9c3029]" /> Recent Runs</h3>
-                  <button onClick={fetchJobRuns} className="p-1.5 border border-gray-200 rounded-md text-gray-500 hover:text-[#9c3029] hover:bg-gray-50" title="Refresh job history">
-                    <RefreshCw size={14} />
+                <div className="grid grid-cols-2 gap-2 sm:flex">
+                  <button
+                    type="button"
+                    onClick={() => handleNavigate('jobs')}
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-gray-200 bg-white px-4 text-sm font-semibold text-gray-700 hover:border-[#a9342d] hover:text-[#a9342d]"
+                  >
+                    <Activity size={16} /> Backup Jobs
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleNavigate('builder')}
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-[#a9342d] px-4 text-sm font-semibold text-white shadow-sm hover:bg-[#8c2924]"
+                  >
+                    <Plus size={17} /> New Backup Job
                   </button>
                 </div>
-                <div className="divide-y divide-gray-100">
-                  {jobRuns.slice(0, 12).map(run => {
-                    const isDataSyncRun = run.kind === 'data_sync';
-                    const runMessage = cleanJobMessage(run.error || run.details);
-                    const showRunMessage = String(run.status || '').toLowerCase() !== 'success' && runMessage;
-                    const runSummaryParts = backupSummaryParts(run.rclone_summary);
-                    return (
-                      <div key={run.id}>
-                        <div className="p-4 flex items-start justify-between gap-4 text-left">
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className={`text-[10px] px-2 py-0.5 rounded-full border font-bold uppercase ${runStatusClass(run.status)}`}>{run.status}</span>
-                              <span className="font-semibold text-sm text-gray-800 truncate">{run.job_name || run.kind}</span>
-                              <span className="text-[11px] text-gray-400 uppercase">{run.trigger || 'manual'}</span>
+              </div>
+
+              <section className="ui-panel overflow-hidden" aria-label="System overview">
+                <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 sm:px-5">
+                  <div className="flex items-center gap-2.5 text-left">
+                    <HeartPulse size={17} className="text-[#a9342d]" />
+                    <h3 className="text-sm font-bold text-gray-900">System Overview</h3>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => { fetchHealth(); fetchUpgradeCheck(true); }}
+                      className="ui-icon-button"
+                      disabled={checkingUpgrade}
+                      title="Refresh system and update status"
+                      aria-label="Refresh system and update status"
+                    >
+                      <RefreshCw size={15} className={checkingUpgrade ? 'animate-spin' : ''} />
+                    </button>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2">
+                  <div className="flex items-start gap-3 border-b border-gray-100 px-4 py-4 text-left md:border-b-0 md:border-r sm:px-5">
+                    <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md border ${health?.status === 'ok' ? 'border-green-200 bg-green-50 text-green-700' : health?.status === 'warn' ? 'border-amber-200 bg-amber-50 text-amber-700' : health?.status === 'error' ? 'border-red-200 bg-red-50 text-red-700' : 'border-gray-200 bg-gray-50 text-gray-500'}`}>
+                      <HeartPulse size={17} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h4 className="text-xs font-bold text-gray-900">Service Health</h4>
+                        <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase ${health?.status === 'ok' ? 'border-green-200 bg-green-50 text-green-700' : health?.status === 'warn' ? 'border-amber-200 bg-amber-50 text-amber-700' : health?.status === 'error' ? 'border-red-200 bg-red-50 text-red-700' : 'border-gray-200 bg-gray-50 text-gray-500'}`}>
+                          {health?.status || 'checking'}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs leading-5 text-gray-500">
+                        {!health?.status ? 'Loading service checks...' : health?.status === 'ok' ? `${healthChecks.length} service checks passed.` : `${healthIssueCount || 1} service checks need attention.`}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3 px-4 py-4 text-left sm:px-5">
+                    <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md border ${upgradeRunning ? 'border-blue-200 bg-blue-50 text-blue-700' : updateAvailable ? 'border-amber-200 bg-amber-50 text-amber-700' : upgradeIsCurrent ? 'border-green-200 bg-green-50 text-green-700' : 'border-gray-200 bg-gray-50 text-gray-500'}`}>
+                      {upgradeRunning ? <Loader2 size={17} className="animate-spin" /> : <Download size={17} />}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h4 className="text-xs font-bold text-gray-900">Software Update</h4>
+                        <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase ${upgradeRunning ? 'border-blue-200 bg-blue-50 text-blue-700' : updateAvailable ? 'border-amber-200 bg-amber-50 text-amber-700' : upgradeIsCurrent ? 'border-green-200 bg-green-50 text-green-700' : 'border-gray-200 bg-gray-50 text-gray-500'}`}>
+                          {upgradeRunning ? 'running' : updateAvailable ? 'available' : upgradeIsCurrent ? 'current' : checkingUpgrade ? 'checking' : 'unknown'}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs leading-5 text-gray-500">
+                        {upgradeRunning ? 'The latest version is being installed.' : updateAvailable ? `Version ${latestUpgradeShort || 'latest'} is available in Settings.` : upgradeIsCurrent ? `You are on the latest version${upgradeStatus?.current_short ? ` (${upgradeStatus.current_short})` : ''}.` : checkingUpgrade ? 'Checking GitHub for updates...' : 'Update status is not available.'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="ui-panel grid grid-cols-2 overflow-hidden lg:grid-cols-4" aria-label="Backup overview">
+                <div className="border-b border-r border-gray-100 p-4 text-left lg:border-b-0">
+                  <div className="text-[10px] font-bold uppercase text-gray-400">Backup jobs</div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="text-2xl font-bold text-gray-900">{dashboardStats.total}</span>
+                    <Archive size={16} className="text-gray-400" />
+                  </div>
+                </div>
+                <div className="border-b border-gray-100 p-4 text-left lg:border-b-0 lg:border-r">
+                  <div className="text-[10px] font-bold uppercase text-gray-400">Running now</div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="text-2xl font-bold text-gray-900">{dashboardStats.running}</span>
+                    <Activity size={16} className={dashboardStats.running ? 'text-blue-600' : 'text-gray-400'} />
+                  </div>
+                </div>
+                <div className="border-r border-gray-100 p-4 text-left">
+                  <div className="text-[10px] font-bold uppercase text-gray-400">Needs attention</div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="text-2xl font-bold text-gray-900">{dashboardStats.attention}</span>
+                    <AlertCircle size={16} className={dashboardStats.attention ? 'text-red-600' : 'text-gray-400'} />
+                  </div>
+                </div>
+                <div className="p-4 text-left">
+                  <div className="text-[10px] font-bold uppercase text-gray-400">Last success</div>
+                  <div className="mt-2 flex items-start gap-2">
+                    <CheckCircle size={16} className="mt-0.5 shrink-0 text-green-600" />
+                    <span className="text-sm font-semibold leading-5 text-gray-700">{formatTimestamp(dashboardStats.lastSuccessAt)}</span>
+                  </div>
+                </div>
+              </section>
+            </div>
+          )}
+
+          {/* VIEW: BACKUP JOBS */}
+          {view === 'jobs' && (
+            <div className="mx-auto max-w-[1560px] space-y-5 animate-in fade-in">
+              <div className="flex flex-col gap-4 text-left sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <div className="text-[11px] font-bold uppercase text-[#a9342d]">Backup operations</div>
+                  <h2 className="mt-1 text-2xl font-bold text-gray-900">Backup Jobs</h2>
+                  <p className="mt-1 text-sm text-gray-500">Manage backup pipelines and review their latest runs.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleNavigate('builder')}
+                  className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-[#a9342d] px-4 text-sm font-semibold text-white shadow-sm hover:bg-[#8c2924]"
+                >
+                  <Plus size={17} /> New Backup Job
+                </button>
+              </div>
+
+              <div className="space-y-5">
+                <section className="ui-panel overflow-hidden">
+                  <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3.5 sm:px-5">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <Activity size={18} className="shrink-0 text-[#a9342d]" />
+                      <div className="text-left">
+                        <h3 className="text-sm font-bold text-gray-900">Active Backup Jobs</h3>
+                        <p className="text-[11px] text-gray-500">{jobs.length} configured</p>
+                      </div>
+                    </div>
+                    <button type="button" onClick={fetchJobs} className="ui-icon-button" title="Refresh backup jobs" aria-label="Refresh backup jobs">
+                      <RefreshCw size={15} />
+                    </button>
+                  </div>
+
+                  {jobs.length > 0 && (
+                    <div className="hidden grid-cols-[minmax(130px,0.65fr)_minmax(260px,1.35fr)_minmax(170px,0.8fr)_minmax(150px,0.75fr)_152px] gap-4 border-b border-gray-100 bg-gray-50 px-5 py-2.5 text-[10px] font-bold uppercase text-gray-400 lg:grid">
+                      <div>Job</div>
+                      <div>Pipeline</div>
+                      <div>Schedule</div>
+                      <div>Last run</div>
+                      <div className="text-right">Actions</div>
+                    </div>
+                  )}
+
+                  <div className="divide-y divide-gray-100">
+                    {jobs.map(job => {
+                      const latestRun = latestRunByJob[job.name];
+                      const latestMessage = cleanJobMessage(latestRun?.error || latestRun?.details || '');
+                      const latestStatus = String(latestRun?.status || '').toLowerCase();
+                      const showLatestMessage = latestRun && latestStatus !== 'success' && latestMessage;
+                      const latestSummaryParts = backupSummaryParts(latestRun?.rclone_summary).slice(0, 2);
+                      const scheduleText = (() => {
+                        const schedule = job.schedule || {};
+                        if (schedule.frequency === 'none') return 'Manual only';
+                        if (schedule.frequency === 'weekly') return `Weekly ${schedule.day_of_week || 'monday'} @ ${schedule.time || '02:00'}`;
+                        if (schedule.frequency === 'monthly') return `Monthly day ${schedule.day_of_month || '1'} @ ${schedule.time || '02:00'}`;
+                        return `${schedule.frequency || 'Manual'} @ ${schedule.time || '02:00'}`;
+                      })();
+                      const destination = `${job.dest_profile || ''}${job.dest_profile ? ':' : ''}${job.dest_bucket || ''}`;
+
+                      return (
+                        <div key={job.name}>
+                          <div className="grid grid-cols-1 gap-4 px-4 py-4 text-left sm:px-5 lg:grid-cols-[minmax(130px,0.65fr)_minmax(260px,1.35fr)_minmax(170px,0.8fr)_minmax(150px,0.75fr)_152px] lg:items-center">
+                            <div className="flex min-w-0 items-start gap-2.5">
+                              <RefreshCw className="mt-0.5 shrink-0 text-[#a9342d]" size={15} />
+                              <div className="min-w-0">
+                                <div className="mb-0.5 text-[9px] font-bold uppercase text-gray-400 lg:hidden">Job</div>
+                                <h4 className="break-words text-sm font-bold text-gray-900">{job.name}</h4>
+                                <span className="mt-1 inline-block rounded border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[9px] font-bold uppercase text-gray-500">{job.sync_mode || 'copy'}</span>
+                              </div>
                             </div>
-                            {showRunMessage && <div className="mt-1 text-xs text-gray-500 truncate">{runMessage}</div>}
+
+                            <div className="min-w-0 space-y-2 font-mono">
+                              <div>
+                                <div className="text-[9px] font-bold uppercase text-gray-400 font-sans">Source</div>
+                                <div className="mt-0.5 break-all text-[11px] leading-4 text-gray-600">{job.source_remote || 'Not configured'}</div>
+                              </div>
+                              <div>
+                                <div className="text-[9px] font-bold uppercase text-gray-400 font-sans">Destination</div>
+                                <div className="mt-0.5 break-all text-[11px] font-semibold leading-4 text-gray-700">{destination || 'Not configured'}</div>
+                              </div>
+                            </div>
+
+                            <div className="min-w-0">
+                              <div className="mb-1 text-[9px] font-bold uppercase text-gray-400 lg:hidden">Schedule</div>
+                              <div className="flex items-start gap-1.5 text-xs leading-5 text-gray-600">
+                                <Clock size={13} className="mt-0.5 shrink-0" />
+                                <span>{scheduleText}</span>
+                              </div>
+                              <div className="mt-2 flex flex-wrap gap-1">
+                                {Boolean(job.metadata_tags?.length) && <span className="ui-mini-tag"><Tags size={10} /> {job.metadata_tags.length}</span>}
+                                {job.local_retention?.enabled && <span className="ui-mini-tag text-amber-700">Cleanup {job.local_retention.delete_after_days || 30}d</span>}
+                                {job.bwlimit && <span className="ui-mini-tag">BW {job.bwlimit}</span>}
+                                {Number(job.tpslimit) > 0 && <span className="ui-mini-tag">TPS {job.tpslimit}</span>}
+                              </div>
+                            </div>
+
+                            <div className="min-w-0">
+                              <div className="mb-1 text-[9px] font-bold uppercase text-gray-400 lg:hidden">Last run</div>
+                              {latestRun ? (
+                                <div className="flex min-w-0 flex-col items-start gap-1.5">
+                                  <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase ${runStatusClass(latestRun.status)}`}>{latestRun.status}</span>
+                                  <span className="text-[10px] text-gray-500">{formatTimestamp(latestRun.finished_at || latestRun.updated_at || latestRun.created_at)}</span>
+                                  {showLatestMessage && <span className="ui-run-message max-w-full break-words text-[10px] text-red-600" title={latestMessage}>{latestMessage}</span>}
+                                  {latestSummaryParts.length > 0 && (
+                                    <div className="flex flex-wrap gap-1">
+                                      {latestSummaryParts.map(part => <span key={part} className="ui-mini-tag">{part}</span>)}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : <span className="text-xs text-gray-400">Never run</span>}
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-1.5 lg:justify-end">
+                              <button type="button" onClick={() => handleEditJob(job)} className="ui-icon-button" title="Edit job" aria-label={`Edit ${job.name}`}><Edit size={15} /></button>
+                              <button type="button" onClick={() => handleRunManual(job)} className="ui-icon-button is-primary" title="Run now" aria-label={`Run ${job.name} now`}><Play size={15} /></button>
+                              <button type="button" onClick={() => activeLogJob === job.name ? setActiveLogJob(null) : setActiveLogJob(job.name)} className={`ui-icon-button ${activeLogJob === job.name ? 'is-active' : ''}`} title="View latest log" aria-label={`View log for ${job.name}`}><Terminal size={15} /></button>
+                              <button type="button" onClick={() => handleDeleteJob(job.name)} className="ui-icon-button is-danger" title="Delete job" aria-label={`Delete ${job.name}`}><Trash2 size={15} /></button>
+                            </div>
+                          </div>
+                          {activeLogJob === job.name && (
+                            <div className="border-t border-gray-100 bg-gray-50 px-4 py-4 sm:px-5">
+                              <pre className="h-36 overflow-y-auto whitespace-pre-wrap rounded-md border border-gray-800 bg-gray-900 p-4 text-left font-mono text-[11px] text-gray-300 shadow-inner">{liveLogData || 'Awaiting process...'}</pre>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                    {jobs.length === 0 && (
+                      <div className="flex min-h-64 flex-col items-center justify-center px-6 py-12 text-center">
+                        <div className="flex h-10 w-10 items-center justify-center rounded-md border border-gray-200 bg-gray-50 text-gray-400"><Archive size={19} /></div>
+                        <h4 className="mt-3 text-sm font-bold text-gray-800">No backup jobs configured</h4>
+                        <p className="mt-1 max-w-sm text-xs leading-5 text-gray-500">Create a job to schedule or manually run a backup pipeline.</p>
+                        <button type="button" onClick={() => handleNavigate('builder')} className="mt-4 inline-flex h-9 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-700 hover:border-[#a9342d] hover:text-[#a9342d]"><Plus size={14} /> New Backup Job</button>
+                      </div>
+                    )}
+                  </div>
+                </section>
+
+                <section className="ui-panel overflow-hidden">
+                  <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3.5">
+                    <div className="flex items-center gap-3 text-left">
+                      <Clock size={17} className="text-[#a9342d]" />
+                      <div>
+                        <h3 className="text-sm font-bold text-gray-900">Recent Runs</h3>
+                        <p className="text-[11px] text-gray-500">Latest backup activity</p>
+                      </div>
+                    </div>
+                    <button type="button" onClick={fetchJobRuns} className="ui-icon-button" title="Refresh job history" aria-label="Refresh job history"><RefreshCw size={15} /></button>
+                  </div>
+                  <div className="max-h-[720px] divide-y divide-gray-100 overflow-y-auto">
+                    {jobRuns.slice(0, 10).map(run => {
+                      const isDataSyncRun = run.kind === 'data_sync';
+                      const runMessage = cleanJobMessage(run.error || run.details);
+                      const showRunMessage = String(run.status || '').toLowerCase() !== 'success' && runMessage;
+                      const runSummaryParts = backupSummaryParts(run.rclone_summary).slice(0, 3);
+                      return (
+                        <div key={run.id}>
+                          <div className="p-4 text-left">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                  <span className={`rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase ${runStatusClass(run.status)}`}>{run.status}</span>
+                                  <span className="min-w-0 break-words text-sm font-semibold text-gray-900">{run.job_name || run.kind}</span>
+                                </div>
+                                <div className="mt-1 text-[10px] uppercase text-gray-400">{run.trigger || 'manual'} · {formatTimestamp(run.updated_at || run.created_at)}</div>
+                              </div>
+                              {isDataSyncRun && (
+                                <div className="flex shrink-0 items-center gap-1.5">
+                                  <button type="button" onClick={() => setActiveRunLogId(activeRunLogId === run.id ? null : run.id)} className={`ui-icon-button ${activeRunLogId === run.id ? 'is-active' : ''}`} title="View job log" aria-label="View job log"><Terminal size={14} /></button>
+                                  <button type="button" onClick={() => handleDownloadRunLog(run)} className="ui-icon-button" title="Download job log" aria-label="Download job log"><Download size={14} /></button>
+                                </div>
+                              )}
+                            </div>
+                            {showRunMessage && <div className="ui-run-message mt-2 break-words text-xs leading-5 text-red-600" title={runMessage}>{runMessage}</div>}
                             {runSummaryParts.length > 0 && (
-                              <div className="mt-2 flex flex-wrap gap-1.5">
-                                {runSummaryParts.map((part) => (
-                                  <span key={part} className="text-[10px] px-2 py-0.5 rounded border border-gray-200 bg-gray-50 text-gray-500">
-                                    {part}
-                                  </span>
-                                ))}
+                              <div className="mt-2 flex flex-wrap gap-1">
+                                {runSummaryParts.map(part => <span key={part} className="ui-mini-tag">{part}</span>)}
                               </div>
                             )}
-                            <div className="mt-1 text-[10px] text-gray-400 font-mono truncate">{run.id}</div>
                           </div>
-                          <div className="flex items-center gap-2 shrink-0">
-                            {isDataSyncRun && (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() => setActiveRunLogId(activeRunLogId === run.id ? null : run.id)}
-                                  className={`p-1.5 border rounded-md ${activeRunLogId === run.id ? 'bg-gray-100 text-gray-800 border-gray-300' : 'text-gray-500 border-gray-200 hover:text-[#9c3029] hover:bg-gray-50'}`}
-                                  title="View job log"
-                                >
-                                  <Terminal size={14} />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleDownloadRunLog(run)}
-                                  className="p-1.5 border border-gray-200 rounded-md text-gray-500 hover:text-[#9c3029] hover:bg-gray-50"
-                                  title="Download job log"
-                                >
-                                  <Download size={14} />
-                                </button>
-                              </>
-                            )}
-                            <div className="text-[11px] text-gray-500 whitespace-nowrap">{formatTimestamp(run.updated_at || run.created_at)}</div>
-                          </div>
-                        </div>
-                        {activeRunLogId === run.id && (
-                          <div className="px-4 pb-4">
-                            <div className="bg-gray-900 border border-gray-800 rounded-md p-4 shadow-inner">
-                              <pre className="text-[11px] font-mono text-gray-300 h-44 overflow-y-auto text-left whitespace-pre-wrap">{runLogData || "Loading log..."}</pre>
+                          {activeRunLogId === run.id && (
+                            <div className="border-t border-gray-100 bg-gray-50 p-4">
+                              <pre className="h-44 overflow-y-auto whitespace-pre-wrap rounded-md border border-gray-800 bg-gray-900 p-4 text-left font-mono text-[11px] text-gray-300 shadow-inner">{runLogData || 'Loading log...'}</pre>
                             </div>
-                          </div>
-                        )}
+                          )}
+                        </div>
+                      );
+                    })}
+                    {jobRuns.length === 0 && (
+                      <div className="flex min-h-64 flex-col items-center justify-center p-8 text-center text-gray-500">
+                        <Clock size={20} className="text-gray-300" />
+                        <span className="mt-2 text-xs">No run history yet.</span>
                       </div>
-                    );
-                  })}
-                  {jobRuns.length === 0 && <div className="p-8 text-center text-sm text-gray-500">No run history yet.</div>}
-                </div>
+                    )}
+                  </div>
+                </section>
               </div>
             </div>
           )}
