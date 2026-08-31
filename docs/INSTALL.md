@@ -84,6 +84,7 @@ If `Enable NFSv4 Share` is selected, the helper will:
 
 - install/configure `nfs-kernel-server` if needed
 - export the created folder to the allowed client IPs, hostnames, or CIDR ranges
+- map NFS client users to the OCI Migrator service user so the managed ingest folder remains writable without `no_root_squash` or world-writable permissions
 - ensure inbound TCP `2049` is open and save the firewall rule when supported
 - return a Linux mount command, for example `sudo mount -t nfs4 SERVER:/var/lib/oci-migrator/local/customer-a /mnt/customer-a`
 

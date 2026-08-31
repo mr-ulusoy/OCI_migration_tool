@@ -323,9 +323,11 @@ PY
 }
 
 write_nfs_exports() {
-  local backup_file had_file
+  local backup_file had_file run_uid run_gid
   backup_file="$(mktemp)"
   had_file=0
+  run_uid="$(id -u "$RUN_USER")"
+  run_gid="$(id -g "$RUN_USER")"
   if [ -f "$NFS_EXPORTS_FILE" ]; then
     cp "$NFS_EXPORTS_FILE" "$backup_file"
     had_file=1
@@ -337,6 +339,8 @@ write_nfs_exports() {
   SHARE_PATH="$SHARE_PATH" \
   NFS_CLIENTS="$NFS_CLIENTS" \
   NFS_EXPORTS_FILE="$NFS_EXPORTS_FILE" \
+  RUN_UID="$run_uid" \
+  RUN_GID="$run_gid" \
   python3 - <<'PY'
 import os
 import shutil
@@ -347,6 +351,8 @@ share_name = os.environ["SHARE_NAME"]
 share_path = os.environ["SHARE_PATH"]
 clients = os.environ["NFS_CLIENTS"].split()
 exports_file = Path(os.environ["NFS_EXPORTS_FILE"])
+run_uid = int(os.environ["RUN_UID"])
+run_gid = int(os.environ["RUN_GID"])
 
 begin = f"# BEGIN OCI Migrator NFS share {share_name}"
 end = f"# END OCI Migrator NFS share {share_name}"
@@ -368,7 +374,7 @@ for line in lines:
     if not skip:
         filtered.append(line)
 
-options = "rw,sync,no_subtree_check,root_squash"
+options = f"rw,sync,no_subtree_check,all_squash,anonuid={run_uid},anongid={run_gid}"
 client_specs = " ".join(f"{client}({options})" for client in clients)
 block = ["", begin, f"{share_path} {client_specs}", end]
 filtered.extend(block)
