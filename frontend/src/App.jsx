@@ -146,6 +146,11 @@ function formatApiError(err, fallback = 'Request failed.') {
   return err?.message || fallback;
 }
 
+function isTransientUpgradeConnectionError(err) {
+  const status = err?.response?.status;
+  return !err?.response || status === 502 || status === 503 || status === 504;
+}
+
 function runStatusClass(status = '') {
   const normalized = status.toLowerCase();
   if (normalized === 'success') return 'text-green-700 bg-green-50 border-green-200';
@@ -375,7 +380,17 @@ export default function App() {
   const [checkingUpgrade, setCheckingUpgrade] = useState(false);
   const [startingUpgrade, setStartingUpgrade] = useState(false);
   const [showUpgradeLog, setShowUpgradeLog] = useState(false);
+  const [upgradeReconnecting, setUpgradeReconnecting] = useState(false);
   const isAuthenticated = Boolean(authState.token);
+
+  const latestUpgradeCommit = upgradeCheck?.latest_commit || upgradeStatus?.target_commit || '';
+  const latestUpgradeShort = upgradeCheck?.latest_short || latestUpgradeCommit.slice(0, 7);
+  const upgradeVersionsMatch = Boolean(
+    upgradeStatus?.current_commit
+      && latestUpgradeCommit
+      && upgradeStatus.current_commit === latestUpgradeCommit
+  );
+  const upgradeIsCurrent = upgradeCheck?.up_to_date === true || upgradeVersionsMatch;
 
   const api = useMemo(() => {
     const headers = {};
@@ -627,8 +642,14 @@ export default function App() {
     try {
       const res = await api.get('/upgrade/status');
       setUpgradeStatus(res.data);
+      setUpgradeReconnecting(false);
+      return res.data;
     } catch (err) {
+      if (isTransientUpgradeConnectionError(err)) {
+        setUpgradeReconnecting(true);
+      }
       console.error(err);
+      return null;
     }
   };
 
@@ -636,8 +657,15 @@ export default function App() {
     try {
       const res = await api.get('/upgrade/log');
       setUpgradeLog(res.data.log || 'No upgrade log yet.');
+      setUpgradeReconnecting(false);
+      return res.data;
     } catch (err) {
+      if (isTransientUpgradeConnectionError(err)) {
+        setUpgradeReconnecting(true);
+        return null;
+      }
       setUpgradeLog(formatApiError(err, 'Failed to load upgrade log.'));
+      return null;
     }
   };
 
@@ -646,6 +674,7 @@ export default function App() {
     try {
       const res = await api.post('/upgrade/check');
       setUpgradeCheck(res.data);
+      setUpgradeReconnecting(false);
       setUpgradeStatus(prev => ({
         ...(prev || {}),
         ...res.data,
@@ -669,6 +698,7 @@ export default function App() {
       setUpgradeStatus(res.data);
       setShowUpgradeLog(true);
       setUpgradeLog('');
+      setUpgradeReconnecting(false);
       window.setTimeout(fetchUpgradeStatus, 1500);
       window.setTimeout(fetchUpgradeLog, 1500);
     } catch (err) {
@@ -1006,6 +1036,29 @@ export default function App() {
     return () => clearInterval(interval);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, showUpgradeLog, upgradeStatus?.status, api]);
+
+  useEffect(() => {
+    if (!isAuthenticated || upgradeStatus?.status !== 'success' || !upgradeStatus?.finished_at) return;
+    if (upgradeCheck?.current_commit === upgradeStatus?.current_commit && upgradeCheck?.latest_commit) return;
+
+    const refreshCompletedUpgrade = async () => {
+      await fetchUpgradeLog();
+      try {
+        const res = await api.post('/upgrade/check');
+        setUpgradeCheck(res.data);
+        setUpgradeReconnecting(false);
+      } catch (err) {
+        if (isTransientUpgradeConnectionError(err)) {
+          setUpgradeReconnecting(true);
+        } else {
+          console.error(err);
+        }
+      }
+    };
+
+    refreshCompletedUpgrade();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, upgradeStatus?.status, upgradeStatus?.finished_at, upgradeStatus?.current_commit, upgradeCheck?.current_commit, upgradeCheck?.latest_commit, api]);
 
   useEffect(() => {
     let interval;
@@ -2303,8 +2356,8 @@ export default function App() {
                   </div>
                   <div className="bg-gray-50 border border-gray-100 rounded-md p-3">
                     <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Latest GitHub</div>
-                    <div className="text-sm font-mono text-gray-800">{upgradeCheck?.latest_short || 'not checked'}</div>
-                    <div className="text-[11px] text-gray-500 truncate mt-1">{upgradeCheck?.up_to_date === true ? 'You are on the latest version.' : upgradeCheck?.up_to_date === false ? 'A new version is available.' : 'Run check when needed'}</div>
+                    <div className="text-sm font-mono text-gray-800">{latestUpgradeShort || 'not checked'}</div>
+                    <div className="text-[11px] text-gray-500 truncate mt-1">{upgradeIsCurrent ? 'You are on the latest version.' : upgradeCheck?.up_to_date === false ? 'A new version is available.' : 'Run check when needed'}</div>
                   </div>
                   <div className="bg-gray-50 border border-gray-100 rounded-md p-3">
                     <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Status</div>
@@ -2321,7 +2374,15 @@ export default function App() {
                 )}
                 {showUpgradeLog && (
                   <div className="mt-4 bg-gray-900 border border-gray-800 rounded-md p-4 shadow-inner">
-                    <pre className="text-[11px] font-mono text-gray-300 h-44 overflow-y-auto text-left whitespace-pre-wrap">{upgradeLog || 'No upgrade log yet.'}</pre>
+                    {upgradeReconnecting && (
+                      <div className="mb-3 flex items-center gap-2 text-[11px] font-semibold text-blue-300">
+                        <Loader2 className="animate-spin" size={13} />
+                        Service is restarting. Reconnecting automatically...
+                      </div>
+                    )}
+                    <pre className="text-[11px] font-mono text-gray-300 h-44 overflow-y-auto text-left whitespace-pre-wrap">
+                      {upgradeLog || (upgradeReconnecting ? 'Waiting for the upgrade service to return...' : 'No upgrade log yet.')}
+                    </pre>
                   </div>
                 )}
               </div>
