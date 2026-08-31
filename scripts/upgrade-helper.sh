@@ -264,6 +264,7 @@ run_upgrade() {
     --time-sync-helper "${TIME_SYNC_HELPER:-/usr/local/sbin/oci-migrator-time-sync}"
     --network-helper "${NETWORK_HELPER:-/usr/local/sbin/oci-migrator-network}"
     --upgrade-helper "$UPGRADE_HELPER"
+    --uninstall-helper "${UNINSTALL_HELPER:-/usr/local/sbin/oci-migrator-uninstall}"
     --timezone "${SERVER_TIMEZONE:-Europe/Stockholm}"
     --ntp-servers "${NTP_SERVERS:-0.se.pool.ntp.org 1.se.pool.ntp.org 2.se.pool.ntp.org 3.se.pool.ntp.org}"
     --celery-concurrency "${CELERY_CONCURRENCY:-2}"

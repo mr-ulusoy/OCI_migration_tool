@@ -49,6 +49,7 @@ cd OCI_migration_tool
 ./install.sh --timezone Europe/Stockholm
 ./install.sh --ntp-servers "0.se.pool.ntp.org 1.se.pool.ntp.org"
 ./install.sh --local-share-helper /usr/local/sbin/oci-migrator-local-share
+./install.sh --uninstall-helper /usr/local/sbin/oci-migrator-uninstall
 ./install.sh --stop-legacy-processes
 ```
 

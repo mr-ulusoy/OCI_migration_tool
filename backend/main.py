@@ -433,6 +433,7 @@ NETWORK_HELPER = Path(os.getenv("OCI_MIGRATOR_NETWORK_HELPER", "/usr/local/sbin/
 TIMESYNCD_CONF = Path(os.getenv("OCI_MIGRATOR_TIMESYNCD_CONF", "/etc/systemd/timesyncd.conf.d/oci-migrator.conf")).resolve()
 JOB_LOGROTATE_FILE = Path(os.getenv("OCI_MIGRATOR_JOB_LOGROTATE_FILE", "/etc/logrotate.d/migrator-job-logs"))
 UPGRADE_HELPER = Path(os.getenv("OCI_MIGRATOR_UPGRADE_HELPER", "/usr/local/sbin/oci-migrator-upgrade")).resolve()
+UNINSTALL_HELPER = Path(os.getenv("OCI_MIGRATOR_UNINSTALL_HELPER", "/usr/local/sbin/oci-migrator-uninstall")).resolve()
 UPGRADE_STATUS_FILE = Path(
     os.getenv("OCI_MIGRATOR_UPGRADE_STATUS_FILE", "/var/lib/oci-migrator/upgrade/status.json")
 ).resolve()
@@ -466,6 +467,12 @@ class LoginRequest(BaseModel):
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
+
+
+class UninstallRequest(BaseModel):
+    current_password: str
+    confirmation: str
+    purge_local_backups: bool = False
 
 
 class ConfigSchema(BaseModel):
@@ -2305,6 +2312,29 @@ def upgrade_helper_command() -> list[str]:
     return [sudo_path, "-n", str(UPGRADE_HELPER), "start"]
 
 
+def uninstall_helper_command(purge_local_backups: bool = False) -> list[str]:
+    if not UNINSTALL_HELPER.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail="Uninstall helper is not installed. Rerun ./install.sh and try again.",
+        )
+
+    command = [str(UNINSTALL_HELPER), "schedule"]
+    if purge_local_backups:
+        command.append("--purge-local-data")
+
+    if os.geteuid() == 0:
+        return command
+
+    sudo_path = shutil.which("sudo")
+    if not sudo_path:
+        raise HTTPException(
+            status_code=503,
+            detail="sudo is required for controlled uninstall. Rerun ./install.sh and try again.",
+        )
+    return [sudo_path, "-n", *command]
+
+
 def upgrade_process_is_running() -> bool:
     pid_file = UPGRADE_LOCK_DIR / "pid"
     try:
@@ -2781,7 +2811,7 @@ async def change_password(data: ChangePasswordRequest):
     config = get_runtime_config()
     admin_password_hash = str(config.get("admin_password_hash", ""))
     if not admin_password_hash or not verify_password(data.current_password, admin_password_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect.")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Current password is incorrect.")
 
     new_hash = hash_password(data.new_password)
     _write_env_values(
@@ -2815,6 +2845,7 @@ def build_health_payload() -> dict:
     frontend_build_exists = (FRONTEND_DIST_DIR / "index.html").is_file()
     job_log_dir_exists = JOB_LOG_DIR.is_dir()
     upgrade_helper_exists = UPGRADE_HELPER.is_file()
+    uninstall_helper_exists = UNINSTALL_HELPER.is_file()
     local_disk = current_local_disk_settings()
     expected_timezone, configured_ntp_servers = configured_time_settings()
     configured_timezone = timedatectl_value("Timezone")
@@ -2857,6 +2888,10 @@ def build_health_payload() -> dict:
         "upgrade_helper": health_check_item(
             "ok" if upgrade_helper_exists else "warn",
             f"Upgrade helper is installed: {UPGRADE_HELPER}" if upgrade_helper_exists else f"Upgrade helper is not installed: {UPGRADE_HELPER}",
+        ),
+        "uninstall_helper": health_check_item(
+            "ok" if uninstall_helper_exists else "warn",
+            f"Uninstall helper is installed: {UNINSTALL_HELPER}" if uninstall_helper_exists else f"Uninstall helper is not installed: {UNINSTALL_HELPER}",
         ),
         "timezone": health_check_item(
             "ok" if configured_timezone == expected_timezone else "warn",
@@ -3356,6 +3391,56 @@ async def upgrade_log(lines: int = Query(default=600, ge=20, le=2000)):
         "log": tail_file(UPGRADE_LOG_FILE, max_lines=lines),
         "exists": True,
         "log_file": str(UPGRADE_LOG_FILE),
+    }
+
+
+@app.get("/system/uninstall")
+async def uninstall_info():
+    return {
+        "helper_installed": UNINSTALL_HELPER.is_file(),
+        "local_data_root": str(LOCAL_DATA_ROOT),
+        "project_will_be_removed": True,
+        "runtime_config_will_be_preserved": True,
+        "cloud_data_will_be_preserved": True,
+    }
+
+
+@app.post("/system/uninstall", status_code=status.HTTP_202_ACCEPTED)
+async def schedule_uninstall(data: UninstallRequest):
+    if data.confirmation != "UNINSTALL":
+        raise HTTPException(status_code=400, detail="Type UNINSTALL exactly to confirm.")
+
+    config = get_runtime_config()
+    admin_password_hash = str(config.get("admin_password_hash", ""))
+    if not admin_password_hash or not verify_password(data.current_password, admin_password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect.")
+
+    try:
+        result = subprocess.run(
+            uninstall_helper_command(data.purge_local_backups),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(truncate_text(result.stderr or result.stdout or f"helper exited with code {result.returncode}"))
+    except HTTPException:
+        raise
+    except subprocess.TimeoutExpired as exc:
+        raise_operation_error(504, "Schedule uninstall", exc, "The uninstall helper did not respond in time.")
+    except Exception as exc:
+        raise_operation_error(
+            500,
+            "Schedule uninstall",
+            exc,
+            "Check that install.sh installed the controlled uninstall helper and sudoers access.",
+        )
+
+    return {
+        "status": "scheduled",
+        "message": "Uninstall scheduled. This console will become unavailable shortly.",
+        "purge_local_backups": data.purge_local_backups,
+        "local_data_root": str(LOCAL_DATA_ROOT),
     }
 
 

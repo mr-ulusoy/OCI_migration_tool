@@ -263,3 +263,7 @@ Remove services and the project directory:
 ```bash
 ./scripts/uninstall.sh --purge-project
 ```
+
+The same project uninstall is available under `Settings` -> `Uninstall OCI Migrator`. It requires the current admin password and the exact text `UNINSTALL`. The operation is delayed briefly so the API can acknowledge it before services stop.
+
+The optional `Delete local backups stored on this server` checkbox adds `--purge-local-data`. It deletes only the configured `OCI_MIGRATOR_LOCAL_DATA_ROOT` after rejecting unsafe paths and nested mounted filesystems. Runtime config, OCI/rclone credentials, OCI Object Storage data, and mounted external shares are preserved.

@@ -17,6 +17,8 @@ NETWORK_HELPER="${OCI_MIGRATOR_NETWORK_HELPER:-/usr/local/sbin/oci-migrator-netw
 LOCAL_SHARE_CONFIG="/etc/oci-migrator/local-share.conf"
 UPGRADE_HELPER="${OCI_MIGRATOR_UPGRADE_HELPER:-/usr/local/sbin/oci-migrator-upgrade}"
 UPGRADE_CONFIG="${OCI_MIGRATOR_UPGRADE_CONFIG:-/etc/oci-migrator/upgrade.conf}"
+UNINSTALL_HELPER="${OCI_MIGRATOR_UNINSTALL_HELPER:-/usr/local/sbin/oci-migrator-uninstall}"
+UNINSTALL_CONFIG="${OCI_MIGRATOR_UNINSTALL_CONFIG:-/etc/oci-migrator/uninstall.conf}"
 UPGRADE_STATE_DIR="${OCI_MIGRATOR_UPGRADE_STATE_DIR:-/var/lib/oci-migrator/upgrade}"
 UPGRADE_STATUS_FILE="${OCI_MIGRATOR_UPGRADE_STATUS_FILE:-$UPGRADE_STATE_DIR/status.json}"
 UPGRADE_LOG_FILE="${OCI_MIGRATOR_UPGRADE_LOG_FILE:-/var/log/oci-migrator/upgrade.log}"
@@ -102,6 +104,7 @@ Options:
   --time-sync-helper PATH     Root helper used by the UI for timezone/NTP. Default: $TIME_SYNC_HELPER
   --network-helper PATH       Root helper used by the UI for DHCP/static IPv4. Default: $NETWORK_HELPER
   --upgrade-helper PATH       Root helper used by the UI for controlled upgrades. Default: $UPGRADE_HELPER
+  --uninstall-helper PATH     Root helper used by the UI for controlled uninstall. Default: $UNINSTALL_HELPER
   --timezone ZONE             Server timezone for schedules/logs. Default: $SERVER_TIMEZONE
   --ntp-servers "LIST"        Space/comma separated NTP servers. Default: $NTP_SERVERS
   --celery-concurrency N      Celery worker concurrency. Default: $CELERY_CONCURRENCY
@@ -121,7 +124,7 @@ Environment variables with the same names are also supported:
   OCI_MIGRATOR_JOB_LOG_RETENTION_DAYS, OCI_MIGRATOR_JOB_LOG_HELPER,
   OCI_MIGRATOR_LOCAL_SHARE_HELPER, OCI_MIGRATOR_TIME_SYNC_HELPER,
   OCI_MIGRATOR_NETWORK_HELPER,
-  OCI_MIGRATOR_UPGRADE_HELPER,
+  OCI_MIGRATOR_UPGRADE_HELPER, OCI_MIGRATOR_UNINSTALL_HELPER,
   OCI_MIGRATOR_TIMEZONE, OCI_MIGRATOR_NTP_SERVERS,
   OCI_MIGRATOR_ENV_FILE, OPEN_FIREWALL, STOP_LEGACY_PROCESSES,
   CELERY_CONCURRENCY, PRINT_TOKEN,
@@ -194,6 +197,10 @@ parse_args() {
         ;;
       --upgrade-helper)
         UPGRADE_HELPER="$2"
+        shift 2
+        ;;
+      --uninstall-helper)
+        UNINSTALL_HELPER="$2"
         shift 2
         ;;
       --timezone)
@@ -625,6 +632,7 @@ ensure_env_file() {
       printf 'OCI_MIGRATOR_TIME_SYNC_HELPER=%s\n' "$TIME_SYNC_HELPER"
       printf 'OCI_MIGRATOR_NETWORK_HELPER=%s\n' "$NETWORK_HELPER"
       printf 'OCI_MIGRATOR_UPGRADE_HELPER=%s\n' "$UPGRADE_HELPER"
+      printf 'OCI_MIGRATOR_UNINSTALL_HELPER=%s\n' "$UNINSTALL_HELPER"
       printf 'OCI_MIGRATOR_UPGRADE_STATUS_FILE=%s\n' "$UPGRADE_STATUS_FILE"
       printf 'OCI_MIGRATOR_UPGRADE_LOG_FILE=%s\n' "$UPGRADE_LOG_FILE"
       printf 'OCI_MIGRATOR_TIMEZONE=%s\n' "$SERVER_TIMEZONE"
@@ -660,6 +668,7 @@ ensure_env_file() {
     grep -q '^OCI_MIGRATOR_TIME_SYNC_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_TIME_SYNC_HELPER=%s\n' "$TIME_SYNC_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_NETWORK_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_NETWORK_HELPER=%s\n' "$NETWORK_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UPGRADE_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_HELPER=%s\n' "$UPGRADE_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_UNINSTALL_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UNINSTALL_HELPER=%s\n' "$UNINSTALL_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UPGRADE_STATUS_FILE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_STATUS_FILE=%s\n' "$UPGRADE_STATUS_FILE" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UPGRADE_LOG_FILE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_LOG_FILE=%s\n' "$UPGRADE_LOG_FILE" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_TIMEZONE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_TIMEZONE=%s\n' "$SERVER_TIMEZONE" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
@@ -1001,6 +1010,7 @@ install_upgrade_helper() {
     printf 'TIME_SYNC_HELPER=%q\n' "$TIME_SYNC_HELPER"
     printf 'NETWORK_HELPER=%q\n' "$NETWORK_HELPER"
     printf 'UPGRADE_HELPER=%q\n' "$UPGRADE_HELPER"
+    printf 'UNINSTALL_HELPER=%q\n' "$UNINSTALL_HELPER"
     printf 'UPGRADE_STATE_DIR=%q\n' "$UPGRADE_STATE_DIR"
     printf 'UPGRADE_STATUS_FILE=%q\n' "$UPGRADE_STATUS_FILE"
     printf 'UPGRADE_LOG_FILE=%q\n' "$UPGRADE_LOG_FILE"
@@ -1018,6 +1028,50 @@ install_upgrade_helper() {
   {
     printf '# Allow OCI Migrator to run its controlled self-upgrade only.\n'
     printf '%s ALL=(root) NOPASSWD: %s start\n' "$RUN_USER" "$UPGRADE_HELPER"
+  } > "$sudoers_temp"
+
+  "${SUDO[@]}" visudo -cf "$sudoers_temp" >/dev/null
+  "${SUDO[@]}" install -o root -g root -m 440 "$sudoers_temp" "$sudoers_file"
+  rm -f "$sudoers_temp"
+}
+
+install_uninstall_helper() {
+  log "Installing controlled uninstall helper"
+
+  case "$UNINSTALL_HELPER" in
+    /*)
+      ;;
+    *)
+      fail "--uninstall-helper must be an absolute path."
+      ;;
+  esac
+
+  local helper_source
+  helper_source="$PROJECT_DIR/scripts/uninstall-helper.sh"
+  [ -f "$helper_source" ] || fail "Missing helper source: $helper_source"
+
+  "${SUDO[@]}" install -d -o root -g root -m 755 "$(dirname "$UNINSTALL_HELPER")"
+  "${SUDO[@]}" install -o root -g root -m 755 "$helper_source" "$UNINSTALL_HELPER"
+  "${SUDO[@]}" install -d -o root -g root -m 755 "$(dirname "$UNINSTALL_CONFIG")"
+
+  local helper_config
+  helper_config="$(mktemp)"
+  {
+    printf 'PROJECT_DIR=%q\n' "$PROJECT_DIR"
+    printf 'SERVICE_PREFIX=%q\n' "$SERVICE_PREFIX"
+    printf 'ENV_FILE=%q\n' "$ENV_FILE"
+    printf 'LOCAL_DATA_ROOT=%q\n' "$LOCAL_DATA_ROOT"
+  } > "$helper_config"
+  "${SUDO[@]}" install -o root -g root -m 600 "$helper_config" "$UNINSTALL_CONFIG"
+  rm -f "$helper_config"
+
+  local sudoers_file sudoers_temp
+  sudoers_file="/etc/sudoers.d/$SERVICE_PREFIX-uninstall"
+  sudoers_temp="$(mktemp)"
+  {
+    printf '# Allow OCI Migrator to schedule its controlled self-uninstall only.\n'
+    printf '%s ALL=(root) NOPASSWD: %s schedule\n' "$RUN_USER" "$UNINSTALL_HELPER"
+    printf '%s ALL=(root) NOPASSWD: %s schedule --purge-local-data\n' "$RUN_USER" "$UNINSTALL_HELPER"
   } > "$sudoers_temp"
 
   "${SUDO[@]}" visudo -cf "$sudoers_temp" >/dev/null
@@ -1281,6 +1335,7 @@ main() {
   install_network_helper
   install_local_share_helper
   install_upgrade_helper
+  install_uninstall_helper
   install_backend
   install_frontend
   stop_services

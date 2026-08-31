@@ -463,6 +463,10 @@ export default function App() {
   });
   const [savingNotificationSettings, setSavingNotificationSettings] = useState(false);
   const [testingNotificationSettings, setTestingNotificationSettings] = useState(false);
+  const [uninstallInfo, setUninstallInfo] = useState(null);
+  const [uninstallDialogOpen, setUninstallDialogOpen] = useState(false);
+  const [uninstalling, setUninstalling] = useState(false);
+  const [uninstallForm, setUninstallForm] = useState({ currentPassword: '', confirmation: '', purgeLocalBackups: false });
   const [upgradeStatus, setUpgradeStatus] = useState(null);
   const [upgradeCheck, setUpgradeCheck] = useState(null);
   const [upgradeLog, setUpgradeLog] = useState('');
@@ -624,6 +628,35 @@ export default function App() {
     setConfirmDialog(null);
     if (action) {
       await action();
+    }
+  };
+
+  const openUninstallDialog = async () => {
+    setUninstallForm({ currentPassword: '', confirmation: '', purgeLocalBackups: false });
+    setUninstallDialogOpen(true);
+    try {
+      const res = await api.get('/system/uninstall');
+      setUninstallInfo(res.data);
+    } catch (err) {
+      showError('Failed to load uninstall information', err);
+    }
+  };
+
+  const handleUninstall = async (event) => {
+    event.preventDefault();
+    setUninstalling(true);
+    try {
+      const res = await api.post('/system/uninstall', {
+        current_password: uninstallForm.currentPassword,
+        confirmation: uninstallForm.confirmation,
+        purge_local_backups: uninstallForm.purgeLocalBackups
+      });
+      setUninstallDialogOpen(false);
+      showSuccess(res.data.message || 'Uninstall scheduled. This console will become unavailable shortly.');
+    } catch (err) {
+      showError('Failed to schedule uninstall', err);
+    } finally {
+      setUninstalling(false);
     }
   };
 
@@ -2191,6 +2224,57 @@ export default function App() {
 
   return (
     <div data-theme={theme} className="app-shell flex h-screen overflow-hidden font-sans text-gray-800">
+      {uninstallDialogOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-gray-950/55 p-4">
+          <form onSubmit={handleUninstall} className="w-full max-w-xl rounded-md border border-red-200 bg-white shadow-2xl">
+            <div className="flex items-start gap-4 border-b border-red-100 p-5 text-left">
+              <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-red-200 bg-red-50 text-red-700">
+                <Trash2 size={20} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="text-base font-bold text-gray-900">Uninstall OCI Migrator</h3>
+                <p className="mt-1 text-sm leading-6 text-gray-600">Services will stop and the installed project directory will be removed. This console will become unavailable.</p>
+              </div>
+              <button type="button" onClick={() => setUninstallDialogOpen(false)} disabled={uninstalling} className="rounded-md p-1.5 text-gray-400 hover:bg-gray-50 hover:text-gray-700" aria-label="Close"><X size={16} /></button>
+            </div>
+            <div className="space-y-4 p-5 text-left">
+              <div className="rounded-md border border-gray-200 bg-gray-50 p-3 text-xs leading-5 text-gray-600">
+                Runtime configuration, OCI credentials, rclone configuration, OCI Object Storage data, and mounted external shares are preserved.
+              </div>
+              <label className="flex cursor-pointer items-start gap-3 rounded-md border border-red-100 bg-red-50/60 p-3">
+                <input
+                  type="checkbox"
+                  checked={uninstallForm.purgeLocalBackups}
+                  onChange={event => setUninstallForm({ ...uninstallForm, purgeLocalBackups: event.target.checked })}
+                  className="mt-0.5 h-4 w-4 accent-[#9c3029]"
+                />
+                <span className="min-w-0">
+                  <span className="block text-sm font-semibold text-gray-900">Delete local backups stored on this server</span>
+                  <span className="mt-1 block break-all font-mono text-[11px] text-gray-600">{uninstallInfo?.local_data_root || localDiskSettings?.local_data_root || '/var/lib/oci-migrator/local'}</span>
+                  <span className="mt-1 block text-[11px] leading-5 text-red-700">This permanently deletes only data inside the configured local backup directory.</span>
+                </span>
+              </label>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-gray-500">Current admin password</label>
+                  <input type="password" value={uninstallForm.currentPassword} onChange={event => setUninstallForm({ ...uninstallForm, currentPassword: event.target.value })} autoComplete="current-password" required className="w-full rounded-md border border-gray-200 bg-white p-2.5 text-sm outline-none focus:border-red-500" />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-gray-500">Type UNINSTALL</label>
+                  <input value={uninstallForm.confirmation} onChange={event => setUninstallForm({ ...uninstallForm, confirmation: event.target.value })} autoComplete="off" required className="w-full rounded-md border border-gray-200 bg-white p-2.5 font-mono text-sm outline-none focus:border-red-500" />
+                </div>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-gray-100 p-4">
+              <button type="button" onClick={() => setUninstallDialogOpen(false)} disabled={uninstalling} className="rounded-md border border-gray-200 bg-white px-4 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 disabled:opacity-60">Cancel</button>
+              <button type="submit" disabled={uninstalling || uninstallForm.confirmation !== 'UNINSTALL' || !uninstallForm.currentPassword || uninstallInfo?.helper_installed === false} className="flex items-center gap-2 rounded-md bg-red-700 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-50">
+                {uninstalling ? <Loader2 className="animate-spin" size={14} /> : <Trash2 size={14} />}
+                Uninstall
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
       {confirmDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/45 p-4">
           <div className="w-full max-w-lg bg-white border border-gray-200 rounded-md shadow-2xl">
@@ -3338,6 +3422,19 @@ export default function App() {
                   <span>{jobLogSettings?.logrotate_file || '/etc/logrotate.d/migrator-job-logs'}</span>
                 </div>
               </form>
+              {authState.mode === 'session' && (
+                <div className="rounded-md border border-red-200 bg-white p-4 text-left shadow-sm">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h3 className="flex items-center gap-2 text-sm font-bold text-gray-900"><Trash2 size={16} className="text-red-700" /> Uninstall OCI Migrator</h3>
+                      <p className="mt-1 text-[11px] leading-5 text-gray-500">Remove the application services and installed project. Runtime configuration and cloud data are preserved unless local backup deletion is explicitly selected.</p>
+                    </div>
+                    <button type="button" onClick={openUninstallDialog} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border border-red-300 bg-white px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50">
+                      <Trash2 size={14} /> Uninstall
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

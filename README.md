@@ -23,7 +23,7 @@ Self-hosted admin console for moving file and object data into Oracle Cloud Infr
 - `Credentials` manages OCI, cloud, S3-compatible, local folder, SMB, and NFS sources.
 - `OCI Object Storage` explores buckets and objects and manages supported bucket settings and lifecycle rules.
 - `VM Image Migration` scans OCI compute instances and starts boot-volume image migration workflows.
-- `Settings` contains system upgrade, remote syslog notifications, runtime config backup/import, time and NTP, network, job defaults, local disk warnings, log rotation, and admin password controls.
+- `Settings` contains system upgrade, remote syslog notifications, runtime config backup/import, time and NTP, network, job defaults, local disk warnings, log rotation, admin password controls, and a protected uninstall workflow.
 
 ## Main Use Cases
 
@@ -164,6 +164,8 @@ The built frontend is served by the backend, so each install only needs one app/
 - `/usr/local/sbin/oci-migrator-job-log`
 - `/usr/local/sbin/oci-migrator-time-sync`
 - `/usr/local/sbin/oci-migrator-network`
+- `/usr/local/sbin/oci-migrator-uninstall`
+- `/etc/oci-migrator/uninstall.conf`
 - `/etc/systemd/timesyncd.conf.d/oci-migrator.conf`
 
 The backend service also serves the built frontend from `frontend/dist`. Backend dependencies use `backend/requirements.lock` when present.
@@ -177,6 +179,8 @@ IPv4 networking is editable from Settings -> Network. DHCP is the default. Stati
 Per-job local cleanup can be enabled for managed server local folder sources. Cleanup runs only after a successful backup, deletes files older than the configured retention, and always skips files modified within the configured safety window.
 
 Settings -> Local Disk Usage shows the managed local data disk usage and configurable warning/critical thresholds. The same status is exposed through `/health`, `/monitoring/status`, and `/metrics`.
+
+Settings -> Uninstall OCI Migrator schedules `uninstall.sh --purge-project` after verifying the current admin password and the exact confirmation text `UNINSTALL`. Runtime configuration, OCI/rclone credentials, OCI Object Storage data, and external mounted shares are preserved. An additional checkbox can permanently remove only the configured server-local backup directory.
 
 Server local folders can optionally be shared from the UI with SMB, NFSv4, or both. SMB can be opened as guest access or a named Samba user on TCP `445`. NFSv4 requires an allowed client IP/hostname/CIDR list and uses TCP `2049`. No share is enabled during installation; the installed root helper applies the share only when a user chooses it in `Add Remote`.
 
