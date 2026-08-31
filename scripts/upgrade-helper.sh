@@ -266,7 +266,6 @@ run_upgrade() {
     --timezone "${SERVER_TIMEZONE:-Europe/Stockholm}"
     --ntp-servers "${NTP_SERVERS:-0.se.pool.ntp.org 1.se.pool.ntp.org 2.se.pool.ntp.org 3.se.pool.ntp.org}"
     --celery-concurrency "${CELERY_CONCURRENCY:-2}"
-    --share-allow-cidr "${SHARE_ALLOW_CIDR:-10.0.0.0/8}"
   )
   if [ -n "${PUBLIC_HOST:-}" ]; then
     install_cmd+=(--public-host "$PUBLIC_HOST")

@@ -13,7 +13,6 @@ ADMIN_PASSWORD_FILE="${OCI_MIGRATOR_ADMIN_PASSWORD_FILE:-}"
 PROMPT_ADMIN_PASSWORD="${PROMPT_ADMIN_PASSWORD:-0}"
 SERVER_TIMEZONE="${OCI_MIGRATOR_TIMEZONE:-}"
 NTP_SERVERS="${OCI_MIGRATOR_NTP_SERVERS:-}"
-SHARE_ALLOW_CIDR="${OCI_MIGRATOR_SHARE_ALLOW_CIDR:-}"
 INSTALL_ARGS=()
 
 if [ "$(id -u)" -eq 0 ]; then
@@ -44,7 +43,6 @@ Options:
   --timezone ZONE             Server timezone passed to install.sh.
   --ntp-servers "LIST"        Space/comma separated NTP servers passed to install.sh.
   --no-open-firewall          Do not open local firewall ports during install.
-  --share-allow-cidr CIDR     Private CIDR(s) allowed to reach SMB/NFS.
   -h, --help                  Show this help.
 
 Examples:
@@ -98,10 +96,6 @@ while [ "$#" -gt 0 ]; do
       ;;
     --ntp-servers)
       NTP_SERVERS="$2"
-      shift 2
-      ;;
-    --share-allow-cidr)
-      SHARE_ALLOW_CIDR="$2"
       shift 2
       ;;
     --)
@@ -182,9 +176,6 @@ if [ -n "$SERVER_TIMEZONE" ]; then
 fi
 if [ -n "$NTP_SERVERS" ]; then
   cmd+=(--ntp-servers "$NTP_SERVERS")
-fi
-if [ -n "$SHARE_ALLOW_CIDR" ]; then
-  cmd+=(--share-allow-cidr "$SHARE_ALLOW_CIDR")
 fi
 cmd+=("${INSTALL_ARGS[@]}")
 
