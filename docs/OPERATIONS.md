@@ -1,269 +1,228 @@
-# Operations
+# Dashboard Configuration
 
-## Service Commands
+This guide documents the configuration available in the OCI Migrator Pro web dashboard. For service commands, health endpoints, monitoring integrations, runtime files, and command-line recovery procedures, see the [Server Runbook](RUNBOOK.md).
 
-```bash
-make status
-make restart
-make logs-api
-make logs-worker
-```
+## Credentials
 
-Equivalent direct commands:
+Open `Credentials` to add source and destination profiles. Profile and remote names must be unique.
 
-```bash
-sudo systemctl status migrator-api migrator-worker migrator-scheduler.timer
-journalctl -u migrator-api -f
-journalctl -u migrator-worker -f
-```
+### Oracle Object Storage (OCI)
 
-## Health Check
+An OCI profile requires:
 
-```bash
-make doctor
-curl http://127.0.0.1:8000/health
-```
+- `Profile Name`: the name shown throughout the dashboard.
+- `Compute Compartment`: compartment OCID used when scanning instances for VM image migration.
+- `Storage Compartment`: compartment OCID used for Object Storage buckets.
+- `Tenancy OCID`: OCID of the OCI tenancy.
+- `User OCID`: OCID of the OCI IAM user.
+- `Fingerprint`: fingerprint of the uploaded API signing key.
+- `Region`: OCI region identifier, for example `eu-stockholm-1`.
+- `API Key`: upload or paste the private API signing key associated with the IAM user.
 
-The `/health` response also reports server timezone and NTP synchronization. The default install sets `Europe/Stockholm` and writes the NTP pool to:
+Use separate profiles when the source and destination belong to different OCI tenants. Grant the IAM user only the permissions required for the intended Object Storage or Compute operations.
 
-```text
-/etc/systemd/timesyncd.conf.d/oci-migrator.conf
-```
+### AWS S3 or S3-compatible storage
 
-Change it by rerunning:
+Configure a remote name, access key ID, secret access key, and region. The credentials must be allowed to list and read the selected source buckets and objects.
 
-```bash
-./install.sh --timezone Europe/Stockholm --ntp-servers "0.se.pool.ntp.org 1.se.pool.ntp.org"
-```
+### Azure Blob Storage
 
-It can also be changed from `Settings` -> `Time & NTP`; the UI uses the installed `/usr/local/sbin/oci-migrator-time-sync` helper to update `systemd-timesyncd`.
+Configure a remote name, storage account name, and account key.
 
-The doctor checks:
+### Google Cloud Storage
 
-- system dependencies
-- runtime env file
-- systemd services
-- listening ports
-- public `/health` endpoint
-- authenticated backend response
-- server timezone and NTP synchronization
+Configure a remote name and upload a service account JSON key. `Object ACL`, `Bucket ACL`, and `Location` are optional advanced values.
 
-## Monitoring
+### Local or mounted share
 
-Monitoring is pull-based when the monitoring system can reach the OCI Migrator server on the same network.
+Choose one of these local types:
 
-Open unauthenticated health check:
+- `Server Local Folder`: creates a managed folder under the server's configured local data root.
+- `Mounted External Share`: registers an existing absolute mount path. Mount the external storage on the server before saving the remote.
 
-```bash
-curl http://127.0.0.1:8000/health
-```
+A server local folder can optionally be exposed through SMB, NFSv4, or both:
 
-Authenticated JSON status for generic monitoring tools:
+- `Do Not Share`: only creates the local folder.
+- `Share to Everyone`: enables guest SMB access.
+- `Share to User`: requires an SMB username and a password of at least eight characters.
+- `Enable NFSv4 Share`: requires one or more allowed client IP addresses, hostnames, or CIDR ranges. Wildcards are rejected.
+- `Share Name`: controls the exported SMB/NFS share name.
 
-```bash
-curl -H "X-API-Token: <token>" http://127.0.0.1:8000/monitoring/status
-```
+SMB uses TCP `445` and NFSv4 uses TCP `2049`. Restrict network access outside the application to the client networks that require the share.
 
-The JSON status includes component status, Redis/rclone/NTP checks, active backup job counts, latest success/failure timestamps, failed jobs, running jobs, and jobs that have never run.
+## New Backup Job
 
-Prometheus metrics endpoint:
+Open `New Backup Job` to create a scheduled or manual file/object transfer.
 
-```bash
-curl -H "X-API-Token: <token>" http://127.0.0.1:8000/metrics
-```
+### Job and pipeline
 
-Example Prometheus scrape config:
+- `Job Name`: unique display name for the backup job.
+- `Sync Mode`: `COPY (Safe)` uploads new and changed data without deleting destination objects; `SYNC (Mirror)` also removes destination objects that no longer exist at the source.
+- `Source`: source remote and source folder, bucket, container, or prefix.
+- `Destination`: destination profile and OCI bucket/prefix.
 
-```yaml
-scrape_configs:
-  - job_name: oci-migrator
-    metrics_path: /metrics
-    scheme: http
-    static_configs:
-      - targets: ["oci-migrator.example.internal:8000"]
-    authorization:
-      credentials: "<token>"
-```
+Use `COPY (Safe)` unless destination deletion is an intentional part of the retention design.
 
-The metrics endpoint exposes component health and backup gauges such as:
+### Local Cleanup
 
-```text
-oci_migrator_component_ok{component="redis"} 1
-oci_migrator_backup_jobs 8
-oci_migrator_backup_jobs_failed 1
-oci_migrator_local_disk_used_percent 62.4
-oci_migrator_local_disk_free_bytes 41234567890
-oci_migrator_backup_job_last_run_timestamp{job="CustomerA",status="success"} 1779473400
-```
+Local Cleanup is available only when the source is a managed server local folder.
 
-### Remote Syslog Notifications
+- `Enabled`: runs cleanup only after the backup transfer succeeds.
+- `Delete Files Older Than`: retention age in days.
+- `Ignore Modified in Last`: safety window in hours; recently modified files are never removed.
 
-Configure outbound syslog under `Settings` -> `Notifications`. The integration supports UDP or TCP, configurable port and facility, and three event selections:
+Only one enabled cleanup policy can own a local source path. Cleanup removes eligible source files and empty child directories; it does not delete OCI objects.
 
-- failures and recovery (default)
-- failures only
-- all completed backup runs
+### Object Metadata
 
-Use `Send Test` to verify delivery before enabling notifications. The panel shows the last successful send and the last delivery error. Backup events use structured `key=value` fields, for example:
+Add optional metadata as name/value pairs. Enter names such as `site` or `ticket-id`; OCI stores them as `opc-meta-site` and `opc-meta-ticket-id`. Metadata is applied to objects uploaded by that job.
 
-```text
-event=backup.failed job="Customer Backup" run_id="..." status="failed" errors=3 message="Failed with exit code 1."
-```
+### Transfer settings
 
-Syslog delivery is best effort. A syslog outage does not change the backup result. Messages travel outbound from OCI Migrator, so no inbound firewall port is needed on this server. Allow outbound traffic to the configured syslog host and port when an egress firewall is in use.
+- `Transfers`: number of parallel file transfers.
+- `Checkers`: number of parallel object checks.
+- `Buffer Size`: per-transfer memory buffer.
+- `Bandwidth Limit`: optional rclone bandwidth limit such as `700M` or `1G`; blank means unlimited.
+- `API TPS Limit`: optional API transaction limit; blank or `0` means unlimited.
 
-## Job History
+Higher concurrency can improve throughput but also increases memory use and API request load. Start conservatively and tune from measured backup runs.
 
-The UI shows recent runs under `Backup Jobs` -> `Recent Runs`. The backend persists run history in:
+### Schedule
 
-```text
-~/.oci/job_history.json
-```
+- `Manual Only`: the job runs only when `Run Now` is selected.
+- `Daily`: runs every day at the configured server-local time.
+- `Weekly`: also requires a weekday.
+- `Monthly`: also requires a day from 1 to 31.
+- `Time`: interpreted using the timezone configured under `Settings` -> `Time & NTP`.
 
-Authenticated API access:
+## OCI Object Storage
 
-```bash
-curl -H "X-API-Token: <token>" http://127.0.0.1:8000/job-history
-```
+Select an OCI profile before creating or managing buckets.
 
-Each rclone run writes a persistent log file under:
+### Create Bucket
 
-```text
-/var/log/oci-migrator/jobs/
-```
+- `New Bucket Name`: valid bucket name within the OCI namespace.
+- `Default Tier`: `Standard` or `Archive`.
+- `Versioning`: enabled or disabled when the bucket is created.
+- `Auto-Tiering to Infrequent Access`: available for Standard-tier buckets.
 
-Rclone is run with JSON logging. OCI Migrator parses each run into a compact `rclone_summary` in `~/.oci/job_history.json` with transferred bytes, files, deletes, errors, elapsed time, and average speed. The `Backup Jobs` page shows that summary on active jobs and recent runs.
+Infrequent Access is reached through Auto-Tiering or a lifecycle rule; it is not a bucket default tier.
 
-Use `Recent Runs` -> terminal button to view a readable log tail, or the download button to download the full raw log file for that run.
-`Settings` -> `Job Log Rotation` shows `Retention Days` and `Max Size`; saving those fields updates the managed logrotate config.
+### Bucket Settings
 
-Log rotation is installed at:
+For the selected bucket, the dashboard shows the default tier, versioning state, Auto-Tiering state, lifecycle rule count, and OCI retention/WORM rule count.
 
-```text
-/etc/logrotate.d/migrator-job-logs
-```
+- `Enable/Suspend Object Versioning`: controls whether OCI keeps previous versions after overwrite or deletion. Existing versions remain when versioning is suspended.
+- `Enable/Disable Auto-Tiering`: controls automatic movement to Infrequent Access.
+- `OCI Retention Rules (WORM)`: status only. Create and manage immutable retention rules in the OCI Console. Active WORM rules can prevent object updates, metadata changes, deletion, and bucket deletion. See [OCI retention rule documentation](https://docs.oracle.com/en-us/iaas/Content/Object/Tasks/usingretentionrules.htm).
 
-Default policy:
+OCI does not allow Object Versioning to be enabled while active retention rules exist on the bucket. Auto-Tiering cannot be enabled while a lifecycle rule moves objects to Infrequent Access.
 
-- daily rotation
-- keep 14 daily rotated logs
-- compress old logs
-- `maxsize 10M`
+### OCI Lifecycle Policy Rules
 
-Change these values in the UI, with `./install.sh --job-log-max-size 25M --job-log-retention-days 30`, or by editing the logrotate file directly.
+Each row is saved as a separate OCI lifecycle rule:
 
-## Rclone Transfer Controls
+- `Name`: unique lifecycle rule name.
+- `Target`: objects, previous object versions, or uncommitted multipart uploads.
+- `Lifecycle Action`: available actions depend on the selected target and include moving data to Infrequent Access, moving data to Archive, or deleting data.
+- `Number of Days`: positive age threshold for the action.
+- `Enabled`: activates or disables the individual rule.
 
-Each backup job can set optional traffic limits:
+Object targets support optional name filters:
 
-- `Bandwidth Limit` maps to rclone `--bwlimit`, for example `700M` or `1G`. Empty means unlimited.
-- `API TPS Limit` maps to rclone `--tpslimit`. Empty or `0` means unlimited.
+- `Include by prefix`
+- `Include by pattern`
+- `Exclude by pattern`
 
-These limits are saved per job in `~/.oci/jobs.json` and are used by both manual and scheduled runs.
+No filter means the rule applies to the entire bucket. Keep each action in its own rule so its target, age, state, and filters can be managed independently.
 
-Settings -> Backup Job Defaults can set default `Bandwidth Limit` and `API TPS Limit` values for new backup jobs. They are stored in `~/.oci-migrator.env` as `OCI_MIGRATOR_DEFAULT_BWLIMIT` and `OCI_MIGRATOR_DEFAULT_TPSLIMIT`. Existing jobs keep their own saved limits until edited.
+## VM Image Migration
 
-## Runtime Config Export
+Open `VM Image Migration` and configure:
 
-After logging in, use the download button in the top bar to export a zip backup. It includes the runtime env file, OCI config, job definitions/history, rclone config, and referenced key files when present.
+- `Source`: OCI profile used to scan compute instances.
+- `VM`: selected instance from the scan results.
+- `Destination Profile`: OCI profile that receives the exported image workflow.
+- `Storage Bucket`: destination Object Storage bucket.
 
-The archive can contain secrets. Store it securely.
+Executing a migration can stop the selected source VM and creates a boot-volume image backup in the selected destination workflow. The current workflow migrates the boot volume image only. Attached data volumes are displayed during scanning but must be migrated separately.
 
-## Local Sources
+## Settings
 
-Local remotes have two modes:
+### System Upgrade
 
-- Server local folders are created under `/var/lib/oci-migrator/local`.
-- Mounted external shares must already exist, for example under `/mnt/customer-share`.
+`Check` compares the installed commit with the latest GitHub commit. `Upgrade` installs the latest version, and `Log` shows progress while the API and frontend restart. Runtime configuration is preserved by the managed upgrade process.
 
-The installer creates `/var/lib/oci-migrator/local` for the service user. Use `--local-data-root PATH` to choose another managed root.
+### Notifications
 
-When creating a server local folder in the UI, it can optionally be exposed as SMB, NFSv4, or both:
+Configure outbound syslog notifications for backup results:
 
-- `Do Not Share` only creates the local folder.
-- `Share to Everyone` creates a guest-access Samba share and ensures TCP `445` is open locally.
-- `Share to User` creates/updates the requested SMB user, sets the Samba password, creates the share, and ensures TCP `445` is open locally.
-- `Enable NFSv4 Share` exports the same local folder with `rw,sync,no_subtree_check,root_squash` and ensures TCP `2049` is open locally. Add only trusted client IPs, hostnames, or CIDR ranges.
+- `Enabled`: turns delivery on or off.
+- `Syslog Server`: hostname or IP address of the receiving system.
+- `Port`: UDP or TCP destination port.
+- `Protocol`: UDP or TCP.
+- `Facility`: syslog facility from `local0` through `local7`, `daemon`, or `user`.
+- `Notify On`: failures and recovery, failures only, or all completed runs.
 
-The SMB password is not stored in the app config. Samba stores its own password hash. NFS access is controlled by the allowed client list saved with the remote. Deleting a remote that owns a managed share removes the Samba share block and/or NFS export block, but it does not delete the underlying local data folder.
+Use `Send Test` before enabling notifications. `Last Sent` and `Last Error` show the most recent delivery state. Delivery is best effort and a notification failure does not change the backup result.
 
-## Local Cleanup
+Messages are sent outbound from OCI Migrator; no inbound syslog port is required on this server.
 
-Local cleanup is configured per backup job. It is only supported when the source is a managed server local folder under `/var/lib/oci-migrator/local`.
+### Change Password
 
-When enabled, cleanup runs after `rclone` exits successfully. It deletes files older than the configured retention window, skips files modified within the configured safety window, removes empty child directories, and records the result in the job history as `local_cleanup`.
+Enter the current admin password, the new password, and confirmation. Use a unique strong password and update any operational password records after the change.
 
-Only one active cleanup policy should own a given local source path. The UI and API block saving a second job with cleanup enabled on the same source.
+### Runtime Config Backup
 
-Settings -> Local Disk Usage controls warning and critical thresholds for the managed local data disk. The status appears in `/health`, `/monitoring/status`, and Prometheus `/metrics`.
+- `Export`: downloads a ZIP containing runtime configuration, OCI/rclone credentials, job definitions/history, and referenced key files when available.
+- `Import`: uploads a previously exported ZIP and restores the contained configuration after validation.
 
-## Runtime Files
+The ZIP contains secrets. Store it encrypted or in another access-controlled location. Import can replace active credentials and job configuration, so take a fresh export before restoring an older archive.
 
-```text
-~/.oci-migrator.env
-~/.oci/config
-~/.oci/jobs.json
-~/.oci/job_history.json
-~/.config/rclone/rclone.conf
-/var/lib/oci-migrator/local
-/var/log/oci-migrator/jobs
-/etc/logrotate.d/migrator-job-logs
-/usr/local/sbin/oci-migrator-job-log
-/usr/local/sbin/oci-migrator-local-share
-/etc/oci-migrator/local-share.conf
-/etc/exports.d/oci-migrator.exports
-/etc/systemd/timesyncd.conf.d/oci-migrator.conf
-```
+### Network
 
-## Admin Password
+`DHCP` is the default IPv4 mode. Static mode requires:
 
-The admin password is stored as a hash in `~/.oci-migrator.env`.
+- `Network Interface`
+- `IPv4 Address`
+- `Prefix`
+- `Gateway`
+- `DNS Servers`
 
-Reset it from the server:
+Network changes use a confirmation window. Confirm the new configuration after connectivity is verified; otherwise the server rolls it back automatically. On OCI, reserve or assign the address on the instance VNIC before setting it inside Ubuntu.
 
-```bash
-cd /opt/oci-migrator
-./install.sh --admin-password '<new-strong-password>'
-```
+### Time & NTP
 
-Or change it from the UI after logging in.
+- `Timezone`: IANA timezone such as `Europe/Stockholm` or `Asia/Singapore`.
+- `NTP Servers`: space-separated NTP server list.
 
-## Upgrade
+Schedules and displayed timestamps use the configured timezone. NTP synchronizes the clock but does not select the timezone.
 
-If installed with bootstrap:
+### Backup Job Defaults
 
-```bash
-cd /opt/oci-migrator
-git pull --ff-only
-./install.sh --public-host <server-ip-or-dns>
-```
+- `Bandwidth Limit`: default rclone bandwidth limit for new jobs.
+- `API TPS Limit`: default transaction limit for new jobs.
 
-If deploying from a workstation:
+Changing defaults does not modify existing jobs. Edit an existing job to change its saved limits.
 
-```bash
-./scripts/deploy.sh
-```
+### Local Disk Usage
 
-## Uninstall
+- `Warning %`: disk utilization that changes local disk status to warning.
+- `Critical %`: higher utilization that changes status to critical.
 
-Remove services but keep runtime data:
+The panel reports used, free, and total capacity for the managed local data disk. Set thresholds with enough free-space margin for the largest expected ingest batch.
 
-```bash
-./scripts/uninstall.sh
-```
+### Job Log Rotation
 
-Remove services and runtime data for the current user:
+- `Retention Days`: number of rotated daily job logs to retain.
+- `Max Size`: size threshold such as `10M` or `50M` that can trigger rotation.
 
-```bash
-./scripts/uninstall.sh --purge-data
-```
+The log directory is displayed for reference and is not editable from the dashboard.
 
-Remove services and the project directory:
+### Uninstall OCI Migrator
 
-```bash
-./scripts/uninstall.sh --purge-project
-```
+Dashboard uninstall requires the current admin password and the exact confirmation text `UNINSTALL`.
 
-The same project uninstall is available under `Settings` -> `Uninstall OCI Migrator`. It requires the current admin password and the exact text `UNINSTALL`. The operation is delayed briefly so the API can acknowledge it before services stop.
+`Delete local backups stored on this server` additionally removes only the configured managed server-local backup directory. OCI Object Storage data, mounted external shares, runtime credentials, and imported source storage are not selected by that checkbox.
 
-The optional `Delete local backups stored on this server` checkbox adds `--purge-local-data`. It deletes only the configured `OCI_MIGRATOR_LOCAL_DATA_ROOT` after rejecting unsafe paths and nested mounted filesystems. Runtime config, OCI/rclone credentials, OCI Object Storage data, and mounted external shares are preserved.
+Export the runtime configuration before uninstalling when the installation may need to be rebuilt.

@@ -2153,7 +2153,7 @@ export default function App() {
       items: [
         {
           id: 'operations-docs',
-          label: 'Operations Guide',
+          label: 'Configuration Guide',
           icon: FileText,
           href: 'https://github.com/mr-ulusoy/OCI_migration_tool/blob/main/docs/OPERATIONS.md'
         }

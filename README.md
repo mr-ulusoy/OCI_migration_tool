@@ -111,7 +111,7 @@ GET /monitoring/status
 GET /metrics
 ```
 
-Both require an admin session or `X-API-Token`. See [Operations](docs/OPERATIONS.md#monitoring).
+Both require an admin session or `X-API-Token`. See the [Server Runbook](docs/RUNBOOK.md#monitoring).
 
 Push monitoring is available through `Settings` -> `Notifications`. OCI Migrator can send backup failures, timeouts, recovery, and optionally every completed run to a remote syslog server over UDP or TCP.
 
@@ -187,7 +187,8 @@ Server local folders can optionally be shared from the UI with SMB, NFSv4, or bo
 ## Documentation
 
 - [Installation](docs/INSTALL.md)
-- [Operations](docs/OPERATIONS.md)
+- [Dashboard Configuration](docs/OPERATIONS.md)
+- [Server Runbook](docs/RUNBOOK.md)
 - [Test Plan](docs/TEST_PLAN.md)
 - [Development](docs/DEVELOPMENT.md)
 - [Recommendations](docs/RECOMMENDATIONS.md)
