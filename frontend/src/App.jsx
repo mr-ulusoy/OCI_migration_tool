@@ -2175,33 +2175,13 @@ export default function App() {
             </form>
           </section>
           <aside className="login-hero relative hidden overflow-hidden bg-[#061b38] lg:block">
-            <img src={loginHeroImage} alt="Secure cloud migration from servers to cloud infrastructure" className="absolute inset-0 h-full w-full object-cover object-center" />
-            <div className="absolute inset-0 bg-[#03142b]/20" />
-            <div className="absolute right-7 top-7 inline-flex items-center gap-2 rounded-full border border-white/25 bg-[#061b38]/75 px-3 py-1.5 text-[10px] font-bold uppercase text-white backdrop-blur-sm">
-              <Shield size={13} /> Self-hosted console
-            </div>
-            <div className="absolute inset-x-0 bottom-0 border-t border-white/15 bg-[#041224]/90 px-8 py-7 text-left text-white backdrop-blur-sm xl:px-10">
-              <div className="flex items-end justify-between gap-8">
-                <div className="flex min-w-0 items-start gap-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-white/25 bg-white/10"><Cloud size={19} /></div>
-                  <div>
-                    <p className="text-xl font-semibold">Securely move what matters.</p>
-                    <p className="mt-1 max-w-lg text-sm leading-5 text-blue-100/80">Orchestrate, monitor, and control migration workflows from one console.</p>
-                  </div>
-                </div>
-                <div className="hidden shrink-0 grid-cols-2 gap-5 xl:grid">
-                  <div className="border-l border-white/20 pl-4">
-                    <FileText size={16} className="mb-2 text-blue-200" />
-                    <p className="text-[10px] font-bold uppercase text-blue-100/65">Data</p>
-                    <p className="mt-0.5 text-xs font-semibold">Files & objects</p>
-                  </div>
-                  <div className="border-l border-white/20 pl-4">
-                    <Database size={16} className="mb-2 text-blue-200" />
-                    <p className="text-[10px] font-bold uppercase text-blue-100/65">Compute</p>
-                    <p className="mt-0.5 text-xs font-semibold">VM boot images</p>
-                  </div>
-                </div>
-              </div>
+            <img src={loginHeroImage} alt="" aria-hidden="true" className="absolute inset-0 h-full w-full scale-110 object-cover opacity-35 blur-xl" />
+            <img src={loginHeroImage} alt="Secure cloud migration from servers to cloud infrastructure" className="absolute inset-0 h-full w-full object-contain object-center" />
+            <div className="absolute inset-0 bg-[#041224]/20" />
+            <div className="absolute bottom-8 left-8 right-8 text-left text-white">
+              <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-full border border-white/30 bg-[#061b38]/55 backdrop-blur-sm"><Cloud size={18} /></div>
+              <p className="text-lg font-semibold">Securely move what matters.</p>
+              <p className="mt-1 max-w-sm text-sm text-blue-100/85">Orchestrate, validate, and monitor every step of your cloud migration.</p>
             </div>
           </aside>
         </div>
