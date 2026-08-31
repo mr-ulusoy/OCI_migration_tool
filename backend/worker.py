@@ -7,9 +7,10 @@ import time
 from pathlib import Path
 from datetime import datetime, timedelta
 from celery import Celery
+from celery.signals import worker_ready
 import oci
 from job_logs import ensure_job_log_dir, job_log_path, summarize_rclone_json_log, tail_file
-from job_store import update_job_run
+from job_store import list_job_runs, update_job_run
 
 logging.basicConfig(level=os.getenv("OCI_MIGRATOR_LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
@@ -33,6 +34,30 @@ def rclone_timeout_seconds() -> int:
 LOCAL_DATA_ROOT = Path(os.getenv("OCI_MIGRATOR_LOCAL_DATA_ROOT", "/var/lib/oci-migrator/local")).resolve()
 
 celery_app = Celery('tasks', broker=redis_url(), backend=redis_url())
+
+
+def recover_interrupted_data_sync_runs() -> int:
+    recovered = 0
+    finished_at = datetime.utcnow().isoformat() + "Z"
+    for run in list_job_runs(300):
+        if run.get("kind") != "data_sync" or run.get("status") != "running":
+            continue
+        update_job_run(
+            run["id"],
+            status="failed",
+            details="Backup interrupted because the worker restarted.",
+            error="The worker restarted before this backup completed. Run the job again.",
+            finished_at=finished_at,
+        )
+        recovered += 1
+    return recovered
+
+
+@worker_ready.connect
+def recover_interrupted_runs_on_worker_start(**_kwargs):
+    recovered = recover_interrupted_data_sync_runs()
+    if recovered:
+        logger.warning("Marked %s interrupted backup run(s) as failed after worker start.", recovered)
 
 # --- HELPERS ---
 def get_client(ctype, profile):
