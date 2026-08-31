@@ -1695,8 +1695,8 @@ export default function App() {
   if (!isAuthenticated) {
     return (
       <div data-theme={theme} className="min-h-screen bg-[#f5f6f8] flex items-center justify-center p-5 sm:p-8 font-sans">
-        <div className="w-full max-w-6xl min-h-[620px] overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-[0_24px_60px_rgba(15,23,42,0.14)] grid lg:grid-cols-[0.9fr_1.1fr]">
-          <section className="flex min-h-[500px] items-center justify-center px-7 py-12 sm:px-14 lg:px-16">
+        <div className="w-full max-w-7xl min-h-[560px] overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-[0_24px_60px_rgba(15,23,42,0.14)] grid lg:grid-cols-[0.7fr_1.3fr]">
+          <section className="flex min-h-[500px] items-center justify-center px-7 py-12 sm:px-12 lg:px-14">
             <form onSubmit={handleLogin} className="w-full max-w-sm text-left">
               <div className="mb-10 flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#9c3029] shadow-sm">
@@ -1709,7 +1709,7 @@ export default function App() {
               </div>
               <div className="mb-7">
                 <p className="text-sm text-gray-500">Welcome back</p>
-                <h2 className="mt-1 text-2xl font-bold tracking-tight text-gray-900">Sign in to your workspace</h2>
+                <h2 className="mt-1 text-2xl font-bold tracking-tight text-gray-900">Sign in to your dashboard</h2>
               </div>
               <div className="space-y-4">
                 <div>
@@ -1741,7 +1741,8 @@ export default function App() {
             </form>
           </section>
           <aside className="relative hidden overflow-hidden bg-[#061b38] lg:block">
-            <img src={loginHeroImage} alt="Secure cloud migration from servers to cloud infrastructure" className="absolute inset-0 h-full w-full object-cover" />
+            <img src={loginHeroImage} alt="" aria-hidden="true" className="absolute inset-0 h-full w-full scale-110 object-cover opacity-35 blur-xl" />
+            <img src={loginHeroImage} alt="Secure cloud migration from servers to cloud infrastructure" className="absolute inset-0 h-full w-full object-contain object-center" />
             <div className="absolute inset-0 bg-gradient-to-t from-[#041224]/70 via-transparent to-[#041224]/15" />
             <div className="absolute bottom-8 left-8 right-8 text-left text-white">
               <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-full border border-white/30 bg-white/15 backdrop-blur-sm"><Cloud size={18} /></div>

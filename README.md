@@ -53,6 +53,14 @@ The installer opens the local Ubuntu firewall for TCP `22` (SSH), `8000` (app/AP
 
 The installer stores a hashed admin password in `~/.oci-migrator.env`. If you do not pass or prompt for a password, the installer generates one and prints it once.
 
+### Retrieve the admin login
+
+The default admin username is `admin`. To retrieve the generated password from the server, run the following command from your workstation (replace `<server-ip-or-dns>`):
+
+```bash
+ssh ubuntu@<server-ip-or-dns> 'cat ~/oci-migrator-admin-password.txt'
+```
+
 You can also set it non-interactively:
 
 ```bash
