@@ -213,6 +213,8 @@ def summarize_rclone_json_log(path: Path, elapsed_seconds: float | None = None) 
             max(coerce_number(last_stats.get("elapsedTime"), 0), coerce_number(summary["elapsed_seconds"], 0)),
             1,
         )
+        if summary["speed_bps"] <= 0 and summary["bytes"] > 0 and summary["elapsed_seconds"] > 0:
+            summary["speed_bps"] = summary["bytes"] / summary["elapsed_seconds"]
         eta = last_stats.get("eta")
         summary["eta_seconds"] = None if eta is None else coerce_number(eta, 0)
         if not summary["last_error"]:

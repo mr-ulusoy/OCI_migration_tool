@@ -43,6 +43,7 @@ if [ -n "${OCI_MIGRATOR_NTP_SERVERS:-}" ]; then
 fi
 CELERY_CONCURRENCY="${CELERY_CONCURRENCY:-2}"
 OPEN_FIREWALL="${OPEN_FIREWALL:-1}"
+SHARE_ALLOW_CIDR="${OCI_MIGRATOR_SHARE_ALLOW_CIDR:-10.0.0.0/8}"
 STOP_LEGACY_PROCESSES="${STOP_LEGACY_PROCESSES:-0}"
 PRINT_TOKEN="${PRINT_TOKEN:-0}"
 ADMIN_USERNAME="${OCI_MIGRATOR_ADMIN_USERNAME:-admin}"
@@ -104,6 +105,7 @@ Options:
   --celery-concurrency N      Celery worker concurrency. Default: $CELERY_CONCURRENCY
   --open-firewall             Open local firewall ports with ufw/iptables. Default: enabled.
   --no-open-firewall          Do not open local firewall ports during install.
+  --share-allow-cidr CIDR     Private CIDR(s) allowed to reach SMB/NFS. Default: $SHARE_ALLOW_CIDR
   --stop-legacy-processes     Stop old manual uvicorn/vite processes from this project path.
   --admin-username USERNAME   Admin login username. Default: $ADMIN_USERNAME
   --admin-password PASSWORD   Set or reset the admin password.
@@ -119,7 +121,8 @@ Environment variables with the same names are also supported:
   OCI_MIGRATOR_LOCAL_SHARE_HELPER, OCI_MIGRATOR_TIME_SYNC_HELPER,
   OCI_MIGRATOR_UPGRADE_HELPER,
   OCI_MIGRATOR_TIMEZONE, OCI_MIGRATOR_NTP_SERVERS,
-  OCI_MIGRATOR_ENV_FILE, OPEN_FIREWALL, STOP_LEGACY_PROCESSES,
+  OCI_MIGRATOR_ENV_FILE, OPEN_FIREWALL, OCI_MIGRATOR_SHARE_ALLOW_CIDR,
+  STOP_LEGACY_PROCESSES,
   CELERY_CONCURRENCY, PRINT_TOKEN,
   OCI_MIGRATOR_ADMIN_USERNAME, OCI_MIGRATOR_ADMIN_PASSWORD,
   OCI_MIGRATOR_ADMIN_PASSWORD_FILE, PROMPT_ADMIN_PASSWORD.
@@ -209,6 +212,10 @@ parse_args() {
       --no-open-firewall)
         OPEN_FIREWALL=0
         shift
+        ;;
+      --share-allow-cidr)
+        SHARE_ALLOW_CIDR="$2"
+        shift 2
         ;;
       --stop-legacy-processes)
         STOP_LEGACY_PROCESSES=1
@@ -324,6 +331,32 @@ validate_time_settings() {
       fail "Invalid NTP server: $server"
     fi
   done
+}
+
+validate_share_allow_cidrs() {
+  local normalized
+  if ! normalized="$(python3 - "$SHARE_ALLOW_CIDR" <<'PY'
+import ipaddress
+import sys
+
+raw = sys.argv[1]
+values = [value.strip() for value in raw.replace(" ", ",").split(",") if value.strip()]
+if not values:
+    raise SystemExit(1)
+
+networks = []
+for value in values:
+    network = ipaddress.ip_network(value, strict=False)
+    if network.version != 4:
+        raise SystemExit(1)
+    networks.append(str(network))
+
+print(",".join(dict.fromkeys(networks)))
+PY
+  )"; then
+    fail "--share-allow-cidr must contain one or more IPv4 CIDRs, for example 10.0.0.0/16."
+  fi
+  SHARE_ALLOW_CIDR="$normalized"
 }
 
 run_as_user() {
@@ -816,6 +849,7 @@ install_local_share_helper() {
   {
     printf 'LOCAL_DATA_ROOT=%q\n' "$LOCAL_DATA_ROOT"
     printf 'RUN_USER=%q\n' "$RUN_USER"
+    printf 'SHARE_ALLOW_CIDR=%q\n' "$SHARE_ALLOW_CIDR"
   } > "$helper_config"
   "${SUDO[@]}" install -o root -g root -m 644 "$helper_config" "$LOCAL_SHARE_CONFIG"
   rm -f "$helper_config"
@@ -885,6 +919,7 @@ install_upgrade_helper() {
     printf 'NTP_SERVERS=%q\n' "$NTP_SERVERS"
     printf 'CELERY_CONCURRENCY=%q\n' "$CELERY_CONCURRENCY"
     printf 'OPEN_FIREWALL=%q\n' "$OPEN_FIREWALL"
+    printf 'SHARE_ALLOW_CIDR=%q\n' "$SHARE_ALLOW_CIDR"
   } > "$helper_config"
   "${SUDO[@]}" install -o root -g root -m 644 "$helper_config" "$UPGRADE_CONFIG"
   rm -f "$helper_config"
@@ -1067,11 +1102,12 @@ start_services() {
 open_firewall_ports() {
   [ "$OPEN_FIREWALL" = "1" ] || return 0
 
-  local ports=(22 "$API_PORT" 445 2049)
+  local public_ports=(22 "$API_PORT")
+  local share_ports=(445 2049)
   local port
   local seen=" "
 
-  for port in "${ports[@]}"; do
+  for port in "${public_ports[@]}" "${share_ports[@]}"; do
     case "$port" in
       ""|*[!0-9]*)
         fail "Invalid firewall port: $port"
@@ -1079,25 +1115,46 @@ open_firewall_ports() {
     esac
   done
 
-  log "Opening local firewall TCP ports: 22 $API_PORT 445 2049"
+  log "Opening public local firewall TCP ports: 22 $API_PORT"
+  log "Opening SMB/NFS TCP ports 445 and 2049 from private CIDR(s): $SHARE_ALLOW_CIDR"
   if command -v ufw >/dev/null 2>&1 && "${SUDO[@]}" ufw status | grep -q 'Status: active'; then
-    for port in "${ports[@]}"; do
+    for port in "${public_ports[@]}"; do
       case "$seen" in
         *" $port "*) continue ;;
       esac
       seen="${seen}${port} "
       "${SUDO[@]}" ufw allow "$port/tcp"
     done
+
+    local cidr
+    for port in "${share_ports[@]}"; do
+      "${SUDO[@]}" ufw --force delete allow "$port/tcp" >/dev/null 2>&1 || true
+      while IFS= read -r cidr; do
+        [ -n "$cidr" ] || continue
+        "${SUDO[@]}" ufw allow from "$cidr" to any port "$port" proto tcp
+      done < <(printf '%s\n' "$SHARE_ALLOW_CIDR" | tr ',' '\n')
+    done
     return
   fi
 
   if command -v iptables >/dev/null 2>&1; then
-    for port in "${ports[@]}"; do
+    for port in "${public_ports[@]}"; do
       case "$seen" in
         *" $port "*) continue ;;
       esac
       seen="${seen}${port} "
       "${SUDO[@]}" iptables -C INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null || "${SUDO[@]}" iptables -I INPUT 1 -p tcp --dport "$port" -j ACCEPT
+    done
+
+    local cidr
+    for port in "${share_ports[@]}"; do
+      while "${SUDO[@]}" iptables -C INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null; do
+        "${SUDO[@]}" iptables -D INPUT -p tcp --dport "$port" -j ACCEPT
+      done
+      while IFS= read -r cidr; do
+        [ -n "$cidr" ] || continue
+        "${SUDO[@]}" iptables -C INPUT -p tcp -s "$cidr" --dport "$port" -j ACCEPT 2>/dev/null || "${SUDO[@]}" iptables -I INPUT 1 -p tcp -s "$cidr" --dport "$port" -j ACCEPT
+      done < <(printf '%s\n' "$SHARE_ALLOW_CIDR" | tr ',' '\n')
     done
     command -v netfilter-persistent >/dev/null 2>&1 && "${SUDO[@]}" netfilter-persistent save || true
   fi
@@ -1141,6 +1198,7 @@ main() {
   install_rclone
   validate_time_settings
   validate_job_log_settings
+  validate_share_allow_cidrs
   ensure_env_file
   load_time_settings_from_env
   load_time_sync_helper_from_env

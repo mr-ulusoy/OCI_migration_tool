@@ -49,7 +49,7 @@ Open:
 http://<server-ip-or-dns>:8000
 ```
 
-The installer opens the local Ubuntu firewall for TCP `22` (SSH), `8000` (app/API), `445` (SMB), and `2049` (NFSv4) by default. Your OCI Security List or NSG must allow the same traffic from the networks that should reach the server.
+The installer opens TCP `22` (SSH) and `8000` (app/API) publicly in the local Ubuntu firewall. SMB `445` and NFSv4 `2049` are restricted to `10.0.0.0/8` by default for private OCI traffic. Use `--share-allow-cidr` to set your VCN, VPN, or client CIDR. Your OCI Security List or NSG must allow the same intended sources.
 
 The installer stores a hashed admin password in `~/.oci-migrator.env`. If you do not pass or prompt for a password, the installer generates one and prints it once.
 
@@ -151,7 +151,7 @@ Per-job local cleanup can be enabled for managed server local folder sources. Cl
 
 Settings -> Local Disk Usage shows the managed local data disk usage and configurable warning/critical thresholds. The same status is exposed through `/health`, `/monitoring/status`, and `/metrics`.
 
-Server local folders can optionally be shared from the UI with SMB, NFSv4, or both. SMB can be opened as guest access or a named Samba user on TCP `445`. NFSv4 requires an allowed client IP/hostname/CIDR list and uses TCP `2049`. No share is enabled during installation; the installed root helper applies the share only when a user chooses it in `Add Remote`.
+Server local folders can optionally be shared from the UI with SMB, NFSv4, or both. SMB can use guest access or a named Samba user on TCP `445`. NFSv4 requires an allowed client IP/hostname/CIDR list and uses TCP `2049`. Both ports remain limited by the installer-level private `--share-allow-cidr` firewall rule. No share is enabled during installation; the installed root helper applies the share only when a user chooses it in `Add Remote`.
 
 ## Documentation
 

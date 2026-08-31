@@ -112,7 +112,8 @@ Steps:
 Expected result:
 
 - installer completes without manual code edits
-- local Ubuntu firewall allows TCP 22, 8000 or the chosen app/API port, 445, and 2049
+- local Ubuntu firewall allows TCP 22 and 8000 or the chosen app/API port publicly
+- TCP 445 and 2049 only allow the configured private share CIDR
 - API, worker, Redis, and scheduler are running
 - frontend loads from the backend
 - admin login works
@@ -388,7 +389,7 @@ Steps:
 Expected result:
 
 - Samba is configured only after SMB is enabled
-- TCP 445 is open on the server firewall when supported
+- TCP 445 is allowed from the configured private share CIDR and not opened globally
 - share is reachable from allowed private network path
 - uploaded file appears in the managed local folder
 - backup includes uploaded file
@@ -416,7 +417,7 @@ Steps:
 Expected result:
 
 - NFS server/export is configured only after NFS is enabled
-- TCP 2049 is open on the server firewall when supported
+- TCP 2049 is allowed from the configured private share CIDR and not opened globally
 - only allowed clients can mount
 - test file backs up successfully
 

@@ -8,6 +8,7 @@ SMB_CONF="/etc/samba/smb.conf"
 SMB_PORT="445"
 NFS_EXPORTS_FILE="/etc/exports.d/oci-migrator.exports"
 NFS_PORT="2049"
+SHARE_ALLOW_CIDR=""
 
 ACTION=""
 SHARE_NAME=""
@@ -64,6 +65,7 @@ load_config() {
 
   [ -n "${LOCAL_DATA_ROOT:-}" ] || fail "LOCAL_DATA_ROOT is missing in $CONFIG_FILE."
   [ -n "${RUN_USER:-}" ] || fail "RUN_USER is missing in $CONFIG_FILE."
+  [ -n "${SHARE_ALLOW_CIDR:-}" ] || fail "SHARE_ALLOW_CIDR is missing in $CONFIG_FILE. Rerun install.sh."
   id "$RUN_USER" >/dev/null 2>&1 || fail "Configured RUN_USER does not exist: $RUN_USER"
 }
 
@@ -454,27 +456,51 @@ restart_nfs() {
 }
 
 open_smb_firewall() {
-  log "Opening inbound SMB TCP $SMB_PORT"
+  log "Opening inbound SMB TCP $SMB_PORT from $SHARE_ALLOW_CIDR"
   if command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active'; then
-    ufw allow "$SMB_PORT/tcp"
+    ufw --force delete allow "$SMB_PORT/tcp" >/dev/null 2>&1 || true
+    local cidr
+    while IFS= read -r cidr; do
+      [ -n "$cidr" ] || continue
+      ufw allow from "$cidr" to any port "$SMB_PORT" proto tcp
+    done < <(printf '%s\n' "$SHARE_ALLOW_CIDR" | tr ',' '\n')
     return
   fi
 
   if command -v iptables >/dev/null 2>&1; then
-    iptables -C INPUT -p tcp --dport "$SMB_PORT" -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp --dport "$SMB_PORT" -j ACCEPT
+    while iptables -C INPUT -p tcp --dport "$SMB_PORT" -j ACCEPT 2>/dev/null; do
+      iptables -D INPUT -p tcp --dport "$SMB_PORT" -j ACCEPT
+    done
+    local cidr
+    while IFS= read -r cidr; do
+      [ -n "$cidr" ] || continue
+      iptables -C INPUT -p tcp -s "$cidr" --dport "$SMB_PORT" -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp -s "$cidr" --dport "$SMB_PORT" -j ACCEPT
+    done < <(printf '%s\n' "$SHARE_ALLOW_CIDR" | tr ',' '\n')
     command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save || true
   fi
 }
 
 open_nfs_firewall() {
-  log "Opening inbound NFSv4 TCP $NFS_PORT"
+  log "Opening inbound NFSv4 TCP $NFS_PORT from $SHARE_ALLOW_CIDR"
   if command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active'; then
-    ufw allow "$NFS_PORT/tcp"
+    ufw --force delete allow "$NFS_PORT/tcp" >/dev/null 2>&1 || true
+    local cidr
+    while IFS= read -r cidr; do
+      [ -n "$cidr" ] || continue
+      ufw allow from "$cidr" to any port "$NFS_PORT" proto tcp
+    done < <(printf '%s\n' "$SHARE_ALLOW_CIDR" | tr ',' '\n')
     return
   fi
 
   if command -v iptables >/dev/null 2>&1; then
-    iptables -C INPUT -p tcp --dport "$NFS_PORT" -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp --dport "$NFS_PORT" -j ACCEPT
+    while iptables -C INPUT -p tcp --dport "$NFS_PORT" -j ACCEPT 2>/dev/null; do
+      iptables -D INPUT -p tcp --dport "$NFS_PORT" -j ACCEPT
+    done
+    local cidr
+    while IFS= read -r cidr; do
+      [ -n "$cidr" ] || continue
+      iptables -C INPUT -p tcp -s "$cidr" --dport "$NFS_PORT" -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p tcp -s "$cidr" --dport "$NFS_PORT" -j ACCEPT
+    done < <(printf '%s\n' "$SHARE_ALLOW_CIDR" | tr ',' '\n')
     command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save || true
   fi
 }
