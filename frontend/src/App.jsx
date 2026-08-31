@@ -1,5 +1,6 @@
 import { useMemo, useState, useEffect } from 'react';
 import axios from 'axios';
+import loginHeroImage from './assets/oci-migrator-pro-hero.png';
 import { 
   Cloud, Shield, Database, Search, Key, Loader2, CheckCircle,
   ArrowRight, FileText, Archive, Edit, Trash2,
@@ -1693,41 +1694,62 @@ export default function App() {
 
   if (!isAuthenticated) {
     return (
-      <div data-theme={theme} className="min-h-screen bg-gray-50 flex items-center justify-center p-6 font-sans">
-        <form onSubmit={handleLogin} className="w-full max-w-sm bg-white border border-gray-200 rounded-md shadow-sm p-6">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="bg-[#9c3029] p-2 rounded-md"><Lock size={20} className="text-white" /></div>
-            <div>
-              <h1 className="text-lg font-bold text-gray-900">OCI Migrator Pro</h1>
-              <p className="text-xs text-gray-500">Admin login</p>
+      <div data-theme={theme} className="min-h-screen bg-[#f5f6f8] flex items-center justify-center p-5 sm:p-8 font-sans">
+        <div className="w-full max-w-6xl min-h-[620px] overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-[0_24px_60px_rgba(15,23,42,0.14)] grid lg:grid-cols-[0.9fr_1.1fr]">
+          <section className="flex min-h-[500px] items-center justify-center px-7 py-12 sm:px-14 lg:px-16">
+            <form onSubmit={handleLogin} className="w-full max-w-sm text-left">
+              <div className="mb-10 flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#9c3029] shadow-sm">
+                  <Lock size={19} className="text-white" />
+                </div>
+                <div>
+                  <h1 className="text-lg font-bold tracking-tight text-gray-900">OCI Migrator Pro</h1>
+                  <p className="text-xs text-gray-500">Cloud migration console</p>
+                </div>
+              </div>
+              <div className="mb-7">
+                <p className="text-sm text-gray-500">Welcome back</p>
+                <h2 className="mt-1 text-2xl font-bold tracking-tight text-gray-900">Sign in to your workspace</h2>
+              </div>
+              <div className="space-y-4">
+                <div>
+                  <label className="mb-1.5 block text-xs font-semibold text-gray-700">Username</label>
+                  <input
+                    value={loginForm.username}
+                    onChange={e => setLoginForm({ ...loginForm, username: e.target.value })}
+                    className="w-full rounded-lg border border-gray-200 bg-white px-3.5 py-3 text-sm text-gray-800 outline-none transition focus:border-[#9c3029] focus:ring-4 focus:ring-[#9c3029]/10"
+                    autoComplete="username"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="mb-1.5 block text-xs font-semibold text-gray-700">Password</label>
+                  <input
+                    type="password"
+                    value={loginForm.password}
+                    onChange={e => setLoginForm({ ...loginForm, password: e.target.value })}
+                    className="w-full rounded-lg border border-gray-200 bg-white px-3.5 py-3 text-sm text-gray-800 outline-none transition focus:border-[#9c3029] focus:ring-4 focus:ring-[#9c3029]/10"
+                    autoComplete="current-password"
+                    required
+                  />
+                </div>
+                {loginError && <div className="rounded-lg border border-red-100 bg-red-50 p-3 text-xs text-red-700">{loginError}</div>}
+                <button type="submit" disabled={authLoading} className="flex w-full items-center justify-center gap-2 rounded-lg bg-[#9c3029] py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[#7a2520] disabled:cursor-not-allowed disabled:opacity-70">
+                  {authLoading ? <Loader2 className="animate-spin" size={18} /> : <><Lock size={16} /> Sign in</>}
+                </button>
+              </div>
+            </form>
+          </section>
+          <aside className="relative hidden overflow-hidden bg-[#061b38] lg:block">
+            <img src={loginHeroImage} alt="Secure cloud migration from servers to cloud infrastructure" className="absolute inset-0 h-full w-full object-cover" />
+            <div className="absolute inset-0 bg-gradient-to-t from-[#041224]/70 via-transparent to-[#041224]/15" />
+            <div className="absolute bottom-8 left-8 right-8 text-left text-white">
+              <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-full border border-white/30 bg-white/15 backdrop-blur-sm"><Cloud size={18} /></div>
+              <p className="text-lg font-semibold">Securely move what matters.</p>
+              <p className="mt-1 max-w-sm text-sm text-blue-100/85">Orchestrate, validate, and monitor every step of your cloud migration.</p>
             </div>
-          </div>
-          <div className="space-y-4 text-left">
-            <div>
-              <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Username</label>
-              <input
-                value={loginForm.username}
-                onChange={e => setLoginForm({ ...loginForm, username: e.target.value })}
-                className="w-full bg-white border border-gray-200 p-2.5 rounded-md text-sm text-gray-800 focus:outline-none focus:border-[#9c3029]"
-                autoComplete="username"
-              />
-            </div>
-            <div>
-              <label className="text-[11px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Password</label>
-              <input
-                type="password"
-                value={loginForm.password}
-                onChange={e => setLoginForm({ ...loginForm, password: e.target.value })}
-                className="w-full bg-white border border-gray-200 p-2.5 rounded-md text-sm text-gray-800 focus:outline-none focus:border-[#9c3029]"
-                autoComplete="current-password"
-              />
-            </div>
-            {loginError && <div className="text-xs text-red-600 bg-red-50 border border-red-100 rounded-md p-2">{loginError}</div>}
-            <button type="submit" disabled={authLoading} className="w-full bg-[#9c3029] text-white py-2.5 rounded-md font-semibold hover:bg-[#7a2520] transition-colors shadow-sm flex items-center justify-center gap-2">
-              {authLoading ? <Loader2 className="animate-spin" size={18} /> : <><Lock size={16} /> Login</>}
-            </button>
-          </div>
-        </form>
+          </aside>
+        </div>
       </div>
     );
   }
