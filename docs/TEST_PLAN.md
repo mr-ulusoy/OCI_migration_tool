@@ -146,7 +146,7 @@ Purpose: prove auth state is predictable after login, logout, and restart.
 Steps:
 
 1. Log in as admin.
-2. Navigate between Job Dashboard, New Backup Job, OCI Object Storage, VM Image Migration, and Settings.
+2. Navigate between Job Dashboard, Backup Jobs, New Backup Job, Credentials, OCI Object Storage, VM Image Migration, and Settings.
 3. Log out from the sidebar.
 4. Try to open a protected page.
 5. Restart services:
@@ -272,7 +272,7 @@ Steps:
    - API TPS limit, for example `5`
 4. Save job.
 5. Click Run Now.
-6. Open Recent Runs and the job log.
+6. Open `Backup Jobs` -> `Recent Runs` and the job log.
 
 Expected result:
 
@@ -476,7 +476,7 @@ Steps:
    make restart
    ```
 
-4. Open Job Dashboard -> Recent Runs.
+4. Open `Backup Jobs` -> `Recent Runs`.
 5. Download logs.
 6. Open Settings -> Job Log Rotation.
 7. Change retention days and max size.

@@ -1,6 +1,4 @@
 # OCI Migrator Pro
-<img width="1573" height="822" alt="image" src="https://github.com/user-attachments/assets/b8897377-92b8-4a9e-8858-e1f7995cb0c3" />
-
 
 Self-hosted admin console for moving file and object data into Oracle Cloud Infrastructure (OCI) Object Storage, and for migrating OCI VM images between OCI tenants.
 
@@ -10,6 +8,16 @@ Self-hosted admin console for moving file and object data into Oracle Cloud Infr
 - rclone sync/copy jobs
 - OCI SDK VM and Object Storage operations
 - persistent job run history and runtime config export
+
+## Web Console
+
+- `Job Dashboard` shows service health, software update status, backup totals, running jobs, jobs requiring attention, and the latest successful run.
+- `Backup Jobs` contains Active Backup Jobs and Recent Runs, including manual execution, editing, status summaries, and downloadable logs.
+- `New Backup Job` creates scheduled or manual copy/sync pipelines.
+- `Credentials` manages OCI, cloud, S3-compatible, local folder, SMB, and NFS sources.
+- `OCI Object Storage` explores buckets and objects and manages supported bucket settings and lifecycle rules.
+- `VM Image Migration` scans OCI compute instances and starts boot-volume image migration workflows.
+- `Settings` contains system upgrade, runtime config backup/import, time and NTP, network, job defaults, local disk warnings, log rotation, and admin password controls.
 
 ## Main Use Cases
 
@@ -31,7 +39,7 @@ Self-hosted admin console for moving file and object data into Oracle Cloud Infr
 | S3-compatible object storage | OCI Object Storage bucket |
 | Server local folder, SMB/NFS ingest folder, or mounted on-premises share | OCI Object Storage bucket |
 
-For VM image migration, the source is an OCI tenant/profile with compute instances and the destination is another OCI tenant/profile with an Object Storage bucket for the exported image workflow.
+For VM image migration, the source is an OCI tenant/profile with compute instances and the destination is another OCI tenant/profile with an Object Storage bucket for the exported image workflow. The current workflow migrates the boot volume image only. Attached data volumes are discovered and shown but must be migrated separately.
 
 ## Quick Install
 
@@ -152,7 +160,7 @@ The built frontend is served by the backend, so each install only needs one app/
 
 The backend service also serves the built frontend from `frontend/dist`. Backend dependencies use `backend/requirements.lock` when present.
 
-Rclone job logs are persisted per run and visible/downloadable from Job Dashboard -> Recent Runs. The dashboard also exposes log rotation settings. The installer configures logrotate with `maxsize 10M` and `14` retention days by default.
+Rclone job logs are persisted per run and visible/downloadable from `Backup Jobs` -> `Recent Runs`. Log rotation is configured under `Settings` -> `Job Log Rotation`. The installer configures logrotate with `maxsize 10M` and `14` retention days by default.
 
 Timezone and NTP servers are visible and editable from Settings -> Time & NTP.
 

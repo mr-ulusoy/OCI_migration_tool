@@ -98,7 +98,7 @@ oci_migrator_backup_job_last_run_timestamp{job="CustomerA",status="success"} 177
 
 ## Job History
 
-The UI shows recent runs in the Job Dashboard. The backend persists run history in:
+The UI shows recent runs under `Backup Jobs` -> `Recent Runs`. The backend persists run history in:
 
 ```text
 ~/.oci/job_history.json
@@ -116,10 +116,10 @@ Each rclone run writes a persistent log file under:
 /var/log/oci-migrator/jobs/
 ```
 
-Rclone is run with JSON logging. OCI Migrator parses each run into a compact `rclone_summary` in `~/.oci/job_history.json` with transferred bytes, files, deletes, errors, elapsed time, and average speed. The Job Dashboard shows that summary on active jobs and recent runs.
+Rclone is run with JSON logging. OCI Migrator parses each run into a compact `rclone_summary` in `~/.oci/job_history.json` with transferred bytes, files, deletes, errors, elapsed time, and average speed. The `Backup Jobs` page shows that summary on active jobs and recent runs.
 
 Use `Recent Runs` -> terminal button to view a readable log tail, or the download button to download the full raw log file for that run.
-The same dashboard shows `Retention Days` and `Max Size`; saving those fields updates the managed logrotate config.
+`Settings` -> `Job Log Rotation` shows `Retention Days` and `Max Size`; saving those fields updates the managed logrotate config.
 
 Log rotation is installed at:
 
