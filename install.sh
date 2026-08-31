@@ -210,6 +210,10 @@ parse_args() {
         OPEN_FIREWALL=0
         shift
         ;;
+      --share-allow-cidr)
+        # Deprecated compatibility for the short-lived installer option. The value is intentionally ignored.
+        shift 2
+        ;;
       --stop-legacy-processes)
         STOP_LEGACY_PROCESSES=1
         shift
