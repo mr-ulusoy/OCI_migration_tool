@@ -2811,7 +2811,7 @@ async def change_password(data: ChangePasswordRequest):
     config = get_runtime_config()
     admin_password_hash = str(config.get("admin_password_hash", ""))
     if not admin_password_hash or not verify_password(data.current_password, admin_password_hash):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Current password is incorrect.")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect.")
 
     new_hash = hash_password(data.new_password)
     _write_env_values(
@@ -3413,7 +3413,7 @@ async def schedule_uninstall(data: UninstallRequest):
     config = get_runtime_config()
     admin_password_hash = str(config.get("admin_password_hash", ""))
     if not admin_password_hash or not verify_password(data.current_password, admin_password_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Current password is incorrect.")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Current password is incorrect.")
 
     try:
         result = subprocess.run(
