@@ -59,6 +59,14 @@ cd OCI_migration_tool
 `--no-open-firewall` skips opening local Ubuntu firewall ports during install. By default the installer opens TCP `22`, the app/API port, `445`, and `2049`.
 After installation, timezone and NTP servers can also be changed from `Settings` -> `Time & NTP`.
 
+## DHCP and Static IPv4
+
+The installer leaves the operating system on its existing network configuration, which is normally DHCP on a new Ubuntu cloud instance. It installs `/usr/local/sbin/oci-migrator-network` and a restricted sudoers rule so an administrator can later choose `DHCP` or `Static IPv4` from `Settings` -> `Network`.
+
+Static mode writes `/etc/netplan/99-oci-migrator-network.yaml`. Before applying a static address on OCI or another cloud, assign or reserve that private IP on the instance VNIC. Every dashboard change starts a three-minute confirmation window. Confirm the working configuration from the dashboard; otherwise the previous managed Netplan file is restored automatically.
+
+If the address changes, open the dashboard on the new address, sign in again, and confirm the pending network configuration before the timer expires.
+
 ## Optional SMB/NFS Sharing
 
 No SMB or NFS share is enabled during installation. The installer opens the local firewall ports and places a root-owned helper plus a sudoers rule so the web UI can enable a managed share later.

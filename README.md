@@ -147,6 +147,7 @@ The built frontend is served by the backend, so each install only needs one app/
 - `/etc/logrotate.d/migrator-job-logs`
 - `/usr/local/sbin/oci-migrator-job-log`
 - `/usr/local/sbin/oci-migrator-time-sync`
+- `/usr/local/sbin/oci-migrator-network`
 - `/etc/systemd/timesyncd.conf.d/oci-migrator.conf`
 
 The backend service also serves the built frontend from `frontend/dist`. Backend dependencies use `backend/requirements.lock` when present.
@@ -154,6 +155,8 @@ The backend service also serves the built frontend from `frontend/dist`. Backend
 Rclone job logs are persisted per run and visible/downloadable from Job Dashboard -> Recent Runs. The dashboard also exposes log rotation settings. The installer configures logrotate with `maxsize 10M` and `14` retention days by default.
 
 Timezone and NTP servers are visible and editable from Settings -> Time & NTP.
+
+IPv4 networking is editable from Settings -> Network. DHCP is the default. Static mode requires an interface, IPv4 address/prefix, gateway, and DNS servers. Changes use a three-minute confirmation window; unconfirmed settings are rolled back automatically. On cloud platforms, assign or reserve the static address on the instance VNIC before applying it inside Ubuntu.
 
 Per-job local cleanup can be enabled for managed server local folder sources. Cleanup runs only after a successful backup, deletes files older than the configured retention, and always skips files modified within the configured safety window.
 

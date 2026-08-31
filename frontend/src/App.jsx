@@ -5,7 +5,7 @@ import {
   Cloud, Shield, Database, Search, Key, Loader2, CheckCircle,
   ArrowRight, FileText, Archive, Edit, Trash2,
   Folder, Plus, RefreshCw, Globe, Cpu, Clock, Activity, Terminal,
-  Lock, LogOut, Download, Upload, HeartPulse, AlertCircle, X, Settings, Save, Tags, HardDrive, Moon
+  Lock, LogOut, Download, Upload, HeartPulse, AlertCircle, X, Settings, Save, Tags, HardDrive, Moon, Network
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (
@@ -362,6 +362,10 @@ export default function App() {
   const [timeSettings, setTimeSettings] = useState(null);
   const [timeSettingsForm, setTimeSettingsForm] = useState({ timezone: 'UTC', ntpServers: '0.pool.ntp.org 1.pool.ntp.org' });
   const [savingTimeSettings, setSavingTimeSettings] = useState(false);
+  const [networkSettings, setNetworkSettings] = useState(null);
+  const [networkSettingsForm, setNetworkSettingsForm] = useState({ mode: 'dhcp', interface: '', address: '', prefixLength: 24, gateway: '', dnsServers: '' });
+  const [savingNetworkSettings, setSavingNetworkSettings] = useState(false);
+  const [networkNow, setNetworkNow] = useState(Date.now());
   const [rcloneDefaultSettings, setRcloneDefaultSettings] = useState({ bwlimit: '', tpslimit: null });
   const [rcloneDefaultSettingsForm, setRcloneDefaultSettingsForm] = useState({ bwlimit: '', tpslimit: '' });
   const [savingRcloneDefaultSettings, setSavingRcloneDefaultSettings] = useState(false);
@@ -574,6 +578,33 @@ export default function App() {
       });
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  const fetchNetworkSettings = async (resetForm = true) => {
+    try {
+      const res = await api.get('/network-settings');
+      setNetworkSettings(res.data);
+      if (resetForm) {
+        const selectedInterface = (res.data.interfaces || []).find(item => item.name === res.data.interface)
+          || (res.data.interfaces || []).find(item => item.default_route)
+          || (res.data.interfaces || [])[0];
+        const configuredAddress = res.data.address || selectedInterface?.ipv4_addresses?.[0] || '';
+        const [address = '', prefixLength = '24'] = configuredAddress.split('/');
+        const dnsServers = (res.data.dns_servers?.length ? res.data.dns_servers : selectedInterface?.dns_servers || []).join(' ');
+        setNetworkSettingsForm({
+          mode: res.data.mode === 'static' ? 'static' : 'dhcp',
+          interface: res.data.interface || selectedInterface?.name || '',
+          address,
+          prefixLength: Number(prefixLength || 24),
+          gateway: res.data.gateway || selectedInterface?.gateway || '',
+          dnsServers
+        });
+      }
+      return res.data;
+    } catch (err) {
+      console.error(err);
+      return null;
     }
   };
 
@@ -837,6 +868,76 @@ export default function App() {
     setSavingTimeSettings(false);
   };
 
+  const stageNetworkSettings = async () => {
+    setSavingNetworkSettings(true);
+    try {
+      const res = await api.put('/network-settings', {
+        mode: networkSettingsForm.mode,
+        interface: networkSettingsForm.interface,
+        address: networkSettingsForm.address.trim(),
+        prefix_length: Number(networkSettingsForm.prefixLength),
+        gateway: networkSettingsForm.gateway.trim(),
+        dns_servers: networkSettingsForm.dnsServers.trim()
+      });
+      setNetworkSettings(res.data);
+      setNetworkNow(Date.now());
+      showSuccess('Network change staged. Confirm it before the rollback timer expires.');
+    } catch (err) {
+      showError('Failed to apply network settings', err);
+    }
+    setSavingNetworkSettings(false);
+  };
+
+  const handleSaveNetworkSettings = (event) => {
+    event.preventDefault();
+    if (!networkSettingsForm.interface) {
+      setNotice({ type: 'error', title: 'Invalid network settings', message: 'Select a network interface.' });
+      return;
+    }
+    if (networkSettingsForm.mode === 'static' && (!networkSettingsForm.address.trim() || !networkSettingsForm.gateway.trim() || !networkSettingsForm.dnsServers.trim())) {
+      setNotice({ type: 'error', title: 'Invalid network settings', message: 'Static IPv4 requires an address, prefix length, gateway, and at least one DNS server.' });
+      return;
+    }
+
+    const target = networkSettingsForm.mode === 'static'
+      ? `${networkSettingsForm.address}/${networkSettingsForm.prefixLength}`
+      : 'DHCP';
+    setConfirmDialog({
+      icon: 'shield',
+      title: 'Apply network configuration?',
+      message: `${networkSettingsForm.interface} will be changed to ${target}. The current connection may be interrupted.`,
+      detail: 'The previous configuration is restored automatically after three minutes unless the new configuration is confirmed. Reserve or assign a static address in the cloud VNIC or local network first.',
+      confirmLabel: 'Apply & Test',
+      onConfirm: stageNetworkSettings
+    });
+  };
+
+  const handleConfirmNetworkSettings = async () => {
+    setSavingNetworkSettings(true);
+    try {
+      const res = await api.post('/network-settings/confirm');
+      setNetworkSettings(res.data);
+      await fetchNetworkSettings(true);
+      showSuccess('Network configuration confirmed.');
+    } catch (err) {
+      showError('Failed to confirm network settings', err);
+    }
+    setSavingNetworkSettings(false);
+  };
+
+  const handleRollbackNetworkSettings = async () => {
+    setSavingNetworkSettings(true);
+    try {
+      const res = await api.post('/network-settings/rollback');
+      setNetworkSettings(res.data);
+      await fetchNetworkSettings(true);
+      showSuccess('Previous network configuration restored.');
+    } catch (err) {
+      showError('Failed to restore network settings', err);
+    }
+    setSavingNetworkSettings(false);
+  };
+
   const handleSaveRcloneDefaultSettings = async (event) => {
     event.preventDefault();
     const limits = normalizeRcloneLimits(rcloneDefaultSettingsForm);
@@ -877,10 +978,22 @@ export default function App() {
     fetchJobLogSettings();
     fetchLocalDiskSettings();
     fetchTimeSettings();
+    fetchNetworkSettings();
     fetchRcloneDefaultSettings();
     fetchUpgradeStatus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, api]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !networkSettings?.pending) return;
+    const clockInterval = setInterval(() => setNetworkNow(Date.now()), 1000);
+    const statusInterval = setInterval(() => fetchNetworkSettings(false), 3000);
+    return () => {
+      clearInterval(clockInterval);
+      clearInterval(statusInterval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, Boolean(networkSettings?.pending)]);
 
   useEffect(() => {
     if (!isAuthenticated || (!showUpgradeLog && upgradeStatus?.status !== 'running')) return;
@@ -2301,6 +2414,199 @@ export default function App() {
                   Import restores runtime env, OCI config, rclone config, backup jobs, job history, and bundled key files. A pre-restore backup is created automatically.
                 </p>
               </div>
+              <form onSubmit={handleSaveNetworkSettings} className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
+                <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
+                  <div>
+                    <h3 className="font-bold text-sm text-gray-800 flex items-center gap-2">
+                      <Network size={16} className="text-[#9c3029]" /> Network
+                    </h3>
+                    <p className="mt-1 text-[11px] text-gray-500">IPv4 configuration is managed with Netplan. DHCP remains the default until a static address is applied.</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => fetchNetworkSettings(true)}
+                      disabled={savingNetworkSettings}
+                      className="px-3 py-2 bg-white border border-gray-200 text-gray-600 rounded-md font-semibold text-xs hover:text-[#9c3029] hover:bg-gray-50 disabled:opacity-60 flex items-center gap-2"
+                    >
+                      <RefreshCw size={14} />
+                      Refresh
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={savingNetworkSettings || networkSettings?.helper_installed === false || Boolean(networkSettings?.pending)}
+                      className="px-3 py-2 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#7a2520] disabled:opacity-60 flex items-center justify-center gap-2"
+                    >
+                      {savingNetworkSettings ? <Loader2 className="animate-spin" size={14} /> : <Save size={14} />}
+                      Apply Network
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-[220px_1fr] gap-3">
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">IPv4 Mode</label>
+                    <div className="grid grid-cols-2 rounded-md border border-gray-200 bg-gray-50 p-1">
+                      <button
+                        type="button"
+                        onClick={() => setNetworkSettingsForm({ ...networkSettingsForm, mode: 'dhcp' })}
+                        className={`px-3 py-1.5 rounded text-xs font-semibold transition-colors ${networkSettingsForm.mode === 'dhcp' ? 'bg-white text-[#9c3029] shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}
+                      >
+                        DHCP
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setNetworkSettingsForm({ ...networkSettingsForm, mode: 'static' })}
+                        className={`px-3 py-1.5 rounded text-xs font-semibold transition-colors ${networkSettingsForm.mode === 'static' ? 'bg-white text-[#9c3029] shadow-sm' : 'text-gray-500 hover:text-gray-800'}`}
+                      >
+                        Static IPv4
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Network Interface</label>
+                    <select
+                      value={networkSettingsForm.interface}
+                      onChange={event => {
+                        const selected = (networkSettings?.interfaces || []).find(item => item.name === event.target.value);
+                        const [address = '', prefixLength = '24'] = (selected?.ipv4_addresses?.[0] || '').split('/');
+                        setNetworkSettingsForm({
+                          ...networkSettingsForm,
+                          interface: event.target.value,
+                          address,
+                          prefixLength: Number(prefixLength || 24),
+                          gateway: selected?.gateway || '',
+                          dnsServers: (selected?.dns_servers || []).join(' ')
+                        });
+                      }}
+                      className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                    >
+                      {(networkSettings?.interfaces || []).map(item => (
+                        <option key={item.name} value={item.name}>{item.name} ({item.state})</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {networkSettingsForm.mode === 'static' && (
+                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-[1fr_120px_1fr_1.4fr] gap-3">
+                    <div>
+                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">IPv4 Address</label>
+                      <input
+                        value={networkSettingsForm.address}
+                        onChange={event => setNetworkSettingsForm({ ...networkSettingsForm, address: event.target.value.trim() })}
+                        placeholder="10.0.1.20"
+                        inputMode="decimal"
+                        className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Prefix</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="32"
+                        value={networkSettingsForm.prefixLength}
+                        onChange={event => setNetworkSettingsForm({ ...networkSettingsForm, prefixLength: event.target.value })}
+                        className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Gateway</label>
+                      <input
+                        value={networkSettingsForm.gateway}
+                        onChange={event => setNetworkSettingsForm({ ...networkSettingsForm, gateway: event.target.value.trim() })}
+                        placeholder="10.0.1.1"
+                        inputMode="decimal"
+                        className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">DNS Servers</label>
+                      <input
+                        value={networkSettingsForm.dnsServers}
+                        onChange={event => setNetworkSettingsForm({ ...networkSettingsForm, dnsServers: event.target.value })}
+                        placeholder="1.1.1.1 8.8.8.8"
+                        className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px]">
+                  <div className="bg-gray-50 border border-gray-100 rounded-md px-2 py-1">
+                    <span className="font-bold text-gray-400 uppercase">Current Mode</span>
+                    <div className="font-semibold text-gray-700 uppercase">{networkSettings?.mode || 'unknown'}</div>
+                  </div>
+                  <div className="bg-gray-50 border border-gray-100 rounded-md px-2 py-1 min-w-0">
+                    <span className="font-bold text-gray-400 uppercase">Current IPv4</span>
+                    <div className="font-mono text-gray-700 truncate">
+                      {(networkSettings?.interfaces || []).find(item => item.name === networkSettingsForm.interface)?.ipv4_addresses?.join(', ') || 'Not assigned'}
+                    </div>
+                  </div>
+                  <div className="bg-gray-50 border border-gray-100 rounded-md px-2 py-1 min-w-0">
+                    <span className="font-bold text-gray-400 uppercase">Default Gateway</span>
+                    <div className="font-mono text-gray-700 truncate">
+                      {(networkSettings?.interfaces || []).find(item => item.name === networkSettingsForm.interface)?.gateway || 'Not detected'}
+                    </div>
+                  </div>
+                </div>
+
+                {networkSettings?.pending && (
+                  <div className="mt-4 border border-amber-200 bg-amber-50 rounded-md p-4">
+                    <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 text-sm font-bold text-amber-900">
+                          <AlertCircle size={16} /> Pending Confirmation
+                        </div>
+                        <p className="mt-1 text-xs text-amber-800">
+                          {networkSettings.pending.interface} is testing {networkSettings.pending.mode === 'static' ? networkSettings.pending.address : 'DHCP'}.
+                          {' '}Automatic rollback in {Math.max(0, Math.ceil((Number(networkSettings.pending.rollback_at || 0) * 1000 - networkNow) / 1000))} seconds.
+                        </p>
+                        <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
+                          <span className={`px-2 py-1 rounded border font-semibold ${networkSettings.pending.target_active ? 'bg-green-50 border-green-200 text-green-700' : 'bg-white border-amber-200 text-amber-800'}`}>
+                            {networkSettings.pending.target_active ? 'Target active' : 'Waiting for target'}
+                          </span>
+                          {networkSettings.pending.mode === 'static' && networkSettings.pending.address && (
+                            <a
+                              href={`${window.location.protocol}//${networkSettings.pending.address.split('/')[0]}:${window.location.port || '8000'}`}
+                              className="font-mono text-[#9c3029] hover:underline"
+                            >
+                              Open {networkSettings.pending.address.split('/')[0]}
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={handleRollbackNetworkSettings}
+                          disabled={savingNetworkSettings}
+                          className="px-3 py-2 bg-white border border-amber-200 text-amber-900 rounded-md text-xs font-semibold hover:bg-amber-100 disabled:opacity-60"
+                        >
+                          Roll Back Now
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleConfirmNetworkSettings}
+                          disabled={savingNetworkSettings || !networkSettings.pending.target_active || networkNow - Number(networkSettings.pending.created_at || 0) * 1000 < 5000}
+                          className="px-3 py-2 bg-[#9c3029] text-white rounded-md text-xs font-semibold hover:bg-[#7a2520] disabled:opacity-60 flex items-center gap-2"
+                        >
+                          {savingNetworkSettings ? <Loader2 className="animate-spin" size={14} /> : <CheckCircle size={14} />}
+                          Confirm Network
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {networkSettings?.helper_installed === false && (
+                  <div className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-100 rounded-md p-3">
+                    Network helper is missing. Rerun ./install.sh once on the server to enable dashboard network settings.
+                  </div>
+                )}
+              </form>
+
               <form onSubmit={handleSaveTimeSettings} className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
                 <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
                   <div>

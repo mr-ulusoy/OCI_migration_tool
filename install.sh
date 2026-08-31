@@ -13,6 +13,7 @@ JOB_LOG_RETENTION_DAYS="${OCI_MIGRATOR_JOB_LOG_RETENTION_DAYS:-14}"
 JOB_LOG_HELPER="${OCI_MIGRATOR_JOB_LOG_HELPER:-/usr/local/sbin/oci-migrator-job-log}"
 LOCAL_SHARE_HELPER="${OCI_MIGRATOR_LOCAL_SHARE_HELPER:-/usr/local/sbin/oci-migrator-local-share}"
 TIME_SYNC_HELPER="${OCI_MIGRATOR_TIME_SYNC_HELPER:-/usr/local/sbin/oci-migrator-time-sync}"
+NETWORK_HELPER="${OCI_MIGRATOR_NETWORK_HELPER:-/usr/local/sbin/oci-migrator-network}"
 LOCAL_SHARE_CONFIG="/etc/oci-migrator/local-share.conf"
 UPGRADE_HELPER="${OCI_MIGRATOR_UPGRADE_HELPER:-/usr/local/sbin/oci-migrator-upgrade}"
 UPGRADE_CONFIG="${OCI_MIGRATOR_UPGRADE_CONFIG:-/etc/oci-migrator/upgrade.conf}"
@@ -98,6 +99,7 @@ Options:
   --job-log-helper PATH       Root helper used by the UI for job log rotation. Default: $JOB_LOG_HELPER
   --local-share-helper PATH   Root helper used by the UI for optional SMB/NFS shares. Default: $LOCAL_SHARE_HELPER
   --time-sync-helper PATH     Root helper used by the UI for timezone/NTP. Default: $TIME_SYNC_HELPER
+  --network-helper PATH       Root helper used by the UI for DHCP/static IPv4. Default: $NETWORK_HELPER
   --upgrade-helper PATH       Root helper used by the UI for controlled upgrades. Default: $UPGRADE_HELPER
   --timezone ZONE             Server timezone for schedules/logs. Default: $SERVER_TIMEZONE
   --ntp-servers "LIST"        Space/comma separated NTP servers. Default: $NTP_SERVERS
@@ -117,6 +119,7 @@ Environment variables with the same names are also supported:
   OCI_MIGRATOR_JOB_LOG_DIR, OCI_MIGRATOR_JOB_LOG_MAX_SIZE,
   OCI_MIGRATOR_JOB_LOG_RETENTION_DAYS, OCI_MIGRATOR_JOB_LOG_HELPER,
   OCI_MIGRATOR_LOCAL_SHARE_HELPER, OCI_MIGRATOR_TIME_SYNC_HELPER,
+  OCI_MIGRATOR_NETWORK_HELPER,
   OCI_MIGRATOR_UPGRADE_HELPER,
   OCI_MIGRATOR_TIMEZONE, OCI_MIGRATOR_NTP_SERVERS,
   OCI_MIGRATOR_ENV_FILE, OPEN_FIREWALL, STOP_LEGACY_PROCESSES,
@@ -182,6 +185,10 @@ parse_args() {
         ;;
       --time-sync-helper)
         TIME_SYNC_HELPER="$2"
+        shift 2
+        ;;
+      --network-helper)
+        NETWORK_HELPER="$2"
         shift 2
         ;;
       --upgrade-helper)
@@ -302,6 +309,14 @@ validate_job_log_settings() {
       ;;
     *)
       fail "--time-sync-helper must be an absolute path."
+      ;;
+  esac
+
+  case "$NETWORK_HELPER" in
+    /*)
+      ;;
+    *)
+      fail "--network-helper must be an absolute path."
       ;;
   esac
 }
@@ -471,9 +486,11 @@ install_system_dependencies() {
     ca-certificates \
     curl \
     gnupg \
+    iproute2 \
     iptables \
     iptables-persistent \
     logrotate \
+    netplan.io \
     openssl \
     python3 \
     python3-pip \
@@ -581,6 +598,7 @@ ensure_env_file() {
       printf 'OCI_MIGRATOR_LOCAL_SHARE_HELPER=%s\n' "$LOCAL_SHARE_HELPER"
       printf 'OCI_MIGRATOR_LOCAL_SHARE_TIMEOUT_SECONDS=300\n'
       printf 'OCI_MIGRATOR_TIME_SYNC_HELPER=%s\n' "$TIME_SYNC_HELPER"
+      printf 'OCI_MIGRATOR_NETWORK_HELPER=%s\n' "$NETWORK_HELPER"
       printf 'OCI_MIGRATOR_UPGRADE_HELPER=%s\n' "$UPGRADE_HELPER"
       printf 'OCI_MIGRATOR_UPGRADE_STATUS_FILE=%s\n' "$UPGRADE_STATUS_FILE"
       printf 'OCI_MIGRATOR_UPGRADE_LOG_FILE=%s\n' "$UPGRADE_LOG_FILE"
@@ -609,6 +627,7 @@ ensure_env_file() {
     grep -q '^OCI_MIGRATOR_LOCAL_SHARE_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_LOCAL_SHARE_HELPER=%s\n' "$LOCAL_SHARE_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_LOCAL_SHARE_TIMEOUT_SECONDS=' "$ENV_FILE" || printf 'OCI_MIGRATOR_LOCAL_SHARE_TIMEOUT_SECONDS=300\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_TIME_SYNC_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_TIME_SYNC_HELPER=%s\n' "$TIME_SYNC_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_NETWORK_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_NETWORK_HELPER=%s\n' "$NETWORK_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UPGRADE_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_HELPER=%s\n' "$UPGRADE_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UPGRADE_STATUS_FILE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_STATUS_FILE=%s\n' "$UPGRADE_STATUS_FILE" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UPGRADE_LOG_FILE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_LOG_FILE=%s\n' "$UPGRADE_LOG_FILE" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
@@ -698,6 +717,16 @@ load_time_sync_helper_from_env() {
   configured_time_sync_helper="$(grep '^OCI_MIGRATOR_TIME_SYNC_HELPER=' "$ENV_FILE" | tail -1 | cut -d= -f2- || true)"
   if [ -n "$configured_time_sync_helper" ]; then
     TIME_SYNC_HELPER="$configured_time_sync_helper"
+  fi
+}
+
+load_network_helper_from_env() {
+  [ -f "$ENV_FILE" ] || return 0
+
+  local configured_network_helper
+  configured_network_helper="$(grep '^OCI_MIGRATOR_NETWORK_HELPER=' "$ENV_FILE" | tail -1 | cut -d= -f2- || true)"
+  if [ -n "$configured_network_helper" ]; then
+    NETWORK_HELPER="$configured_network_helper"
   fi
 }
 
@@ -796,6 +825,58 @@ install_time_sync_helper() {
   rm -f "$sudoers_temp"
 }
 
+install_network_helper() {
+  log "Installing network settings helper"
+
+  local helper_source
+  helper_source="$PROJECT_DIR/scripts/network-helper.sh"
+  [ -f "$helper_source" ] || fail "Missing helper source: $helper_source"
+
+  "${SUDO[@]}" install -d -o root -g root -m 755 "$(dirname "$NETWORK_HELPER")"
+  "${SUDO[@]}" install -o root -g root -m 755 "$helper_source" "$NETWORK_HELPER"
+  "${SUDO[@]}" install -d -o root -g root -m 700 /var/lib/oci-migrator/network
+
+  local service_file timer_file service_temp timer_temp
+  service_file="/etc/systemd/system/oci-migrator-network-rollback.service"
+  timer_file="/etc/systemd/system/oci-migrator-network-rollback.timer"
+  service_temp="$(mktemp)"
+  timer_temp="$(mktemp)"
+  {
+    printf '[Unit]\n'
+    printf 'Description=Rollback unconfirmed OCI Migrator network configuration\n'
+    printf 'After=network.target\n\n'
+    printf '[Service]\n'
+    printf 'Type=oneshot\n'
+    printf 'ExecStart=%s rollback\n' "$NETWORK_HELPER"
+  } > "$service_temp"
+  {
+    printf '[Unit]\n'
+    printf 'Description=Rollback timer for OCI Migrator network configuration\n\n'
+    printf '[Timer]\n'
+    printf 'OnActiveSec=3min\n'
+    printf 'AccuracySec=1s\n'
+    printf 'Unit=oci-migrator-network-rollback.service\n\n'
+    printf '[Install]\n'
+    printf 'WantedBy=timers.target\n'
+  } > "$timer_temp"
+  "${SUDO[@]}" install -o root -g root -m 644 "$service_temp" "$service_file"
+  "${SUDO[@]}" install -o root -g root -m 644 "$timer_temp" "$timer_file"
+  rm -f "$service_temp" "$timer_temp"
+  "${SUDO[@]}" systemctl daemon-reload
+
+  local sudoers_file sudoers_temp
+  sudoers_file="/etc/sudoers.d/$SERVICE_PREFIX-network"
+  sudoers_temp="$(mktemp)"
+  {
+    printf '# Allow OCI Migrator to manage its validated Netplan configuration only.\n'
+    printf '%s ALL=(root) NOPASSWD: %s\n' "$RUN_USER" "$NETWORK_HELPER"
+  } > "$sudoers_temp"
+
+  "${SUDO[@]}" visudo -cf "$sudoers_temp" >/dev/null
+  "${SUDO[@]}" install -o root -g root -m 440 "$sudoers_temp" "$sudoers_file"
+  rm -f "$sudoers_temp"
+}
+
 install_local_share_helper() {
   log "Installing optional local SMB/NFS share helper"
 
@@ -881,6 +962,7 @@ install_upgrade_helper() {
     printf 'JOB_LOG_HELPER=%q\n' "$JOB_LOG_HELPER"
     printf 'LOCAL_SHARE_HELPER=%q\n' "$LOCAL_SHARE_HELPER"
     printf 'TIME_SYNC_HELPER=%q\n' "$TIME_SYNC_HELPER"
+    printf 'NETWORK_HELPER=%q\n' "$NETWORK_HELPER"
     printf 'UPGRADE_HELPER=%q\n' "$UPGRADE_HELPER"
     printf 'UPGRADE_STATE_DIR=%q\n' "$UPGRADE_STATE_DIR"
     printf 'UPGRADE_STATUS_FILE=%q\n' "$UPGRADE_STATUS_FILE"
@@ -1148,6 +1230,7 @@ main() {
   ensure_env_file
   load_time_settings_from_env
   load_time_sync_helper_from_env
+  load_network_helper_from_env
   load_job_log_settings_from_env
   validate_time_settings
   validate_job_log_settings
@@ -1157,6 +1240,7 @@ main() {
   install_job_logrotate_config
   install_job_log_helper
   install_time_sync_helper
+  install_network_helper
   install_local_share_helper
   install_upgrade_helper
   install_backend

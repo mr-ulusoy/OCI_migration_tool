@@ -3,6 +3,7 @@ import base64
 import hashlib
 import hmac
 import io
+import ipaddress
 import json
 import logging
 import os
@@ -423,6 +424,7 @@ except ValueError:
 LOCAL_SHARE_HELPER = Path(os.getenv("OCI_MIGRATOR_LOCAL_SHARE_HELPER", "/usr/local/sbin/oci-migrator-local-share")).resolve()
 JOB_LOG_HELPER = Path(os.getenv("OCI_MIGRATOR_JOB_LOG_HELPER", "/usr/local/sbin/oci-migrator-job-log")).resolve()
 TIME_SYNC_HELPER = Path(os.getenv("OCI_MIGRATOR_TIME_SYNC_HELPER", "/usr/local/sbin/oci-migrator-time-sync")).resolve()
+NETWORK_HELPER = Path(os.getenv("OCI_MIGRATOR_NETWORK_HELPER", "/usr/local/sbin/oci-migrator-network")).resolve()
 TIMESYNCD_CONF = Path(os.getenv("OCI_MIGRATOR_TIMESYNCD_CONF", "/etc/systemd/timesyncd.conf.d/oci-migrator.conf")).resolve()
 JOB_LOGROTATE_FILE = Path(os.getenv("OCI_MIGRATOR_JOB_LOGROTATE_FILE", "/etc/logrotate.d/migrator-job-logs"))
 UPGRADE_HELPER = Path(os.getenv("OCI_MIGRATOR_UPGRADE_HELPER", "/usr/local/sbin/oci-migrator-upgrade")).resolve()
@@ -443,6 +445,7 @@ except ValueError:
     LOCAL_SHARE_TIMEOUT_SECONDS = 300
 JOB_LOG_SETTINGS_LOCK = Lock()
 TIME_SETTINGS_LOCK = Lock()
+NETWORK_SETTINGS_LOCK = Lock()
 UPGRADE_LOCK = Lock()
 
 # Säkerställ att mappar finns
@@ -567,6 +570,15 @@ class LocalDiskSettingsRequest(BaseModel):
 class TimeSettingsRequest(BaseModel):
     timezone: str
     ntp_servers: str
+
+
+class NetworkSettingsRequest(BaseModel):
+    mode: str = "dhcp"
+    interface: str
+    address: str = ""
+    prefix_length: int = 24
+    gateway: str = ""
+    dns_servers: str = ""
 
 
 class RcloneDefaultSettingsRequest(BaseModel):
@@ -1066,6 +1078,65 @@ def normalize_ntp_servers(value: str) -> str:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", server):
             raise HTTPException(status_code=400, detail=f"Invalid NTP server: {server}")
     return servers
+
+
+def normalize_network_settings(settings: NetworkSettingsRequest) -> dict:
+    mode = str(settings.mode or "").strip().lower()
+    if mode not in {"dhcp", "static"}:
+        raise HTTPException(status_code=400, detail="Network mode must be DHCP or static IPv4.")
+
+    interface = str(settings.interface or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]+", interface) or interface == "lo":
+        raise HTTPException(status_code=400, detail="Select a valid non-loopback network interface.")
+    if not Path("/sys/class/net", interface).is_dir():
+        raise HTTPException(status_code=400, detail=f"Network interface does not exist: {interface}")
+
+    if mode == "dhcp":
+        return {
+            "mode": mode,
+            "interface": interface,
+            "address": "",
+            "gateway": "",
+            "dns_servers": "",
+        }
+
+    try:
+        prefix_length = int(settings.prefix_length)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="IPv4 prefix length must be a number between 1 and 32.")
+    if prefix_length < 1 or prefix_length > 32:
+        raise HTTPException(status_code=400, detail="IPv4 prefix length must be between 1 and 32.")
+
+    try:
+        address = ipaddress.IPv4Address(str(settings.address or "").strip())
+        gateway = ipaddress.IPv4Address(str(settings.gateway or "").strip())
+    except ipaddress.AddressValueError:
+        raise HTTPException(status_code=400, detail="Static address and gateway must be valid IPv4 addresses.")
+
+    network = ipaddress.IPv4Network(f"{address}/{prefix_length}", strict=False)
+    if prefix_length <= 30 and address in {network.network_address, network.broadcast_address}:
+        raise HTTPException(status_code=400, detail="Static IPv4 address cannot be the network or broadcast address.")
+    if address == gateway:
+        raise HTTPException(status_code=400, detail="Gateway cannot be the same as the static IPv4 address.")
+
+    raw_dns = str(settings.dns_servers or "").replace(",", " ")
+    dns_servers = [item for item in raw_dns.split() if item]
+    if not dns_servers:
+        raise HTTPException(status_code=400, detail="At least one IPv4 DNS server is required for static mode.")
+    if len(dns_servers) > 4:
+        raise HTTPException(status_code=400, detail="No more than four DNS servers may be configured.")
+    try:
+        normalized_dns = [str(ipaddress.IPv4Address(item)) for item in dns_servers]
+    except ipaddress.AddressValueError:
+        raise HTTPException(status_code=400, detail="DNS servers must be valid IPv4 addresses.")
+
+    return {
+        "mode": mode,
+        "interface": interface,
+        "address": f"{address}/{prefix_length}",
+        "gateway": str(gateway),
+        "dns_servers": " ".join(normalized_dns),
+    }
 
 
 def configured_time_settings() -> tuple[str, str]:
@@ -1955,6 +2026,67 @@ def time_sync_helper_command() -> list[str]:
             detail="sudo is required for time sync settings. Rerun ./install.sh and try again.",
         )
     return [sudo_path, "-n", str(TIME_SYNC_HELPER)]
+
+
+def network_helper_command() -> list[str]:
+    if not NETWORK_HELPER.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail="Network settings helper is not installed. Rerun ./install.sh and try again.",
+        )
+
+    if os.geteuid() == 0:
+        return [str(NETWORK_HELPER)]
+
+    sudo_path = shutil.which("sudo")
+    if not sudo_path:
+        raise HTTPException(
+            status_code=503,
+            detail="sudo is required for network settings. Rerun ./install.sh and try again.",
+        )
+    return [sudo_path, "-n", str(NETWORK_HELPER)]
+
+
+def run_network_helper(args: list[str], timeout: int = 30) -> dict:
+    command = network_helper_command() + args
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+        if result.returncode != 0:
+            raise RuntimeError(truncate_text(result.stderr or result.stdout or f"helper exited with code {result.returncode}"))
+        try:
+            payload = json.loads(result.stdout.strip().splitlines()[-1]) if result.stdout.strip() else {}
+        except (json.JSONDecodeError, IndexError) as exc:
+            raise RuntimeError(f"Network helper returned invalid JSON: {truncate_text(result.stdout, 600)}") from exc
+        payload["helper_installed"] = True
+        return payload
+    except subprocess.TimeoutExpired as exc:
+        raise_operation_error(
+            504,
+            "Update network settings",
+            exc,
+            "The network helper took too long. The automatic rollback timer will restore an unconfirmed change.",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise_operation_error(
+            500,
+            "Update network settings",
+            exc,
+            "Check Netplan, systemd, and the installed network helper on the server.",
+        )
+
+
+def current_network_settings() -> dict:
+    if not NETWORK_HELPER.is_file():
+        return {
+            "supported": False,
+            "helper_installed": False,
+            "mode": "dhcp",
+            "interfaces": [],
+            "pending": None,
+        }
+    return run_network_helper(["status"], timeout=15)
 
 
 def apply_job_log_rotation_settings(max_size: str, retention_days: int) -> dict:
@@ -2997,6 +3129,11 @@ async def get_time_settings():
     return current_time_settings()
 
 
+@app.get("/network-settings")
+async def get_network_settings():
+    return current_network_settings()
+
+
 @app.get("/rclone-default-settings")
 async def get_rclone_default_settings():
     return current_rclone_default_settings()
@@ -3037,6 +3174,43 @@ async def update_time_settings(settings: TimeSettingsRequest):
         os.environ["OCI_MIGRATOR_NTP_SERVERS"] = ntp_servers
 
     return current_time_settings()
+
+
+@app.put("/network-settings")
+async def update_network_settings(settings: NetworkSettingsRequest):
+    normalized = normalize_network_settings(settings)
+    command = [
+        "stage",
+        "--mode",
+        normalized["mode"],
+        "--interface",
+        normalized["interface"],
+    ]
+    if normalized["mode"] == "static":
+        command.extend(
+            [
+                "--address",
+                normalized["address"],
+                "--gateway",
+                normalized["gateway"],
+                "--dns",
+                normalized["dns_servers"],
+            ]
+        )
+    with NETWORK_SETTINGS_LOCK:
+        return run_network_helper(command, timeout=30)
+
+
+@app.post("/network-settings/confirm")
+async def confirm_network_settings():
+    with NETWORK_SETTINGS_LOCK:
+        return run_network_helper(["confirm"], timeout=30)
+
+
+@app.post("/network-settings/rollback")
+async def rollback_network_settings():
+    with NETWORK_SETTINGS_LOCK:
+        return run_network_helper(["rollback"], timeout=45)
 
 
 @app.put("/job-log-settings")
