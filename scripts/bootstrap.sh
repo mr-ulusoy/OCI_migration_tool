@@ -42,6 +42,7 @@ Options:
   --prompt-admin-password     Prompt for admin password without storing it in shell history.
   --timezone ZONE             Server timezone passed to install.sh.
   --ntp-servers "LIST"        Space/comma separated NTP servers passed to install.sh.
+  --no-open-firewall          Do not open local firewall ports during install.
   -h, --help                  Show this help.
 
 Examples:

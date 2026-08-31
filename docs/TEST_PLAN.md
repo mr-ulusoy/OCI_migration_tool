@@ -112,6 +112,7 @@ Steps:
 Expected result:
 
 - installer completes without manual code edits
+- local Ubuntu firewall allows TCP 22, 8000 or the chosen app/API port, 445, and 2049
 - API, worker, Redis, and scheduler are running
 - frontend loads from the backend
 - admin login works

@@ -49,6 +49,8 @@ Open:
 http://<server-ip-or-dns>:8000
 ```
 
+The installer opens the local Ubuntu firewall for TCP `22` (SSH), `8000` (app/API), `445` (SMB), and `2049` (NFSv4) by default. Your OCI Security List or NSG must allow the same traffic from the networks that should reach the server.
+
 The installer stores a hashed admin password in `~/.oci-migrator.env`. If you do not pass or prompt for a password, the installer generates one and prints it once.
 
 You can also set it non-interactively:
@@ -149,7 +151,7 @@ Per-job local cleanup can be enabled for managed server local folder sources. Cl
 
 Settings -> Local Disk Usage shows the managed local data disk usage and configurable warning/critical thresholds. The same status is exposed through `/health`, `/monitoring/status`, and `/metrics`.
 
-Server local folders can optionally be shared from the UI with SMB, NFSv4, or both. SMB can be opened as guest access or a named Samba user on TCP `445`. NFSv4 requires an allowed client IP/hostname/CIDR list and opens TCP `2049`. No share is enabled during installation; the installed root helper applies the share only when a user chooses it in `Add Remote`.
+Server local folders can optionally be shared from the UI with SMB, NFSv4, or both. SMB can be opened as guest access or a named Samba user on TCP `445`. NFSv4 requires an allowed client IP/hostname/CIDR list and uses TCP `2049`. No share is enabled during installation; the installed root helper applies the share only when a user chooses it in `Add Remote`.
 
 ## Documentation
 

@@ -20,8 +20,11 @@ This will:
 - create systemd services
 - create `~/.oci-migrator.env`
 - store a hashed admin password
+- open local Ubuntu firewall TCP `22`, `8000` or the chosen app/API port, `445`, and `2049`
 - install a root-owned helper for optional SMB/NFS sharing from the UI
 - configure server timezone/NTP for reliable schedules and timestamps
+
+The local firewall is opened by default. Your OCI Security List or NSG still needs matching inbound rules for the networks that should reach the server.
 
 ## Manual Install
 
@@ -37,7 +40,7 @@ cd OCI_migration_tool
 ./install.sh --public-host <server-ip-or-dns>
 ./install.sh --public-host <server-ip-or-dns> --admin-password '<strong-password>'
 ./install.sh --public-host <server-ip-or-dns> --admin-password-file /path/to/password.txt
-./install.sh --public-host migrator.example.com --open-firewall
+./install.sh --public-host migrator.example.com --no-open-firewall
 ./install.sh --api-port 8001
 ./install.sh --local-data-root /srv/oci-migrator/local
 ./install.sh --job-log-dir /var/log/oci-migrator/jobs
@@ -53,11 +56,12 @@ cd OCI_migration_tool
 `--job-log-retention-days` controls how many daily rotated logs are kept. The default is `14`.
 `--timezone` defaults to `Europe/Stockholm`, so Swedish daylight saving time is handled by the OS.
 `--ntp-servers` defaults to the Swedish NTP pool and is written to `systemd-timesyncd`.
+`--no-open-firewall` skips opening local Ubuntu firewall ports during install. By default the installer opens TCP `22`, the app/API port, `445`, and `2049`.
 After installation, timezone and NTP servers can also be changed from `Settings` -> `Time & NTP`.
 
 ## Optional SMB/NFS Sharing
 
-No SMB or NFS share is enabled during installation. The installer only places a root-owned helper and a sudoers rule so the web UI can enable a managed share later.
+No SMB or NFS share is enabled during installation. The installer opens the local firewall ports and places a root-owned helper plus a sudoers rule so the web UI can enable a managed share later.
 
 In the UI, choose `Add Remote` -> `Local / Mounted Share` -> `Server Local Folder`.
 
@@ -66,13 +70,13 @@ If `SMB Share` is set to `Share to Everyone` or `Share to User`, the helper will
 - install/configure Samba if needed
 - share the created folder under `/var/lib/oci-migrator/local`
 - create/update the SMB user when user access is selected
-- open inbound TCP `445` and save the firewall rule when supported
+- ensure inbound TCP `445` is open and save the firewall rule when supported
 
 If `Enable NFSv4 Share` is selected, the helper will:
 
 - install/configure `nfs-kernel-server` if needed
 - export the created folder to the allowed client IPs, hostnames, or CIDR ranges
-- open inbound TCP `2049` and save the firewall rule when supported
+- ensure inbound TCP `2049` is open and save the firewall rule when supported
 - return a Linux mount command, for example `sudo mount -t nfs4 SERVER:/var/lib/oci-migrator/local/customer-a /mnt/customer-a`
 
 ## Multiple Installations On The Same Host

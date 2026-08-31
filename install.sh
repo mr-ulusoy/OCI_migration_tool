@@ -42,7 +42,7 @@ if [ -n "${OCI_MIGRATOR_NTP_SERVERS:-}" ]; then
   NTP_SERVERS_PROVIDED=1
 fi
 CELERY_CONCURRENCY="${CELERY_CONCURRENCY:-2}"
-OPEN_FIREWALL="${OPEN_FIREWALL:-0}"
+OPEN_FIREWALL="${OPEN_FIREWALL:-1}"
 STOP_LEGACY_PROCESSES="${STOP_LEGACY_PROCESSES:-0}"
 PRINT_TOKEN="${PRINT_TOKEN:-0}"
 ADMIN_USERNAME="${OCI_MIGRATOR_ADMIN_USERNAME:-admin}"
@@ -102,7 +102,8 @@ Options:
   --timezone ZONE             Server timezone for schedules/logs. Default: $SERVER_TIMEZONE
   --ntp-servers "LIST"        Space/comma separated NTP servers. Default: $NTP_SERVERS
   --celery-concurrency N      Celery worker concurrency. Default: $CELERY_CONCURRENCY
-  --open-firewall             Open local firewall ports with ufw/iptables when possible.
+  --open-firewall             Open local firewall ports with ufw/iptables. Default: enabled.
+  --no-open-firewall          Do not open local firewall ports during install.
   --stop-legacy-processes     Stop old manual uvicorn/vite processes from this project path.
   --admin-username USERNAME   Admin login username. Default: $ADMIN_USERNAME
   --admin-password PASSWORD   Set or reset the admin password.
@@ -203,6 +204,10 @@ parse_args() {
         ;;
       --open-firewall)
         OPEN_FIREWALL=1
+        shift
+        ;;
+      --no-open-firewall)
+        OPEN_FIREWALL=0
         shift
         ;;
       --stop-legacy-processes)
@@ -452,11 +457,18 @@ ensure_supported_os() {
 install_system_dependencies() {
   log "Installing system dependencies"
   "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get update
+  if command -v debconf-set-selections >/dev/null 2>&1; then
+    printf '%s\n' \
+      'iptables-persistent iptables-persistent/autosave_v4 boolean true' \
+      'iptables-persistent iptables-persistent/autosave_v6 boolean true' \
+      | "${SUDO[@]}" debconf-set-selections
+  fi
   "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
     ca-certificates \
     curl \
     gnupg \
     iptables \
+    iptables-persistent \
     logrotate \
     openssl \
     python3 \
@@ -1055,14 +1067,38 @@ start_services() {
 open_firewall_ports() {
   [ "$OPEN_FIREWALL" = "1" ] || return 0
 
-  log "Opening local firewall ports"
+  local ports=(22 "$API_PORT" 445 2049)
+  local port
+  local seen=" "
+
+  for port in "${ports[@]}"; do
+    case "$port" in
+      ""|*[!0-9]*)
+        fail "Invalid firewall port: $port"
+        ;;
+    esac
+  done
+
+  log "Opening local firewall TCP ports: 22 $API_PORT 445 2049"
   if command -v ufw >/dev/null 2>&1 && "${SUDO[@]}" ufw status | grep -q 'Status: active'; then
-    "${SUDO[@]}" ufw allow "$API_PORT/tcp"
+    for port in "${ports[@]}"; do
+      case "$seen" in
+        *" $port "*) continue ;;
+      esac
+      seen="${seen}${port} "
+      "${SUDO[@]}" ufw allow "$port/tcp"
+    done
     return
   fi
 
   if command -v iptables >/dev/null 2>&1; then
-    "${SUDO[@]}" iptables -C INPUT -p tcp --dport "$API_PORT" -j ACCEPT 2>/dev/null || "${SUDO[@]}" iptables -I INPUT 1 -p tcp --dport "$API_PORT" -j ACCEPT
+    for port in "${ports[@]}"; do
+      case "$seen" in
+        *" $port "*) continue ;;
+      esac
+      seen="${seen}${port} "
+      "${SUDO[@]}" iptables -C INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null || "${SUDO[@]}" iptables -I INPUT 1 -p tcp --dport "$port" -j ACCEPT
+    done
     command -v netfilter-persistent >/dev/null 2>&1 && "${SUDO[@]}" netfilter-persistent save || true
   fi
 }

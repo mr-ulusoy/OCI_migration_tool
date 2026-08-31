@@ -165,9 +165,9 @@ The installer creates `/var/lib/oci-migrator/local` for the service user. Use `-
 When creating a server local folder in the UI, it can optionally be exposed as SMB, NFSv4, or both:
 
 - `Do Not Share` only creates the local folder.
-- `Share to Everyone` creates a guest-access Samba share and opens TCP `445`.
-- `Share to User` creates/updates the requested SMB user, sets the Samba password, creates the share, and opens TCP `445`.
-- `Enable NFSv4 Share` exports the same local folder with `rw,sync,no_subtree_check,root_squash` and opens TCP `2049`. Add only trusted client IPs, hostnames, or CIDR ranges.
+- `Share to Everyone` creates a guest-access Samba share and ensures TCP `445` is open locally.
+- `Share to User` creates/updates the requested SMB user, sets the Samba password, creates the share, and ensures TCP `445` is open locally.
+- `Enable NFSv4 Share` exports the same local folder with `rw,sync,no_subtree_check,root_squash` and ensures TCP `2049` is open locally. Add only trusted client IPs, hostnames, or CIDR ranges.
 
 The SMB password is not stored in the app config. Samba stores its own password hash. NFS access is controlled by the allowed client list saved with the remote. Deleting a remote that owns a managed share removes the Samba share block and/or NFS export block, but it does not delete the underlying local data folder.
 
