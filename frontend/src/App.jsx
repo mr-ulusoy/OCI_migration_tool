@@ -3486,6 +3486,7 @@ export default function App() {
 
                     <svg
                       viewBox={`0 0 ${activityChart.width} ${activityChart.height}`}
+                      preserveAspectRatio="none"
                       className="pointer-events-none absolute inset-0 z-10 h-full w-full"
                       role="img"
                       aria-label="Transferred backup data and file count for each of the last seven days"
