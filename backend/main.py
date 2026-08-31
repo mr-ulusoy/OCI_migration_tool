@@ -3767,9 +3767,15 @@ async def list_vms(profile: str):
         config = oci.config.from_file(CONFIG_PATH, profile)
         compute = oci.core.ComputeClient(config)
         network = oci.core.VirtualNetworkClient(config)
+        block_storage = oci.core.BlockstorageClient(config)
         comp_id = config.get("compartment", config.get("tenancy"))
-        res = compute.list_instances(compartment_id=comp_id)
+        res = oci.pagination.list_call_get_all_results(
+            compute.list_instances,
+            compartment_id=comp_id,
+        )
         image_cache = {}
+        boot_volume_cache = {}
+        data_volume_cache = {}
         vm_list = []
 
         for instance in res.data:
@@ -3795,7 +3801,8 @@ async def list_vms(profile: str):
             private_ips = []
             public_ips = []
             try:
-                attachments = compute.list_vnic_attachments(
+                attachments = oci.pagination.list_call_get_all_results(
+                    compute.list_vnic_attachments,
                     compartment_id=getattr(instance, "compartment_id", comp_id) or comp_id,
                     instance_id=instance.id,
                 ).data
@@ -3812,6 +3819,62 @@ async def list_vms(profile: str):
             except Exception as exc:
                 logger.info("Unable to resolve VNIC attachments for %s: %s", instance.id, exc)
 
+            instance_compartment = getattr(instance, "compartment_id", comp_id) or comp_id
+            boot_volumes = []
+            data_volumes = []
+            volume_scan_warnings = []
+            try:
+                boot_attachments = oci.pagination.list_call_get_all_results(
+                    compute.list_boot_volume_attachments,
+                    availability_domain=instance.availability_domain,
+                    compartment_id=instance_compartment,
+                    instance_id=instance.id,
+                ).data
+                for attachment in boot_attachments:
+                    boot_volume_id = getattr(attachment, "boot_volume_id", "")
+                    volume = boot_volume_cache.get(boot_volume_id)
+                    if boot_volume_id and volume is None:
+                        volume = block_storage.get_boot_volume(boot_volume_id).data
+                        boot_volume_cache[boot_volume_id] = volume
+                    boot_volumes.append(
+                        {
+                            "id": boot_volume_id,
+                            "name": getattr(volume, "display_name", "") or "Boot volume",
+                            "size_gb": getattr(volume, "size_in_gbs", None),
+                            "state": getattr(volume, "lifecycle_state", "") or getattr(attachment, "lifecycle_state", ""),
+                        }
+                    )
+            except Exception as exc:
+                logger.info("Unable to resolve boot volume for %s: %s", instance.id, exc)
+                volume_scan_warnings.append("Boot volume details could not be read.")
+
+            try:
+                volume_attachments = oci.pagination.list_call_get_all_results(
+                    compute.list_volume_attachments,
+                    compartment_id=instance_compartment,
+                    instance_id=instance.id,
+                ).data
+                for attachment in volume_attachments:
+                    volume_id = getattr(attachment, "volume_id", "")
+                    volume = data_volume_cache.get(volume_id)
+                    if volume_id and volume is None:
+                        volume = block_storage.get_volume(volume_id).data
+                        data_volume_cache[volume_id] = volume
+                    data_volumes.append(
+                        {
+                            "id": volume_id,
+                            "name": getattr(volume, "display_name", "") or getattr(attachment, "display_name", "") or "Data volume",
+                            "size_gb": getattr(volume, "size_in_gbs", None),
+                            "state": getattr(volume, "lifecycle_state", "") or getattr(attachment, "lifecycle_state", ""),
+                            "attachment_type": getattr(attachment, "attachment_type", ""),
+                            "device": getattr(attachment, "device", ""),
+                            "is_read_only": bool(getattr(attachment, "is_read_only", False)),
+                        }
+                    )
+            except Exception as exc:
+                logger.info("Unable to resolve data volumes for %s: %s", instance.id, exc)
+                volume_scan_warnings.append("Attached data volume details could not be read.")
+
             shape_config = getattr(instance, "shape_config", None)
             vm_list.append(
                 {
@@ -3824,6 +3887,10 @@ async def list_vms(profile: str):
                     "memory_gb": getattr(shape_config, "memory_in_gbs", None),
                     "private_ip": ", ".join(private_ips),
                     "public_ip": ", ".join(public_ips),
+                    "boot_volume": boot_volumes[0] if boot_volumes else None,
+                    "data_volumes": data_volumes,
+                    "volume_scan_status": "partial" if volume_scan_warnings else "ok",
+                    "volume_scan_warnings": volume_scan_warnings,
                 }
             )
 

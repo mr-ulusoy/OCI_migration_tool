@@ -5,7 +5,7 @@ import re
 import subprocess
 import time
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from celery import Celery
 from celery.signals import worker_ready
 import oci
@@ -38,7 +38,7 @@ celery_app = Celery('tasks', broker=redis_url(), backend=redis_url())
 
 def recover_interrupted_data_sync_runs() -> int:
     recovered = 0
-    finished_at = datetime.utcnow().isoformat() + "Z"
+    finished_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     for run in list_job_runs(300):
         if run.get("kind") != "data_sync" or run.get("status") != "running":
             continue

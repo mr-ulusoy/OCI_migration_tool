@@ -1671,6 +1671,9 @@ export default function App() {
       vm.public_ip,
       vm.private_ip,
       vm.state,
+      vm.boot_volume?.name,
+      vm.boot_volume?.id,
+      ...(Array.isArray(vm.data_volumes) ? vm.data_volumes.flatMap(volume => [volume.name, volume.id]) : []),
       includeOcid ? vm.id : '',
     ].filter(Boolean).join(' ').toLowerCase();
     return searchText.includes(query);
@@ -3040,7 +3043,10 @@ export default function App() {
 	                  <div className="bg-white p-4 rounded-md border border-gray-200 shadow-sm text-left">
 	                    <div className="mb-4 flex items-start gap-2 rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800">
 	                      <AlertCircle size={15} className="mt-0.5 shrink-0" />
-	                      <span>This action will shut down the selected server(s) and create a backup in the selected storage bucket.</span>
+	                      <div>
+	                        <div>This action will shut down the selected server(s) and create a backup in the selected storage bucket.</div>
+	                        <div className="mt-1 font-semibold">Boot volume image only. Attached data volumes are not included and must be migrated separately.</div>
+	                      </div>
 	                    </div>
 	                    <div className="grid grid-cols-1 xl:grid-cols-[minmax(220px,1fr)_minmax(220px,1fr)_220px] gap-4 items-end">
 	                      <div>
@@ -3104,6 +3110,7 @@ export default function App() {
                           const taskData = Object.values(vmTasks).find(t => t.vm_id === vm.id);
                           const isMigrating = !!taskData && taskData.status !== 'SUCCESS' && taskData.status !== 'FAILURE';
                           const isSelected = selectedVms.includes(vm.id);
+                          const dataVolumes = Array.isArray(vm.data_volumes) ? vm.data_volumes : [];
                           const stateClass = vm.state === 'RUNNING'
                             ? 'bg-green-50 text-green-700 border-green-200'
                             : vm.state === 'STOPPED'
@@ -3123,6 +3130,20 @@ export default function App() {
                                     <span className={`text-[9px] px-2 py-0.5 rounded-full border font-bold uppercase ${stateClass}`}>
                                       {vm.state || '-'}
                                     </span>
+                                  </div>
+                                  <div className="mt-2 space-y-1 text-[10px] leading-snug text-gray-500">
+                                    <div className="break-words" title={vm.boot_volume?.id || ''}>
+                                      <span className="font-bold uppercase text-gray-400">Boot:</span>{' '}
+                                      {vm.boot_volume
+                                        ? `${vm.boot_volume.name}${vm.boot_volume.size_gb ? ` (${vm.boot_volume.size_gb} GB)` : ''}`
+                                        : vm.volume_scan_status === 'partial' ? 'Details unavailable' : 'Not found'}
+                                    </div>
+                                    <div className="break-words" title={dataVolumes.map(volume => volume.id).filter(Boolean).join('\n')}>
+                                      <span className="font-bold uppercase text-gray-400">Data:</span>{' '}
+                                      {dataVolumes.length
+                                        ? dataVolumes.map(volume => `${volume.name}${volume.size_gb ? ` (${volume.size_gb} GB)` : ''}`).join(', ')
+                                        : vm.volume_scan_status === 'partial' ? 'Details unavailable' : 'None attached'}
+                                    </div>
                                   </div>
                                   {taskData && (
                                     <div className={`mt-2 text-[10px] uppercase font-bold tracking-wider truncate ${getStatusColor(taskData.status)}`}>
