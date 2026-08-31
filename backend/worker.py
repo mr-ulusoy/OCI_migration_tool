@@ -316,6 +316,48 @@ def rclone_sync_task(self, source, dest_profile, dest_bucket, mode="copy", trans
     log_file.touch(mode=0o640)
     os.chmod(log_file, 0o640)
 
+    destination_bucket = str(dest_bucket or "").strip().split("/", 1)[0]
+    preflight_cmd = [
+        "rclone",
+        "lsd",
+        f"{dest_profile}_rclone:{destination_bucket}",
+        "--max-depth",
+        "1",
+        "--use-json-log",
+        "--log-level",
+        "ERROR",
+        "--log-file",
+        str(log_file),
+    ]
+    try:
+        preflight = subprocess.run(
+            preflight_cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+            timeout=60,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        update_job_run(
+            run_id,
+            status="failed",
+            details="Destination bucket validation timed out.",
+            error="OCI Object Storage did not respond within 60 seconds.",
+            finished_at=datetime.utcnow().isoformat() + "Z",
+        )
+        return {"status": "failed", "code": None}
+
+    if preflight.returncode != 0:
+        log_tail = tail_file(log_file, max_lines=12, humanize_json=True)
+        update_job_run(
+            run_id,
+            status="failed",
+            details="Destination bucket validation failed.",
+            error=log_tail or "The destination bucket does not exist or is not accessible.",
+            finished_at=datetime.utcnow().isoformat() + "Z",
+        )
+        return {"status": "failed", "code": preflight.returncode}
+
     cmd = [
         "rclone", mode, source, dest,
         "--transfers", str(transfers), 

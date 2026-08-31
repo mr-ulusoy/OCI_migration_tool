@@ -1686,6 +1686,69 @@ def object_storage_context(profile_name: str):
     return config, client, namespace
 
 
+def validate_destination_bucket(profile_name: str, destination: str) -> str:
+    profile_name = str(profile_name or "").strip()
+    if not profile_name:
+        raise HTTPException(status_code=400, detail="Destination OCI profile is required.")
+
+    bucket_name = destination_bucket_name(destination)
+    try:
+        _, client, namespace = object_storage_context(profile_name)
+        client.get_bucket(namespace, bucket_name)
+    except HTTPException:
+        raise
+    except (oci.exceptions.ConfigFileNotFound, oci.exceptions.InvalidConfig) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": f"Destination OCI profile '{profile_name}' is missing or invalid.",
+                "operation": "Validate backup destination",
+                "error_type": exc.__class__.__name__,
+                "hint": "Open Credentials and verify the destination OCI profile before saving the job.",
+            },
+        ) from exc
+    except oci.exceptions.ServiceError as exc:
+        if exc.status == 404:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": f"Destination bucket '{bucket_name}' was not found or is not accessible.",
+                    "operation": "Validate backup destination",
+                    "status": exc.status,
+                    "code": exc.code,
+                    "opc_request_id": getattr(exc, "request_id", None),
+                    "hint": "Select an existing bucket in OCI Object Storage and try again.",
+                },
+            ) from exc
+        if exc.status in {401, 403}:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "message": f"OCI denied access to destination bucket '{bucket_name}'.",
+                    "operation": "Validate backup destination",
+                    "status": exc.status,
+                    "code": exc.code,
+                    "opc_request_id": getattr(exc, "request_id", None),
+                    "hint": "Check the OCI profile, compartment, and Object Storage IAM permissions.",
+                },
+            ) from exc
+        raise_operation_error(
+            502,
+            "Validate backup destination",
+            exc,
+            "Check OCI connectivity and Object Storage permissions, then try again.",
+        )
+    except Exception as exc:
+        raise_operation_error(
+            502,
+            "Validate backup destination",
+            exc,
+            "Check the destination OCI profile and Object Storage connectivity.",
+        )
+
+    return bucket_name
+
+
 def get_lifecycle_rules(client, namespace: str, bucket_name: str) -> list:
     try:
         policy = client.get_object_lifecycle_policy(namespace, bucket_name).data
@@ -3275,6 +3338,7 @@ async def save_job(job: DataSyncJob):
     rclone_limits = validate_rclone_limits(job)
     lifecycle_policy = normalize_lifecycle_policy(job.lifecycle_policy, job.name)
     local_retention = validate_local_retention_config(job.local_retention)
+    validate_destination_bucket(job.dest_profile, job.dest_bucket)
     jobs_snapshot = load_jobs()
     validate_local_retention_usage(job.name, job.previous_name, job.source_remote, local_retention, jobs_snapshot)
     existing_job = next((j for j in jobs_snapshot if j.get("name") == job.name), None)
@@ -3440,6 +3504,7 @@ async def list_remote_buckets(remote_name: str):
 
 @app.post("/start-data-sync-manual")
 async def start_sync_manual(job: DataSyncJob):
+    validate_destination_bucket(job.dest_profile, job.dest_bucket)
     run_id = str(uuid.uuid4())
     safe_job_name = normalize_job_name(job.name)
     destination = f"{job.dest_profile}_rclone:{job.dest_bucket}"
