@@ -452,7 +452,13 @@ persist_generated_admin_password() {
     fi
     rm -f "$temp_file"
   elif [ "$ADMIN_PASSWORD_UPDATED" = "1" ]; then
-    "${SUDO[@]}" rm -f "$ADMIN_PASSWORD_OUTPUT_FILE"
+    if [ -n "$ADMIN_PASSWORD_FILE" ] \
+      && [ "$(readlink -f "$ADMIN_PASSWORD_FILE")" = "$(readlink -f "$ADMIN_PASSWORD_OUTPUT_FILE")" ]; then
+      "${SUDO[@]}" chown "$RUN_USER:$RUN_USER" "$ADMIN_PASSWORD_OUTPUT_FILE"
+      "${SUDO[@]}" chmod 600 "$ADMIN_PASSWORD_OUTPUT_FILE"
+    else
+      "${SUDO[@]}" rm -f "$ADMIN_PASSWORD_OUTPUT_FILE"
+    fi
   fi
 }
 
