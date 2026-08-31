@@ -1697,7 +1697,11 @@ def validate_destination_bucket(profile_name: str, destination: str) -> str:
         client.get_bucket(namespace, bucket_name)
     except HTTPException:
         raise
-    except (oci.exceptions.ConfigFileNotFound, oci.exceptions.InvalidConfig) as exc:
+    except (
+        oci.exceptions.ConfigFileNotFound,
+        oci.exceptions.InvalidConfig,
+        oci.exceptions.ProfileNotFound,
+    ) as exc:
         raise HTTPException(
             status_code=400,
             detail={

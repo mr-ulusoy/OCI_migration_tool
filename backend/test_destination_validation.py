@@ -33,7 +33,7 @@ class ValidateDestinationBucketTests(unittest.TestCase):
         self.assertIn("existing bucket", raised.exception.detail["hint"])
 
     def test_rejects_missing_profile(self):
-        missing_profile = oci.exceptions.ConfigFileNotFound("missing config")
+        missing_profile = oci.exceptions.ProfileNotFound("Missing", "/tmp/config")
         with patch.object(main, "object_storage_context", side_effect=missing_profile):
             with self.assertRaises(HTTPException) as raised:
                 main.validate_destination_bucket("Missing", "bucket")
