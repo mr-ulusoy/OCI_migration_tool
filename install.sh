@@ -621,6 +621,12 @@ ensure_env_file() {
       printf 'OCI_MIGRATOR_UPGRADE_LOG_FILE=%s\n' "$UPGRADE_LOG_FILE"
       printf 'OCI_MIGRATOR_TIMEZONE=%s\n' "$SERVER_TIMEZONE"
       printf 'OCI_MIGRATOR_NTP_SERVERS=%s\n' "${NTP_SERVERS// /,}"
+      printf 'OCI_MIGRATOR_SYSLOG_ENABLED=false\n'
+      printf 'OCI_MIGRATOR_SYSLOG_HOST=\n'
+      printf 'OCI_MIGRATOR_SYSLOG_PORT=514\n'
+      printf 'OCI_MIGRATOR_SYSLOG_PROTOCOL=udp\n'
+      printf 'OCI_MIGRATOR_SYSLOG_FACILITY=local0\n'
+      printf 'OCI_MIGRATOR_SYSLOG_EVENTS=failures_recovery\n'
     } > "$temp_file"
 
     "${SUDO[@]}" install -o "$RUN_USER" -g "$RUN_USER" -m 600 "$temp_file" "$ENV_FILE"
@@ -650,6 +656,12 @@ ensure_env_file() {
     grep -q '^OCI_MIGRATOR_UPGRADE_LOG_FILE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_LOG_FILE=%s\n' "$UPGRADE_LOG_FILE" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_TIMEZONE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_TIMEZONE=%s\n' "$SERVER_TIMEZONE" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_NTP_SERVERS=' "$ENV_FILE" || printf 'OCI_MIGRATOR_NTP_SERVERS=%s\n' "${NTP_SERVERS// /,}" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_SYSLOG_ENABLED=' "$ENV_FILE" || printf 'OCI_MIGRATOR_SYSLOG_ENABLED=false\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_SYSLOG_HOST=' "$ENV_FILE" || printf 'OCI_MIGRATOR_SYSLOG_HOST=\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_SYSLOG_PORT=' "$ENV_FILE" || printf 'OCI_MIGRATOR_SYSLOG_PORT=514\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_SYSLOG_PROTOCOL=' "$ENV_FILE" || printf 'OCI_MIGRATOR_SYSLOG_PROTOCOL=udp\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_SYSLOG_FACILITY=' "$ENV_FILE" || printf 'OCI_MIGRATOR_SYSLOG_FACILITY=local0\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_SYSLOG_EVENTS=' "$ENV_FILE" || printf 'OCI_MIGRATOR_SYSLOG_EVENTS=failures_recovery\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
 
     if [ "$ADMIN_USERNAME_PROVIDED" = "1" ] || ! grep -q '^OCI_MIGRATOR_ADMIN_USERNAME=' "$ENV_FILE"; then
       set_env_value "OCI_MIGRATOR_ADMIN_USERNAME" "$ADMIN_USERNAME"

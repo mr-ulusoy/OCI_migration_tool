@@ -99,10 +99,13 @@ def upsert_job_run(run: dict[str, Any]) -> dict[str, Any]:
     if not run_id:
         raise ValueError("Job run id is required")
 
+    should_notify = False
+    previous_job_status = ""
     with locked_history_file():
         history = read_job_history()
         runs = [existing for existing in history["runs"] if isinstance(existing, dict)]
         existing = next((item for item in runs if item.get("id") == run_id), None)
+        existing_status = str((existing or {}).get("status") or "").lower()
 
         if existing:
             merged = {**existing, **run, "updated_at": now}
@@ -113,9 +116,41 @@ def upsert_job_run(run: dict[str, Any]) -> dict[str, Any]:
             merged = {**run, "created_at": run.get("created_at") or now, "updated_at": now}
             runs.append(merged)
 
+        merged_status = str(merged.get("status") or "").lower()
+        if merged.get("kind") == "data_sync" and merged_status in {
+            "success",
+            "warning",
+            "failed",
+            "timeout",
+        } and existing_status != merged_status:
+            should_notify = True
+            previous_run = next(
+                (
+                    item
+                    for item in _sort_runs(runs)
+                    if item.get("id") != run_id
+                    and item.get("kind") == "data_sync"
+                    and item.get("job_name") == merged.get("job_name")
+                    and str(item.get("status") or "").lower()
+                    in {"success", "warning", "failed", "timeout"}
+                ),
+                None,
+            )
+            previous_job_status = str((previous_run or {}).get("status") or "").lower()
+
         history["runs"] = _sort_runs(runs)[:MAX_JOB_HISTORY_RUNS]
         write_job_history(history)
-        return merged
+
+    if should_notify:
+        try:
+            from notifications import notify_backup_run
+
+            notify_backup_run(merged, previous_job_status)
+        except Exception:
+            # Notification delivery is always best effort and must not change a backup result.
+            pass
+
+    return merged
 
 
 def update_job_run(run_id: str, **updates: Any) -> dict[str, Any]:

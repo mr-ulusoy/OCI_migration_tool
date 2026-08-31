@@ -17,7 +17,7 @@ Self-hosted admin console for moving file and object data into Oracle Cloud Infr
 - `Credentials` manages OCI, cloud, S3-compatible, local folder, SMB, and NFS sources.
 - `OCI Object Storage` explores buckets and objects and manages supported bucket settings and lifecycle rules.
 - `VM Image Migration` scans OCI compute instances and starts boot-volume image migration workflows.
-- `Settings` contains system upgrade, runtime config backup/import, time and NTP, network, job defaults, local disk warnings, log rotation, and admin password controls.
+- `Settings` contains system upgrade, remote syslog notifications, runtime config backup/import, time and NTP, network, job defaults, local disk warnings, log rotation, and admin password controls.
 
 ## Main Use Cases
 
@@ -106,6 +106,8 @@ GET /metrics
 ```
 
 Both require an admin session or `X-API-Token`. See [Operations](docs/OPERATIONS.md#monitoring).
+
+Push monitoring is available through `Settings` -> `Notifications`. OCI Migrator can send backup failures, timeouts, recovery, and optionally every completed run to a remote syslog server over UDP or TCP.
 
 ## Manual Install
 

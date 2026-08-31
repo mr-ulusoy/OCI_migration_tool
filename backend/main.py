@@ -29,6 +29,11 @@ from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional
 from job_logs import JOB_LOG_DIR, job_log_path, legacy_job_log_path, resolve_readable_log_path, tail_file
 from job_store import JOB_HISTORY_FILE, get_job_run, list_job_runs, locked_history_file, upsert_job_run
+from notifications import (
+    get_notification_settings,
+    send_test_notification,
+    validate_notification_settings,
+)
 from worker import migrate_single_vm, rclone_sync_task
 from celery.result import AsyncResult 
 
@@ -586,6 +591,15 @@ class RcloneDefaultSettingsRequest(BaseModel):
     tpslimit: Optional[float] = None
 
 
+class NotificationSettingsRequest(BaseModel):
+    enabled: bool = False
+    host: str = ""
+    port: int = 514
+    protocol: str = "udp"
+    facility: str = "local0"
+    events: str = "failures_recovery"
+
+
 # NYA SCHEMAS FÖR STORAGE EXPLORER
 class CreateBucketReq(BaseModel):
     profile_name: str
@@ -1032,6 +1046,13 @@ def timedatectl_value(property_name: str) -> str:
 
 def read_runtime_env() -> dict[str, str]:
     return _read_env_file(ENV_FILE_PATH) if os.path.exists(ENV_FILE_PATH) else {}
+
+
+def normalize_notification_settings(settings: NotificationSettingsRequest, require_host: bool = False) -> dict:
+    try:
+        return validate_notification_settings(settings.model_dump(), require_host=require_host)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def redis_url_from_runtime() -> str:
@@ -3137,6 +3158,36 @@ async def get_network_settings():
 @app.get("/rclone-default-settings")
 async def get_rclone_default_settings():
     return current_rclone_default_settings()
+
+
+@app.get("/notification-settings")
+async def notification_settings():
+    return get_notification_settings()
+
+
+@app.put("/notification-settings")
+async def update_notification_settings(settings: NotificationSettingsRequest):
+    normalized = normalize_notification_settings(settings)
+    env_values = {
+        "OCI_MIGRATOR_SYSLOG_ENABLED": "true" if normalized["enabled"] else "false",
+        "OCI_MIGRATOR_SYSLOG_HOST": normalized["host"],
+        "OCI_MIGRATOR_SYSLOG_PORT": str(normalized["port"]),
+        "OCI_MIGRATOR_SYSLOG_PROTOCOL": normalized["protocol"],
+        "OCI_MIGRATOR_SYSLOG_FACILITY": normalized["facility"],
+        "OCI_MIGRATOR_SYSLOG_EVENTS": normalized["events"],
+    }
+    _write_env_values(ENV_FILE_PATH, env_values)
+    os.environ.update(env_values)
+    return get_notification_settings()
+
+
+@app.post("/notification-settings/test")
+async def test_notification_settings(settings: NotificationSettingsRequest):
+    normalized = normalize_notification_settings(settings, require_host=True)
+    result = send_test_notification(normalized)
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result.get("error") or "Syslog test failed.")
+    return {**result, **get_notification_settings()}
 
 
 @app.put("/rclone-default-settings")

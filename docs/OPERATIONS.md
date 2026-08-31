@@ -96,6 +96,22 @@ oci_migrator_local_disk_free_bytes 41234567890
 oci_migrator_backup_job_last_run_timestamp{job="CustomerA",status="success"} 1779473400
 ```
 
+### Remote Syslog Notifications
+
+Configure outbound syslog under `Settings` -> `Notifications`. The integration supports UDP or TCP, configurable port and facility, and three event selections:
+
+- failures and recovery (default)
+- failures only
+- all completed backup runs
+
+Use `Send Test` to verify delivery before enabling notifications. The panel shows the last successful send and the last delivery error. Backup events use structured `key=value` fields, for example:
+
+```text
+event=backup.failed job="Customer Backup" run_id="..." status="failed" errors=3 message="Failed with exit code 1."
+```
+
+Syslog delivery is best effort. A syslog outage does not change the backup result. Messages travel outbound from OCI Migrator, so no inbound firewall port is needed on this server. Allow outbound traffic to the configured syslog host and port when an egress firewall is in use.
+
 ## Job History
 
 The UI shows recent runs under `Backup Jobs` -> `Recent Runs`. The backend persists run history in:

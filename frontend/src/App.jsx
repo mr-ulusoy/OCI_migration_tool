@@ -6,7 +6,7 @@ import {
   ArrowRight, FileText, Archive, Edit, Trash2,
   Folder, Plus, RefreshCw, Globe, Cpu, Clock, Activity, Terminal,
   Lock, LogOut, Download, Upload, HeartPulse, AlertCircle, X, Settings, Save, Tags, HardDrive, Moon, Network,
-  LayoutDashboard, Menu, Play, Sun, TrendingUp, TrendingDown, Minus
+  LayoutDashboard, Menu, Play, Sun, TrendingUp, TrendingDown, Minus, Bell, Send
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (
@@ -452,6 +452,17 @@ export default function App() {
   const [rcloneDefaultSettings, setRcloneDefaultSettings] = useState({ bwlimit: '', tpslimit: null });
   const [rcloneDefaultSettingsForm, setRcloneDefaultSettingsForm] = useState({ bwlimit: '', tpslimit: '' });
   const [savingRcloneDefaultSettings, setSavingRcloneDefaultSettings] = useState(false);
+  const [notificationSettings, setNotificationSettings] = useState(null);
+  const [notificationSettingsForm, setNotificationSettingsForm] = useState({
+    enabled: false,
+    host: '',
+    port: 514,
+    protocol: 'udp',
+    facility: 'local0',
+    events: 'failures_recovery'
+  });
+  const [savingNotificationSettings, setSavingNotificationSettings] = useState(false);
+  const [testingNotificationSettings, setTestingNotificationSettings] = useState(false);
   const [upgradeStatus, setUpgradeStatus] = useState(null);
   const [upgradeCheck, setUpgradeCheck] = useState(null);
   const [upgradeLog, setUpgradeLog] = useState('');
@@ -713,6 +724,25 @@ export default function App() {
     } catch (err) {
       console.error(err);
       return { bwlimit: '', tpslimit: null };
+    }
+  };
+
+  const fetchNotificationSettings = async () => {
+    try {
+      const res = await api.get('/notification-settings');
+      setNotificationSettings(res.data);
+      setNotificationSettingsForm({
+        enabled: Boolean(res.data.enabled),
+        host: res.data.host || '',
+        port: res.data.port || 514,
+        protocol: res.data.protocol || 'udp',
+        facility: res.data.facility || 'local0',
+        events: res.data.events || 'failures_recovery'
+      });
+      return res.data;
+    } catch (err) {
+      console.error(err);
+      return null;
     }
   };
 
@@ -1127,6 +1157,67 @@ export default function App() {
     setSavingRcloneDefaultSettings(false);
   };
 
+  const normalizedNotificationPayload = () => ({
+    enabled: Boolean(notificationSettingsForm.enabled),
+    host: String(notificationSettingsForm.host || '').trim(),
+    port: Number(notificationSettingsForm.port),
+    protocol: notificationSettingsForm.protocol,
+    facility: notificationSettingsForm.facility,
+    events: notificationSettingsForm.events
+  });
+
+  const validateNotificationPayload = (payload, requireHost = false) => {
+    if ((payload.enabled || requireHost) && !payload.host) {
+      setNotice({ type: 'error', title: 'Syslog server required', message: 'Enter a hostname or IP address for the remote syslog server.' });
+      return false;
+    }
+    if (!Number.isInteger(payload.port) || payload.port < 1 || payload.port > 65535) {
+      setNotice({ type: 'error', title: 'Invalid syslog port', message: 'Syslog port must be between 1 and 65535.' });
+      return false;
+    }
+    return true;
+  };
+
+  const handleSaveNotificationSettings = async (event) => {
+    event.preventDefault();
+    const payload = normalizedNotificationPayload();
+    if (!validateNotificationPayload(payload)) return;
+
+    setSavingNotificationSettings(true);
+    try {
+      const res = await api.put('/notification-settings', payload);
+      setNotificationSettings(res.data);
+      setNotificationSettingsForm({
+        enabled: Boolean(res.data.enabled),
+        host: res.data.host || '',
+        port: res.data.port || 514,
+        protocol: res.data.protocol || 'udp',
+        facility: res.data.facility || 'local0',
+        events: res.data.events || 'failures_recovery'
+      });
+      showSuccess('Notification settings saved.');
+    } catch (err) {
+      showError('Failed to save notification settings', err);
+    }
+    setSavingNotificationSettings(false);
+  };
+
+  const handleTestNotificationSettings = async () => {
+    const payload = normalizedNotificationPayload();
+    if (!validateNotificationPayload(payload, true)) return;
+
+    setTestingNotificationSettings(true);
+    try {
+      const res = await api.post('/notification-settings/test', payload);
+      setNotificationSettings(res.data);
+      showSuccess('Syslog test message sent.');
+    } catch (err) {
+      showError('Failed to send syslog test message', err);
+      await fetchNotificationSettings();
+    }
+    setTestingNotificationSettings(false);
+  };
+
   useEffect(() => {
     if (!isAuthenticated) return;
     fetchProfiles();
@@ -1139,6 +1230,7 @@ export default function App() {
     fetchTimeSettings();
     fetchNetworkSettings();
     fetchRcloneDefaultSettings();
+    fetchNotificationSettings();
     fetchUpgradeStatus();
     fetchUpgradeCheck(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2607,8 +2699,138 @@ export default function App() {
                     </pre>
                   </div>
                 )}
-              </div>
-              {authState.mode === 'session' && (
+                </div>
+                <form onSubmit={handleSaveNotificationSettings} className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
+                  <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
+                    <div>
+                      <h3 className="font-bold text-sm text-gray-800 flex items-center gap-2">
+                        <Bell size={16} className="text-[#9c3029]" /> Notifications
+                      </h3>
+                      <p className="mt-1 text-[11px] text-gray-500">Send backup failures and recovery events to a remote syslog server.</p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="inline-flex h-9 items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 text-xs font-semibold text-gray-700">
+                        <input
+                          type="checkbox"
+                          checked={notificationSettingsForm.enabled}
+                          onChange={event => setNotificationSettingsForm({ ...notificationSettingsForm, enabled: event.target.checked })}
+                          className="accent-[#9c3029]"
+                      />
+                      Enabled
+                    </label>
+                    <button
+                      type="button"
+                      onClick={fetchNotificationSettings}
+                      disabled={testingNotificationSettings || savingNotificationSettings}
+                      title="Refresh notification delivery status"
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-500 hover:bg-gray-50 hover:text-[#9c3029] disabled:opacity-60"
+                    >
+                      <RefreshCw size={14} />
+                    </button>
+                    <button
+                        type="button"
+                        onClick={handleTestNotificationSettings}
+                        disabled={testingNotificationSettings || savingNotificationSettings}
+                        className="px-3 py-2 bg-white border border-gray-200 text-gray-600 rounded-md font-semibold text-xs hover:text-[#9c3029] hover:bg-gray-50 disabled:opacity-60 flex items-center gap-2"
+                      >
+                        {testingNotificationSettings ? <Loader2 className="animate-spin" size={14} /> : <Send size={14} />}
+                        Send Test
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={savingNotificationSettings || testingNotificationSettings}
+                        className="px-3 py-2 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#7a2520] disabled:opacity-60 flex items-center gap-2"
+                      >
+                        {savingNotificationSettings ? <Loader2 className="animate-spin" size={14} /> : <Save size={14} />}
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-[minmax(220px,1fr)_110px_130px_130px_minmax(210px,1fr)] gap-3">
+                    <div>
+                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Syslog Server</label>
+                      <input
+                        value={notificationSettingsForm.host}
+                        onChange={event => setNotificationSettingsForm({ ...notificationSettingsForm, host: event.target.value })}
+                        placeholder="syslog.example.internal"
+                        className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Port</label>
+                      <input
+                        type="number"
+                        min="1"
+                        max="65535"
+                        value={notificationSettingsForm.port}
+                        onChange={event => setNotificationSettingsForm({ ...notificationSettingsForm, port: event.target.value })}
+                        className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Protocol</label>
+                      <select
+                        value={notificationSettingsForm.protocol}
+                        onChange={event => setNotificationSettingsForm({ ...notificationSettingsForm, protocol: event.target.value })}
+                        className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                      >
+                        <option value="udp">UDP</option>
+                        <option value="tcp">TCP</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Facility</label>
+                      <select
+                        value={notificationSettingsForm.facility}
+                        onChange={event => setNotificationSettingsForm({ ...notificationSettingsForm, facility: event.target.value })}
+                        className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                      >
+                        <option value="local0">local0</option>
+                        <option value="local1">local1</option>
+                        <option value="local2">local2</option>
+                        <option value="local3">local3</option>
+                        <option value="local4">local4</option>
+                        <option value="local5">local5</option>
+                        <option value="local6">local6</option>
+                        <option value="local7">local7</option>
+                        <option value="daemon">daemon</option>
+                        <option value="user">user</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Notify On</label>
+                      <select
+                        value={notificationSettingsForm.events}
+                        onChange={event => setNotificationSettingsForm({ ...notificationSettingsForm, events: event.target.value })}
+                        className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                      >
+                        <option value="failures_recovery">Failures and recovery</option>
+                        <option value="failures_only">Failures only</option>
+                        <option value="all_runs">All completed runs</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-2 text-[11px]">
+                    <div className="bg-gray-50 border border-gray-100 rounded-md px-3 py-2 text-gray-600">
+                      <span className="font-bold text-gray-400 uppercase">Last Sent</span>
+                      <div className="mt-0.5">
+                        {notificationSettings?.last_sent_at
+                          ? `${formatTimestamp(notificationSettings.last_sent_at)} · ${notificationSettings.last_event || 'event'}`
+                          : 'No notification has been sent yet.'}
+                      </div>
+                    </div>
+                    <div className={`border rounded-md px-3 py-2 ${notificationSettings?.last_error ? 'bg-red-50 border-red-100 text-red-700' : 'bg-gray-50 border-gray-100 text-gray-600'}`}>
+                      <span className={`font-bold uppercase ${notificationSettings?.last_error ? 'text-red-500' : 'text-gray-400'}`}>Last Error</span>
+                      <div className="mt-0.5 truncate" title={notificationSettings?.last_error || ''}>
+                        {notificationSettings?.last_error
+                          ? `${formatTimestamp(notificationSettings.last_error_at)} · ${notificationSettings.last_error}`
+                          : 'No delivery errors recorded.'}
+                      </div>
+                    </div>
+                  </div>
+                  <p className="mt-3 text-[11px] text-gray-500">Messages are sent outbound from OCI Migrator. No inbound firewall rule is required. Save stores the configuration; Send Test uses the values currently shown above.</p>
+                </form>
+                {authState.mode === 'session' && (
                 <form onSubmit={handleChangePassword} className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
                   <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
                     <div>
