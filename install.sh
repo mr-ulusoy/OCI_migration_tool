@@ -56,6 +56,7 @@ ADMIN_PASSWORD_FILE="${OCI_MIGRATOR_ADMIN_PASSWORD_FILE:-}"
 PROMPT_ADMIN_PASSWORD="${PROMPT_ADMIN_PASSWORD:-0}"
 GENERATED_ADMIN_PASSWORD=""
 ADMIN_PASSWORD_UPDATED=0
+ADMIN_PASSWORD_OUTPUT_FILE=""
 RUN_USER="${RUN_USER:-}"
 OCI_MIGRATOR_ENV_FILE="${OCI_MIGRATOR_ENV_FILE:-}"
 
@@ -274,6 +275,7 @@ initialize_runtime_paths() {
   [ -n "$USER_HOME" ] || fail "Unable to find home directory for run user: $RUN_USER"
 
   ENV_FILE="${OCI_MIGRATOR_ENV_FILE:-$USER_HOME/.oci-migrator.env}"
+  ADMIN_PASSWORD_OUTPUT_FILE="$USER_HOME/oci-migrator-admin-password.txt"
 }
 
 validate_job_log_settings() {
@@ -436,6 +438,21 @@ load_admin_password_input() {
 
   if [ -n "$ADMIN_PASSWORD" ]; then
     validate_admin_password "$ADMIN_PASSWORD"
+  fi
+}
+
+persist_generated_admin_password() {
+  if [ -n "$GENERATED_ADMIN_PASSWORD" ]; then
+    local temp_file
+    temp_file="$(mktemp)"
+    printf '%s\n' "$GENERATED_ADMIN_PASSWORD" > "$temp_file"
+    if ! "${SUDO[@]}" install -o "$RUN_USER" -g "$RUN_USER" -m 600 "$temp_file" "$ADMIN_PASSWORD_OUTPUT_FILE"; then
+      rm -f "$temp_file"
+      fail "Unable to store the generated admin password in $ADMIN_PASSWORD_OUTPUT_FILE"
+    fi
+    rm -f "$temp_file"
+  elif [ "$ADMIN_PASSWORD_UPDATED" = "1" ]; then
+    "${SUDO[@]}" rm -f "$ADMIN_PASSWORD_OUTPUT_FILE"
   fi
 }
 
@@ -1199,8 +1216,8 @@ print_summary() {
   printf 'Job logs: %s (logrotate maxsize %s, retention %s days)\n' "$JOB_LOG_DIR" "$JOB_LOG_MAX_SIZE" "$JOB_LOG_RETENTION_DAYS"
   printf 'Admin username: %s\n' "$ADMIN_USERNAME"
   if [ -n "$GENERATED_ADMIN_PASSWORD" ]; then
-    printf 'Generated admin password: %s\n' "$GENERATED_ADMIN_PASSWORD"
-    printf 'Store this password now. It will not be shown again.\n'
+    printf 'Generated admin password file: %s (mode 600)\n' "$ADMIN_PASSWORD_OUTPUT_FILE"
+    printf 'Read it only from a trusted terminal and store it securely.\n'
   elif [ "$ADMIN_PASSWORD_UPDATED" = "1" ]; then
     printf 'Admin password: updated\n'
   else
@@ -1228,6 +1245,7 @@ main() {
   validate_time_settings
   validate_job_log_settings
   ensure_env_file
+  persist_generated_admin_password
   load_time_settings_from_env
   load_time_sync_helper_from_env
   load_network_helper_from_env
