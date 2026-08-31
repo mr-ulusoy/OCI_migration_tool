@@ -6,7 +6,7 @@ import {
   ArrowRight, FileText, Archive, Edit, Trash2,
   Folder, Plus, RefreshCw, Globe, Cpu, Clock, Activity, Terminal,
   Lock, LogOut, Download, Upload, HeartPulse, AlertCircle, X, Settings, Save, Tags, HardDrive, Moon, Network,
-  LayoutDashboard, Menu, Play, Sun
+  LayoutDashboard, Menu, Play, Sun, TrendingUp, TrendingDown, Minus
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (
@@ -189,6 +189,16 @@ function formatBytes(value) {
   return `${unitIndex === 0 ? Math.round(size) : size.toFixed(1)} ${units[unitIndex]}`;
 }
 
+function formatChartBytes(value) {
+  return formatBytes(value).replace(/\.0(?=\s)/, '');
+}
+
+function formatCompactNumber(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number) || number <= 0) return '0';
+  return new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 }).format(number);
+}
+
 function formatRate(value) {
   const bytes = Number(value || 0);
   return bytes > 0 ? `${formatBytes(bytes)}/s` : '';
@@ -242,6 +252,7 @@ function buildBackupActivity(runs = [], dayCount = 7, now = new Date()) {
       label: date.toLocaleDateString(undefined, { weekday: 'short' }),
       dateLabel: date.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }),
       bytes: 0,
+      files: 0,
       success: 0,
       failed: 0,
       other: 0
@@ -256,6 +267,7 @@ function buildBackupActivity(runs = [], dayCount = 7, now = new Date()) {
     if (!day) return;
 
     day.bytes += Math.max(0, Number(run.rclone_summary?.bytes) || 0);
+    day.files += Math.max(0, Number(run.rclone_summary?.files_transferred) || 0);
     const status = String(run.status || '').toLowerCase();
     if (status === 'success') day.success += 1;
     else if (status === 'failed' || status === 'timeout') day.failed += 1;
@@ -265,10 +277,12 @@ function buildBackupActivity(runs = [], dayCount = 7, now = new Date()) {
   return {
     days,
     totalBytes: days.reduce((total, day) => total + day.bytes, 0),
+    totalFiles: days.reduce((total, day) => total + day.files, 0),
     success: days.reduce((total, day) => total + day.success, 0),
     failed: days.reduce((total, day) => total + day.failed, 0),
     other: days.reduce((total, day) => total + day.other, 0),
-    maxBytes: Math.max(...days.map(day => day.bytes), 0)
+    maxBytes: Math.max(...days.map(day => day.bytes), 0),
+    maxFiles: Math.max(...days.map(day => day.files), 0)
   };
 }
 
@@ -802,26 +816,34 @@ export default function App() {
 
   const backupActivity = useMemo(() => buildBackupActivity(jobRuns), [jobRuns]);
   const activityChart = useMemo(() => {
-    const width = 760;
-    const height = 190;
-    const left = 58;
-    const right = 18;
-    const top = 18;
-    const bottom = 28;
-    const baseline = height - bottom;
-    const plotWidth = width - left - right;
+    const width = 840;
+    const height = 280;
+    const top = 128;
+    const baseline = height;
     const plotHeight = baseline - top;
-    const scaleMax = backupActivity.maxBytes || 1;
+    const byteScaleMax = backupActivity.maxBytes || 1;
+    const fileScaleMax = backupActivity.maxFiles || 1;
+    const columnWidth = width / Math.max(backupActivity.days.length, 1);
     const points = backupActivity.days.map((day, index) => ({
       ...day,
-      x: left + (plotWidth * index) / Math.max(backupActivity.days.length - 1, 1),
-      y: baseline - (day.bytes / scaleMax) * plotHeight
+      x: columnWidth * index + columnWidth / 2,
+      byteY: baseline - (day.bytes / byteScaleMax) * plotHeight,
+      fileY: baseline - (day.files / fileScaleMax) * plotHeight
     }));
-    const linePath = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
-    const areaPath = points.length
-      ? `M ${points[0].x} ${baseline} L ${points.map(point => `${point.x} ${point.y}`).join(' L ')} L ${points[points.length - 1].x} ${baseline} Z`
-      : '';
-    return { width, height, left, right, top, baseline, points, linePath, areaPath, scaleMax };
+    const buildPaths = (yKey) => {
+      const linePath = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point[yKey]}`).join(' ');
+      const areaPath = points.length
+        ? `M 0 ${baseline} L 0 ${points[0][yKey]} L ${points.map(point => `${point.x} ${point[yKey]}`).join(' L ')} L ${width} ${points[points.length - 1][yKey]} L ${width} ${baseline} Z`
+        : '';
+      return { linePath, areaPath };
+    };
+    return {
+      width,
+      height,
+      points,
+      bytes: buildPaths('byteY'),
+      files: buildPaths('fileY')
+    };
   }, [backupActivity]);
 
   const handleExportRuntimeConfig = async () => {
@@ -3235,66 +3257,56 @@ export default function App() {
                   </div>
                   <div className="flex flex-wrap items-center gap-2 text-[10px] font-semibold">
                     <span className="ui-mini-tag"><span className="h-2 w-2 rounded-full bg-blue-600" />{formatBytes(backupActivity.totalBytes)} transferred</span>
+                    <span className="ui-mini-tag"><span className="h-2 w-2 rounded-full bg-violet-500" />{formatCompactNumber(backupActivity.totalFiles)} files</span>
                     <span className="ui-mini-tag"><span className="h-2 w-2 rounded-full bg-green-600" />{backupActivity.success} successful</span>
                     <span className="ui-mini-tag"><span className="h-2 w-2 rounded-full bg-red-600" />{backupActivity.failed} failed</span>
                   </div>
                 </div>
 
-                <div className="overflow-x-auto px-4 pb-4 pt-3 sm:px-5">
-                  <div className="min-w-[680px]">
+                <div className="overflow-x-auto">
+                  <div className="backup-activity-chart relative h-[280px] min-w-[840px]">
+                    <div className="absolute inset-0 z-0 grid grid-cols-7" aria-hidden="true">
+                      {backupActivity.days.map((day, index) => (
+                        <div
+                          key={day.key}
+                          className={`backup-activity-period ${index === backupActivity.days.length - 1 ? 'is-current' : ''}`}
+                          title={`${day.dateLabel}: ${formatBytes(day.bytes)}, ${day.files} files`}
+                        />
+                      ))}
+                    </div>
+
                     <svg
                       viewBox={`0 0 ${activityChart.width} ${activityChart.height}`}
-                      className="block h-[190px] w-full"
+                      className="pointer-events-none absolute inset-0 z-10 h-full w-full"
                       role="img"
-                      aria-label="Transferred backup data for each of the last seven days"
+                      aria-label="Transferred backup data and file count for each of the last seven days"
                     >
-                      <title>Transferred backup data for each of the last seven days</title>
-                      {[0, 0.5, 1].map(ratio => {
-                        const y = activityChart.top + (activityChart.baseline - activityChart.top) * ratio;
-                        const value = backupActivity.maxBytes * (1 - ratio);
-                        return (
-                          <g key={ratio}>
-                            <line
-                              x1={activityChart.left}
-                              x2={activityChart.width - activityChart.right}
-                              y1={y}
-                              y2={y}
-                              className="backup-chart-grid"
-                            />
-                            <text x={activityChart.left - 10} y={y + 4} textAnchor="end" className="backup-chart-axis-label">
-                              {formatBytes(value)}
-                            </text>
-                          </g>
-                        );
-                      })}
-                      <path d={activityChart.areaPath} className="backup-chart-area" />
-                      <path d={activityChart.linePath} className="backup-chart-line" />
-                      {activityChart.points.map(point => (
-                        <g key={point.key}>
-                          <title>{`${point.dateLabel}: ${formatBytes(point.bytes)}, ${point.success} successful, ${point.failed} failed`}</title>
-                          <circle cx={point.x} cy={point.y} r="4" className="backup-chart-point" />
-                          <text x={point.x} y={activityChart.height - 7} textAnchor="middle" className="backup-chart-day-label">
-                            {point.label}
-                          </text>
-                        </g>
-                      ))}
+                      <title>Transferred backup data and file count for each of the last seven days</title>
+                      <path d={activityChart.files.areaPath} className="backup-chart-area-files" />
+                      <path d={activityChart.files.linePath} className="backup-chart-line-files" />
+                      <path d={activityChart.bytes.areaPath} className="backup-chart-area-data" />
+                      <path d={activityChart.bytes.linePath} className="backup-chart-line-data" />
                     </svg>
 
-                    <div className="ml-[58px] mr-[18px] grid grid-cols-7 border-t border-gray-100 pt-3">
-                      {backupActivity.days.map(day => {
+                    <div className="pointer-events-none absolute inset-0 z-20 grid grid-cols-7">
+                      {backupActivity.days.map((day, index) => {
                         const runCount = day.success + day.failed + day.other;
+                        const previousBytes = index > 0 ? backupActivity.days[index - 1].bytes : day.bytes;
+                        const trend = previousBytes > 0
+                          ? Math.round(((day.bytes - previousBytes) / previousBytes) * 100)
+                          : day.bytes > 0 ? 100 : 0;
+                        const TrendIcon = trend > 0 ? TrendingUp : trend < 0 ? TrendingDown : Minus;
                         return (
-                          <div key={day.key} className="border-r border-gray-100 px-2 text-center last:border-r-0">
-                            <div className="text-[10px] font-semibold text-gray-500">{day.dateLabel}</div>
-                            <div className="mt-1 text-xs font-bold text-gray-800">{runCount} {runCount === 1 ? 'run' : 'runs'}</div>
-                            <div className="mx-auto mt-2 flex h-1.5 max-w-14 overflow-hidden rounded-full bg-gray-100" aria-hidden="true">
-                              {runCount > 0 && (
-                                <>
-                                  <span className="bg-green-500" style={{ flexGrow: day.success }} />
-                                  <span className="bg-red-500" style={{ flexGrow: day.failed }} />
-                                  <span className="bg-amber-400" style={{ flexGrow: day.other }} />
-                                </>
-                              )}
+                          <div key={day.key} className="px-3 py-4 text-left">
+                            <div className="text-[10px] font-bold uppercase text-gray-500">{day.label} · {day.dateLabel}</div>
+                            <div className="mt-3 flex items-end gap-1.5">
+                              <span className="whitespace-nowrap text-lg font-semibold text-gray-900">{formatChartBytes(day.bytes)}</span>
+                              <span className={`mb-0.5 inline-flex items-center gap-0.5 text-[10px] font-bold ${trend > 0 ? 'text-green-600' : trend < 0 ? 'text-red-600' : 'text-gray-400'}`}>
+                                <TrendIcon size={13} /> {Math.abs(trend)}%
+                              </span>
+                            </div>
+                            <div className={`mt-2 text-[10px] font-semibold ${day.failed ? 'text-red-600' : day.success ? 'text-green-700' : 'text-gray-400'}`}>
+                              {runCount === 0 ? 'No runs' : `${runCount} ${runCount === 1 ? 'run' : 'runs'}${day.failed ? ` · ${day.failed} failed` : ''}`}
                             </div>
                           </div>
                         );
