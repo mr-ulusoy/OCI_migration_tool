@@ -682,6 +682,28 @@ Expected result:
 - owner accepts the chosen migration method
 - required downtime or application stop is documented
 
+### TP-026 DHCP and Static IPv4
+
+Purpose: prove dashboard network changes are validated and cannot silently lock out the server.
+
+Steps:
+
+1. Record the current interface, IPv4 address, prefix, gateway, and DNS servers.
+2. Apply DHCP to the current interface and confirm it from Settings.
+3. Verify the address remains reachable and the rollback timer becomes inactive.
+4. Reserve a second test address on the cloud VNIC or lab network before testing static mode.
+5. Apply the reserved static IPv4 address, open the dashboard on that address, sign in, and confirm it.
+6. Stage another safe test change but do not confirm it; verify the previous configuration returns after three minutes.
+7. Return the server to its intended production mode and remove the temporary test address.
+
+Expected result:
+
+- invalid IPv4, prefix, gateway, DNS, and interface values are rejected
+- DHCP and reserved static IPv4 settings persist after confirmation
+- an unconfirmed change rolls back automatically
+- the rollback timer is disabled after confirmation or rollback
+- no static address is applied unless it is assigned or reserved outside the guest OS first
+
 ## Production Readiness Sign-Off
 
 Before production use, record:
@@ -708,6 +730,7 @@ Required sign-off:
 - [ ] monitoring tested
 - [ ] upgrade tested
 - [ ] VM image migration warning and scan tested if used
+- [ ] DHCP/static IPv4 confirmation and rollback tested
 - [ ] failure messages reviewed
 - [ ] test shares, test buckets, test lifecycle rules, and temporary data cleaned up
 
