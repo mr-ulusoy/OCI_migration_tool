@@ -2256,11 +2256,20 @@ def latest_git_info() -> dict:
             "Confirm that the server has outbound GitHub access and that origin points to the project repository.",
         )
 
+    latest_title = safe_git_command(["show", "-s", "--format=%s", latest_commit])
+    if not latest_title:
+        try:
+            git_command(["fetch", "--quiet", "--no-tags", "origin", branch], timeout=30)
+            latest_title = safe_git_command(["show", "-s", "--format=%s", latest_commit])
+        except Exception as exc:
+            logger.info("Latest commit title is unavailable: %s", exc)
+
     return {
         **info,
         "branch": branch,
         "latest_commit": latest_commit,
         "latest_short": latest_commit[:7],
+        "latest_title": truncate_text(latest_title, 160),
         "up_to_date": bool(info.get("current_commit")) and info.get("current_commit") == latest_commit,
     }
 

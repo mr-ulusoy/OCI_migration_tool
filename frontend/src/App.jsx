@@ -6,7 +6,7 @@ import {
   ArrowRight, FileText, Archive, Edit, Trash2,
   Folder, Plus, RefreshCw, Globe, Cpu, Clock, Activity, Terminal,
   Lock, LogOut, Download, Upload, HeartPulse, AlertCircle, X, Settings, Save, Tags, HardDrive, Moon, Network,
-  LayoutDashboard, Menu, Play, Sun, TrendingUp, TrendingDown, Minus, Bell, Send
+  LayoutDashboard, Menu, Play, Sun, TrendingUp, TrendingDown, Minus, Bell, Send, ExternalLink
 } from 'lucide-react';
 
 const API_BASE = import.meta.env.VITE_API_BASE || (
@@ -478,6 +478,7 @@ export default function App() {
 
   const latestUpgradeCommit = upgradeCheck?.latest_commit || upgradeStatus?.target_commit || '';
   const latestUpgradeShort = upgradeCheck?.latest_short || latestUpgradeCommit.slice(0, 7);
+  const latestUpgradeTitle = upgradeCheck?.latest_title || '';
   const upgradeVersionsMatch = Boolean(
     upgradeStatus?.current_commit
       && latestUpgradeCommit
@@ -2146,6 +2147,17 @@ export default function App() {
       items: [
         { id: 'settings', label: 'Settings', icon: Settings }
       ]
+    },
+    {
+      label: 'Documentation',
+      items: [
+        {
+          id: 'operations-docs',
+          label: 'Operations Guide',
+          icon: FileText,
+          href: 'https://github.com/mr-ulusoy/OCI_migration_tool/blob/main/docs/OPERATIONS.md'
+        }
+      ]
     }
   ];
 
@@ -2347,6 +2359,22 @@ export default function App() {
                 {group.items.map(item => {
                   const Icon = item.icon;
                   const isActive = view === item.id;
+                  if (item.href) {
+                    return (
+                      <a
+                        key={item.id}
+                        href={item.href}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="app-nav-link"
+                        onClick={() => setSidebarOpen(false)}
+                      >
+                        <Icon size={17} />
+                        <span className="flex-1">{item.label}</span>
+                        <ExternalLink size={13} className="opacity-60" />
+                      </a>
+                    );
+                  }
                   return (
                     <button
                       key={item.id}
@@ -3503,9 +3531,15 @@ export default function App() {
                   </div>
 
                   <div className="flex items-start gap-3 px-4 py-4 text-left sm:px-5">
-                    <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md border ${upgradeRunning ? 'border-blue-200 bg-blue-50 text-blue-700' : updateAvailable ? 'border-amber-200 bg-amber-50 text-amber-700' : upgradeIsCurrent ? 'border-green-200 bg-green-50 text-green-700' : 'border-gray-200 bg-gray-50 text-gray-500'}`}>
+                    <button
+                      type="button"
+                      onClick={() => handleNavigate('settings')}
+                      className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-md border transition hover:shadow-sm ${upgradeRunning ? 'border-blue-200 bg-blue-50 text-blue-700' : updateAvailable ? 'border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300' : upgradeIsCurrent ? 'border-green-200 bg-green-50 text-green-700 hover:border-green-300' : 'border-gray-200 bg-gray-50 text-gray-500 hover:border-gray-300'}`}
+                      title="Open System Upgrade settings"
+                      aria-label="Open System Upgrade settings"
+                    >
                       {upgradeRunning ? <Loader2 size={17} className="animate-spin" /> : <Download size={17} />}
-                    </div>
+                    </button>
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
                         <h4 className="text-xs font-bold text-gray-900">Software Update</h4>
@@ -3513,9 +3547,14 @@ export default function App() {
                           {upgradeRunning ? 'running' : updateAvailable ? 'available' : upgradeIsCurrent ? 'current' : checkingUpgrade ? 'checking' : 'unknown'}
                         </span>
                       </div>
-                      <p className="mt-1 text-xs leading-5 text-gray-500">
-                        {upgradeRunning ? 'The latest version is being installed.' : updateAvailable ? `Version ${latestUpgradeShort || 'latest'} is available in Settings.` : upgradeIsCurrent ? `You are on the latest version${upgradeStatus?.current_short ? ` (${upgradeStatus.current_short})` : ''}.` : checkingUpgrade ? 'Checking GitHub for updates...' : 'Update status is not available.'}
-                      </p>
+                      <div className="mt-1 text-xs leading-5 text-gray-500">
+                        {upgradeRunning ? 'The latest version is being installed.' : updateAvailable ? (
+                          <>
+                            <div>Version {latestUpgradeShort || 'latest'} is available in Settings.</div>
+                            {latestUpgradeTitle && <div className="truncate font-medium text-gray-700" title={latestUpgradeTitle}>{latestUpgradeTitle}</div>}
+                          </>
+                        ) : upgradeIsCurrent ? `You are on the latest version${upgradeStatus?.current_short ? ` (${upgradeStatus.current_short})` : ''}.` : checkingUpgrade ? 'Checking GitHub for updates...' : 'Update status is not available.'}
+                      </div>
                     </div>
                   </div>
                 </div>
