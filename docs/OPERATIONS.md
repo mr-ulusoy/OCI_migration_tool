@@ -373,9 +373,11 @@ HTTPS is required for production use. The direct HTTP endpoint is retained for i
 | `Let's Encrypt` | DNS A/AAAA record points to the server; inbound TCP `80` and `443` reach Caddy | Caddy obtains and renews the certificate automatically |
 | `Corporate Certificate` | PEM full chain and matching unencrypted PEM private key exist at absolute server paths; clients trust the issuing CA | Replace the files and reapply the setting when the certificate is renewed |
 | `External TLS` | External proxy forwards to the app/API port and sends `X-Forwarded-Proto: https` | Managed entirely by the external platform |
-| `HTTP Setup` | Access is restricted to a trusted setup or recovery network | No certificate |
+| `HTTP Setup` | Access is restricted to a trusted setup or recovery network; the administrator acknowledges the unencrypted-traffic warning | No certificate |
 
 For managed modes, OCI Migrator validates the generated Caddy configuration and checks the HTTPS health endpoint before accepting the change. If startup or the health check fails, the previous managed Caddy files and service state are restored. With the default service prefix, Caddy runs as the dedicated `migrator-tls.service`, proxies to `127.0.0.1:8000`, and keeps its state below `/var/lib/oci-migrator/tls`.
+
+When `HTTP Setup` is deliberately retained, select the acknowledgement checkbox and apply the setting. The acknowledgement is stored in the server runtime configuration so the health overview does not repeatedly warn about an accepted deployment decision. The dashboard still labels the connection as HTTP and does not treat it as encrypted.
 
 `Open HTTPS` opens the configured dashboard hostname. The status line shows whether the managed Caddy service is active. Reapply `Corporate Certificate` after replacing renewed certificate files. Runtime Config Backup does not export the managed private-key copy, so configure TLS separately on a replacement server. See the [Installation Guide](INSTALL.md#https-setup) for DNS, firewall, and certificate preparation.
 

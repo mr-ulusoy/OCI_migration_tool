@@ -665,6 +665,7 @@ class TlsSettingsRequest(BaseModel):
     email: str = ""
     cert_path: str = ""
     key_path: str = ""
+    acknowledge_http: bool = False
 
 
 class RcloneDefaultSettingsRequest(BaseModel):
@@ -1262,6 +1263,12 @@ def normalize_tls_settings(settings: TlsSettingsRequest) -> dict:
 
     cert_path = str(settings.cert_path or "").strip()
     key_path = str(settings.key_path or "").strip()
+    acknowledge_http = bool(settings.acknowledge_http) if mode == "http" else False
+    if mode == "http" and not acknowledge_http:
+        raise HTTPException(
+            status_code=400,
+            detail="Confirm that you understand HTTP traffic is not encrypted.",
+        )
     if mode == "custom":
         if not cert_path.startswith("/") or not key_path.startswith("/"):
             raise HTTPException(status_code=400, detail="Corporate certificate and private key paths must be absolute server paths.")
@@ -1274,6 +1281,7 @@ def normalize_tls_settings(settings: TlsSettingsRequest) -> dict:
         "email": email if mode == "letsencrypt" else "",
         "cert_path": cert_path if mode == "custom" else "",
         "key_path": key_path if mode == "custom" else "",
+        "acknowledge_http": acknowledge_http,
     }
 
 
@@ -2224,6 +2232,7 @@ def current_tls_settings() -> dict:
     runtime_env = read_runtime_env()
     mode = runtime_env.get("OCI_MIGRATOR_TLS_MODE", "http")
     hostname = runtime_env.get("OCI_MIGRATOR_TLS_HOSTNAME", "")
+    http_acknowledged = runtime_env.get("OCI_MIGRATOR_TLS_HTTP_ACKNOWLEDGED", "").strip().lower() == "true"
     return {
         "supported": False,
         "helper_installed": False,
@@ -2235,6 +2244,7 @@ def current_tls_settings() -> dict:
         "service_state": "unknown",
         "https_url": f"https://{hostname}" if hostname and mode != "http" else "",
         "secure": mode in {"external", "letsencrypt", "custom"},
+        "http_acknowledged": http_acknowledged,
         "status": "warn",
         "message": "HTTPS helper is not installed. Rerun install.sh on the server.",
     }
@@ -2652,6 +2662,7 @@ def preserve_server_tls_env(imported_content: bytes) -> bytes:
         "OCI_MIGRATOR_TLS_HOSTNAME",
         "OCI_MIGRATOR_TLS_EMAIL",
         "OCI_MIGRATOR_TLS_CERT_SOURCE",
+        "OCI_MIGRATOR_TLS_HTTP_ACKNOWLEDGED",
     }
     updates = {key: current[key] for key in preserved_keys if key in current}
     if not updates:
@@ -3520,6 +3531,8 @@ async def update_tls_settings(settings: TlsSettingsRequest):
         normalized["cert_path"],
         "--key-path",
         normalized["key_path"],
+        "--acknowledge-http",
+        "true" if normalized["acknowledge_http"] else "false",
     ]
     with TLS_SETTINGS_LOCK:
         return run_tls_helper(command, timeout=120)

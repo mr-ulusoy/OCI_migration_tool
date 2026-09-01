@@ -89,6 +89,10 @@ The validated files are copied into protected OCI Migrator TLS storage. Reapply 
 
 Use this when an enterprise load balancer, ingress gateway, or existing reverse proxy owns the certificate. Enter the public DNS hostname and configure that external component to forward requests to the OCI Migrator app/API port. It must send `X-Forwarded-Proto: https`. Caddy is not started in this mode.
 
+### HTTP Setup
+
+Use this only for initial configuration or controlled recovery. Select the acknowledgement checkbox before applying the mode. The acknowledgement records that the administrator accepts unencrypted traffic and suppresses the repeated health warning; it does not add encryption or make HTTP suitable for production.
+
 The managed local Caddy service is isolated from `/etc/caddy/Caddyfile`; OCI Migrator uses `/etc/oci-migrator/Caddyfile` and its own `migrator-tls.service`. Failed Caddy activation restores the previous managed TLS files.
 
 ## DHCP and Static IPv4

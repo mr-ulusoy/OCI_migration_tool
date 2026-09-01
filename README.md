@@ -64,7 +64,7 @@ HTTPS is required for production use. Configure it from `Settings` -> `HTTPS & C
 | `Let's Encrypt` | Publicly resolvable DNS name with inbound TCP `80` and `443` | Enabled; certificate issuance and renewal are automatic |
 | `Corporate Certificate` | Customer-issued PEM full chain and matching unencrypted private key | Enabled; files are validated and copied to protected storage |
 | `External TLS` | Existing load balancer, ingress gateway, or reverse proxy | Disabled; the external service owns the certificate |
-| `HTTP Setup` | Initial setup or recovery only | Disabled |
+| `HTTP Setup` | Initial setup or recovery only; requires explicit acknowledgement of unencrypted traffic | Disabled |
 
 Managed TLS uses an isolated service named `migrator-tls.service` with the default service prefix and does not replace an existing `/etc/caddy/Caddyfile`. A failed managed TLS activation restores the previous Caddy files and service state. See [HTTPS & Certificates](docs/OPERATIONS.md#https--certificates) and the [HTTPS installation requirements](docs/INSTALL.md#https-setup).
 

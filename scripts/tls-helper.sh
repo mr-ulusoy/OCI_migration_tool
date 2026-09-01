@@ -41,7 +41,8 @@ env_value() {
 }
 
 set_env_values() {
-  MODE="$1" HOSTNAME_VALUE="$2" EMAIL_VALUE="$3" CERT_SOURCE_VALUE="$4" \
+  MODE="$1" HOSTNAME_VALUE="$2" EMAIL_VALUE="$3" CERT_SOURCE_VALUE="$4" HTTP_ACKNOWLEDGED_VALUE="$5" \
+    CURRENT_ORIGINS_VALUE="$(env_value OCI_MIGRATOR_ALLOWED_ORIGINS)" \
     ENV_FILE_VALUE="$ENV_FILE" API_PORT_VALUE="$API_PORT" python3 - <<'PY'
 import os
 import tempfile
@@ -51,6 +52,8 @@ mode = os.environ["MODE"]
 hostname = os.environ["HOSTNAME_VALUE"]
 email = os.environ["EMAIL_VALUE"]
 cert_source = os.environ["CERT_SOURCE_VALUE"]
+http_acknowledged = os.environ["HTTP_ACKNOWLEDGED_VALUE"]
+current_origins = os.environ["CURRENT_ORIGINS_VALUE"]
 api_port = os.environ["API_PORT_VALUE"]
 
 updates = {
@@ -58,6 +61,7 @@ updates = {
     "OCI_MIGRATOR_TLS_HOSTNAME": hostname,
     "OCI_MIGRATOR_TLS_EMAIL": email,
     "OCI_MIGRATOR_TLS_CERT_SOURCE": cert_source,
+    "OCI_MIGRATOR_TLS_HTTP_ACKNOWLEDGED": http_acknowledged,
 }
 
 origins = [
@@ -70,6 +74,8 @@ if mode == "http" and hostname:
     origins.append(f"http://{hostname}:{api_port}")
 elif hostname:
     origins.append(f"https://{hostname}")
+if mode == "http":
+    origins.extend(origin.strip() for origin in current_origins.split(",") if origin.strip())
 updates["OCI_MIGRATOR_ALLOWED_ORIGINS"] = ",".join(dict.fromkeys(origins))
 
 lines = []
@@ -276,15 +282,16 @@ start_caddy_or_rollback() {
 }
 
 print_status() {
-  local mode hostname email cert_source state caddy_installed=false
+  local mode hostname email cert_source http_acknowledged state caddy_installed=false
   mode="$(env_value OCI_MIGRATOR_TLS_MODE)"
   hostname="$(env_value OCI_MIGRATOR_TLS_HOSTNAME)"
   email="$(env_value OCI_MIGRATOR_TLS_EMAIL)"
   cert_source="$(env_value OCI_MIGRATOR_TLS_CERT_SOURCE)"
+  http_acknowledged="$(env_value OCI_MIGRATOR_TLS_HTTP_ACKNOWLEDGED)"
   [ -n "$mode" ] || mode="http"
   command -v caddy >/dev/null 2>&1 && caddy_installed=true
   state="$(service_state)"
-  MODE="$mode" HOSTNAME_VALUE="$hostname" EMAIL_VALUE="$email" CERT_SOURCE_VALUE="$cert_source" \
+  MODE="$mode" HOSTNAME_VALUE="$hostname" EMAIL_VALUE="$email" CERT_SOURCE_VALUE="$cert_source" HTTP_ACKNOWLEDGED_VALUE="$http_acknowledged" \
     SERVICE_STATE="$state" CADDY_INSTALLED="$caddy_installed" TLS_SERVICE_VALUE="$TLS_SERVICE" python3 - <<'PY'
 import json
 import os
@@ -295,11 +302,16 @@ state = os.environ["SERVICE_STATE"]
 caddy_installed = os.environ["CADDY_INSTALLED"] == "true"
 https_url = f"https://{hostname}" if hostname and mode != "http" else ""
 secure = mode in {"external", "letsencrypt", "custom"}
+http_acknowledged = os.environ["HTTP_ACKNOWLEDGED_VALUE"].strip().lower() == "true"
 service_required = mode in {"letsencrypt", "custom"}
 healthy = secure and (not service_required or state == "active")
 
 messages = {
-    "http": "HTTPS is not configured. HTTP is intended for initial setup only.",
+    "http": (
+        "HTTP risk has been acknowledged by an administrator. Traffic is not encrypted."
+        if http_acknowledged
+        else "HTTPS is not configured. Acknowledge HTTP setup mode or configure HTTPS."
+    ),
     "external": "HTTPS is terminated by an external load balancer or reverse proxy.",
     "letsencrypt": "Caddy manages and renews the Let's Encrypt certificate automatically.",
     "custom": "Caddy serves the installed corporate certificate.",
@@ -316,23 +328,25 @@ print(json.dumps({
     "service_state": state,
     "https_url": https_url,
     "secure": secure,
-    "status": "ok" if healthy else ("warn" if mode == "http" else "error"),
+    "http_acknowledged": http_acknowledged,
+    "status": "ok" if healthy or (mode == "http" and http_acknowledged) else ("warn" if mode == "http" else "error"),
     "message": messages.get(mode, "Unknown TLS mode."),
 }))
 PY
 }
 
 apply_mode() {
-  local mode="$1" hostname="$2" email="$3" cert_path="$4" key_path="$5"
+  local mode="$1" hostname="$2" email="$3" cert_path="$4" key_path="$5" acknowledge_http="${6:-false}"
   case "$mode" in
     http)
+      [ "$acknowledge_http" = "true" ] || fail "Confirm that you understand HTTP traffic is not encrypted."
       systemctl disable --now "$TLS_SERVICE" >/dev/null 2>&1 || true
-      set_env_values "$mode" "$hostname" "" ""
+      set_env_values "$mode" "$hostname" "" "" "true"
       ;;
     external)
       validate_hostname "$hostname"
       systemctl disable --now "$TLS_SERVICE" >/dev/null 2>&1 || true
-      set_env_values "$mode" "$hostname" "" "external"
+      set_env_values "$mode" "$hostname" "" "external" "false"
       ;;
     letsencrypt)
       command -v caddy >/dev/null 2>&1 || fail "Caddy is not installed. Rerun install.sh on the server."
@@ -351,7 +365,7 @@ apply_mode() {
       fi
       start_caddy_or_rollback "$letsencrypt_backup" "$hostname" "$letsencrypt_previous_active" "$letsencrypt_previous_enabled"
       rm -rf "$letsencrypt_backup"
-      set_env_values "$mode" "$hostname" "$email" "letsencrypt"
+      set_env_values "$mode" "$hostname" "$email" "letsencrypt" "false"
       open_https_firewall
       ;;
     custom)
@@ -373,7 +387,7 @@ apply_mode() {
       fi
       start_caddy_or_rollback "$custom_backup" "$hostname" "$custom_previous_active" "$custom_previous_enabled"
       rm -rf "$custom_backup"
-      set_env_values "$mode" "$hostname" "" "$cert_path"
+      set_env_values "$mode" "$hostname" "" "$cert_path" "false"
       open_https_firewall
       ;;
     *)
@@ -395,7 +409,7 @@ main() {
       print_status
       ;;
     apply)
-      local mode="" hostname="" email="" cert_path="" key_path=""
+      local mode="" hostname="" email="" cert_path="" key_path="" acknowledge_http="false"
       while [ "$#" -gt 0 ]; do
         case "$1" in
           --mode) mode="${2:-}"; shift 2 ;;
@@ -403,13 +417,18 @@ main() {
           --email) email="${2:-}"; shift 2 ;;
           --cert-path) cert_path="${2:-}"; shift 2 ;;
           --key-path) key_path="${2:-}"; shift 2 ;;
+          --acknowledge-http) acknowledge_http="${2:-}"; shift 2 ;;
           *) fail "Unknown option: $1" ;;
         esac
       done
-      apply_mode "$mode" "$hostname" "$email" "$cert_path" "$key_path"
+      case "$acknowledge_http" in
+        true|false) ;;
+        *) fail "--acknowledge-http must be true or false." ;;
+      esac
+      apply_mode "$mode" "$hostname" "$email" "$cert_path" "$key_path" "$acknowledge_http"
       ;;
     *)
-      fail "Usage: $0 status | apply --mode MODE [--hostname HOST] [--email EMAIL] [--cert-path PATH --key-path PATH]"
+      fail "Usage: $0 status | apply --mode MODE [--hostname HOST] [--email EMAIL] [--cert-path PATH --key-path PATH] [--acknowledge-http true|false]"
       ;;
   esac
 }

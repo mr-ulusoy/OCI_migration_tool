@@ -46,10 +46,18 @@ class NormalizeTlsSettingsTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 400)
 
     def test_http_setup_does_not_require_hostname(self):
-        result = self.normalize(mode="http")
+        result = self.normalize(mode="http", acknowledge_http=True)
 
         self.assertEqual(result["mode"], "http")
         self.assertEqual(result["hostname"], "")
+        self.assertTrue(result["acknowledge_http"])
+
+    def test_http_setup_requires_acknowledgement(self):
+        with self.assertRaises(HTTPException) as raised:
+            self.normalize(mode="http", acknowledge_http=False)
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("not encrypted", raised.exception.detail)
 
     def test_runtime_import_keeps_server_specific_tls_values(self):
         imported = (
@@ -62,6 +70,7 @@ class NormalizeTlsSettingsTests(unittest.TestCase):
             "OCI_MIGRATOR_TLS_MODE": "letsencrypt",
             "OCI_MIGRATOR_TLS_HOSTNAME": "new.example.com",
             "OCI_MIGRATOR_ALLOWED_ORIGINS": "https://new.example.com",
+            "OCI_MIGRATOR_TLS_HTTP_ACKNOWLEDGED": "true",
         }
 
         with patch.object(main, "read_runtime_env", return_value=current):
@@ -70,6 +79,7 @@ class NormalizeTlsSettingsTests(unittest.TestCase):
         self.assertIn("OCI_MIGRATOR_API_TOKEN=imported", result)
         self.assertIn("OCI_MIGRATOR_TLS_MODE=letsencrypt", result)
         self.assertIn("OCI_MIGRATOR_TLS_HOSTNAME=new.example.com", result)
+        self.assertIn("OCI_MIGRATOR_TLS_HTTP_ACKNOWLEDGED=true", result)
         self.assertNotIn("old.example.com", result)
 
 

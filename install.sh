@@ -679,6 +679,7 @@ ensure_env_file() {
       printf 'OCI_MIGRATOR_TLS_HOSTNAME=\n'
       printf 'OCI_MIGRATOR_TLS_EMAIL=\n'
       printf 'OCI_MIGRATOR_TLS_CERT_SOURCE=\n'
+      printf 'OCI_MIGRATOR_TLS_HTTP_ACKNOWLEDGED=false\n'
       printf 'OCI_MIGRATOR_UPGRADE_HELPER=%s\n' "$UPGRADE_HELPER"
       printf 'OCI_MIGRATOR_UNINSTALL_HELPER=%s\n' "$UNINSTALL_HELPER"
       printf 'OCI_MIGRATOR_UPGRADE_STATUS_FILE=%s\n' "$UPGRADE_STATUS_FILE"
@@ -720,6 +721,7 @@ ensure_env_file() {
     grep -q '^OCI_MIGRATOR_TLS_HOSTNAME=' "$ENV_FILE" || printf 'OCI_MIGRATOR_TLS_HOSTNAME=\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_TLS_EMAIL=' "$ENV_FILE" || printf 'OCI_MIGRATOR_TLS_EMAIL=\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_TLS_CERT_SOURCE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_TLS_CERT_SOURCE=\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_TLS_HTTP_ACKNOWLEDGED=' "$ENV_FILE" || printf 'OCI_MIGRATOR_TLS_HTTP_ACKNOWLEDGED=false\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UPGRADE_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_HELPER=%s\n' "$UPGRADE_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UNINSTALL_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UNINSTALL_HELPER=%s\n' "$UNINSTALL_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UPGRADE_STATUS_FILE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_STATUS_FILE=%s\n' "$UPGRADE_STATUS_FILE" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null

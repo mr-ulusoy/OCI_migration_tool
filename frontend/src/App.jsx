@@ -449,7 +449,7 @@ export default function App() {
   const [networkSettingsForm, setNetworkSettingsForm] = useState({ mode: 'dhcp', interface: '', address: '', prefixLength: 24, gateway: '', dnsServers: '' });
   const [savingNetworkSettings, setSavingNetworkSettings] = useState(false);
   const [tlsSettings, setTlsSettings] = useState(null);
-  const [tlsSettingsForm, setTlsSettingsForm] = useState({ mode: 'http', hostname: '', email: '', certPath: '', keyPath: '' });
+  const [tlsSettingsForm, setTlsSettingsForm] = useState({ mode: 'http', hostname: '', email: '', certPath: '', keyPath: '', acknowledgeHttp: false });
   const [savingTlsSettings, setSavingTlsSettings] = useState(false);
   const [networkNow, setNetworkNow] = useState(Date.now());
   const [rcloneDefaultSettings, setRcloneDefaultSettings] = useState({ bwlimit: '', tpslimit: null });
@@ -764,7 +764,8 @@ export default function App() {
           hostname: res.data.hostname || '',
           email: res.data.email || '',
           certPath: res.data.mode === 'custom' ? (res.data.certificate_source || current.certPath || '') : '',
-          keyPath: current.keyPath || ''
+          keyPath: current.keyPath || '',
+          acknowledgeHttp: Boolean(res.data.http_acknowledged)
         }));
       }
       return res.data;
@@ -1295,12 +1296,13 @@ export default function App() {
         hostname: tlsSettingsForm.hostname.trim(),
         email: tlsSettingsForm.email.trim(),
         cert_path: tlsSettingsForm.certPath.trim(),
-        key_path: tlsSettingsForm.keyPath.trim()
+        key_path: tlsSettingsForm.keyPath.trim(),
+        acknowledge_http: tlsSettingsForm.mode === 'http' && tlsSettingsForm.acknowledgeHttp
       });
       setTlsSettings(res.data);
-      setTlsSettingsForm(current => ({ ...current, keyPath: '' }));
+      setTlsSettingsForm(current => ({ ...current, keyPath: '', acknowledgeHttp: Boolean(res.data.http_acknowledged) }));
       await fetchHealth();
-      showSuccess(res.data.mode === 'http' ? 'HTTP setup mode enabled.' : `HTTPS configured for ${res.data.hostname}.`);
+      showSuccess(res.data.mode === 'http' ? 'HTTP risk acknowledged.' : `HTTPS configured for ${res.data.hostname}.`);
     } catch (err) {
       showError('Failed to configure HTTPS', err);
     }
@@ -1316,6 +1318,10 @@ export default function App() {
     }
     if (mode === 'custom' && (!tlsSettingsForm.certPath.trim() || !tlsSettingsForm.keyPath.trim())) {
       setNotice({ type: 'error', title: 'Certificate paths required', message: 'Enter absolute server paths for the full certificate chain and unencrypted private key.' });
+      return;
+    }
+    if (mode === 'http' && !tlsSettingsForm.acknowledgeHttp) {
+      setNotice({ type: 'error', title: 'Acknowledgement required', message: 'Confirm that you understand HTTP traffic is not encrypted.' });
       return;
     }
     const descriptions = {
@@ -2919,7 +2925,7 @@ export default function App() {
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
                       <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase ${tlsSettings?.status === 'ok' ? 'border-green-200 bg-green-50 text-green-700' : tlsSettings?.status === 'error' ? 'border-red-200 bg-red-50 text-red-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
-                        {tlsSettings?.secure ? 'HTTPS active' : 'Setup HTTP'}
+                        {tlsSettings?.secure ? 'HTTPS active' : tlsSettings?.http_acknowledged ? 'HTTP acknowledged' : 'Setup HTTP'}
                       </span>
                       <button
                         type="button"
@@ -2940,11 +2946,11 @@ export default function App() {
                       )}
                       <button
                         type="submit"
-                        disabled={savingTlsSettings || tlsSettings?.helper_installed === false}
+                        disabled={savingTlsSettings || tlsSettings?.helper_installed === false || (tlsSettingsForm.mode === 'http' && !tlsSettingsForm.acknowledgeHttp)}
                         className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-[#9c3029] px-4 text-xs font-semibold text-white shadow-sm hover:bg-[#7a2520] disabled:opacity-60"
                       >
                         {savingTlsSettings ? <Loader2 className="animate-spin" size={14} /> : <Save size={14} />}
-                        Apply HTTPS
+                        {tlsSettingsForm.mode === 'http' ? 'Apply HTTP Setup' : 'Apply HTTPS'}
                       </button>
                     </div>
                   </div>
@@ -2959,7 +2965,13 @@ export default function App() {
                       <button
                         key={option.id}
                         type="button"
-                        onClick={() => setTlsSettingsForm({ ...tlsSettingsForm, mode: option.id })}
+                        onClick={() => setTlsSettingsForm({
+                          ...tlsSettingsForm,
+                          mode: option.id,
+                          acknowledgeHttp: option.id === 'http'
+                            ? Boolean(tlsSettings?.mode === 'http' && tlsSettings?.http_acknowledged)
+                            : false
+                        })}
                         className={`min-h-[64px] rounded-md border px-3 py-2 text-left transition-colors ${tlsSettingsForm.mode === option.id ? 'border-[#9c3029] bg-red-50 text-[#7a2520]' : 'border-gray-200 bg-gray-50 text-gray-600 hover:border-gray-300 hover:bg-white'}`}
                       >
                         <span className="block text-xs font-bold">{option.title}</span>
@@ -3021,11 +3033,21 @@ export default function App() {
                     </div>
                   )}
 
-                  <div className={`mt-4 rounded-md border px-3 py-2 text-[11px] ${tlsSettingsForm.mode === 'http' ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-gray-100 bg-gray-50 text-gray-600'}`}>
+                  <div className={`mt-4 rounded-md border px-3 py-2 text-[11px] ${tlsSettingsForm.mode === 'http' && !tlsSettingsForm.acknowledgeHttp ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-gray-100 bg-gray-50 text-gray-600'}`}>
                     {tlsSettingsForm.mode === 'letsencrypt' && 'The DNS A/AAAA record must resolve to this server. Inbound TCP 80 and 443 must also be allowed by the network firewall, Security List, or NSG. Caddy obtains and renews the certificate automatically.'}
                     {tlsSettingsForm.mode === 'custom' && 'Place the certificate files on the server first. OCI Migrator validates the hostname, expiration, and key match, then copies them into protected Caddy storage. Reapply after certificate renewal.'}
                     {tlsSettingsForm.mode === 'external' && 'Use this when a customer load balancer or reverse proxy owns the certificate. It must forward requests to this OCI Migrator API port and send X-Forwarded-Proto: https.'}
-                    {tlsSettingsForm.mode === 'http' && 'HTTP is not suitable for production because credentials and session tokens are not encrypted in transit.'}
+                    {tlsSettingsForm.mode === 'http' && (
+                      <label className="flex cursor-pointer items-start gap-2">
+                        <input
+                          type="checkbox"
+                          checked={tlsSettingsForm.acknowledgeHttp}
+                          onChange={event => setTlsSettingsForm({ ...tlsSettingsForm, acknowledgeHttp: event.target.checked })}
+                          className="mt-0.5 accent-[#9c3029]"
+                        />
+                        <span>I understand that HTTP is not suitable for production because credentials and session tokens are not encrypted in transit.</span>
+                      </label>
+                    )}
                   </div>
                   <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-gray-500">
                     <span><strong className="text-gray-700">Current:</strong> {tlsSettings?.message || 'Loading HTTPS status...'}</span>
