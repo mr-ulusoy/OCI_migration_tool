@@ -23,6 +23,52 @@ Self-hosted admin console for moving file and object data into Oracle Cloud Infr
 - OCI SDK VM and Object Storage operations
 - persistent job run history and runtime config export
 
+## Quick Install
+
+On an Ubuntu server:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mr-ulusoy/OCI_migration_tool/main/scripts/bootstrap.sh -o bootstrap.sh
+chmod +x bootstrap.sh
+./bootstrap.sh --prompt-admin-password
+```
+
+The installer automatically detects the server's first local IP address and prints the initial setup URL. Open the address shown when installation completes, normally:
+
+```text
+http://<detected-server-ip>:8000
+```
+
+`--public-host` is optional. Set it when the browser reaches the server through a DNS name, a public/NAT address that Ubuntu cannot detect, or a different interface on a multi-homed server. Use the exact host that the browser will open during initial setup:
+
+```bash
+./bootstrap.sh --public-host migrator.example.com --prompt-admin-password
+```
+
+Use the HTTP address only for initial setup. Sign in, open `Settings` -> `HTTPS & Certificates`, and configure Let's Encrypt, a corporate certificate, or external TLS termination before production use. The installer opens the local Ubuntu firewall for TCP `22` (SSH), `80`/`443` (HTTPS), `8000` (setup/app API), `445` (SMB), and `2049` (NFSv4) by default. Your OCI Security List, NSG, or on-premises firewall must allow only the traffic required by the selected deployment.
+
+The installer stores a hashed admin password in `~/.oci-migrator.env`. If you do not pass or prompt for a password, the installer generates one and prints it once.
+
+### Retrieve the admin login
+
+The default admin username is `admin`. To retrieve the generated password from the server, run the following command from your workstation (replace `<server-ip-or-dns>`):
+
+```bash
+ssh ubuntu@<server-ip-or-dns> 'cat ~/oci-migrator-admin-password.txt'
+```
+
+You can also set it non-interactively:
+
+```bash
+./bootstrap.sh --admin-password '<strong-password>'
+```
+
+The installer configures server time sync with `systemd-timesyncd`, `Europe/Stockholm`, and the Swedish NTP pool by default. Override it when needed:
+
+```bash
+./bootstrap.sh --timezone Europe/Stockholm --ntp-servers "0.se.pool.ntp.org 1.se.pool.ntp.org"
+```
+
 ## Web Console
 
 - `Job Dashboard` shows service health, software update status, backup totals, running jobs, jobs requiring attention, and the latest successful run.
@@ -80,46 +126,6 @@ Managed TLS uses an isolated service named `migrator-tls.service` with the defau
 - Created data volumes are left in `AVAILABLE` state in the target tenancy. Create the target VM from the imported boot image, attach the volumes, and validate Linux mounts or Windows drive assignments separately.
 
 The destination Object Storage bucket is used by the boot-image workflow. Selected data volumes remain OCI Block Volume resources and are not converted into ordinary objects. Cross-tenancy IAM policies must be configured before execution. See [VM Image Migration](docs/OPERATIONS.md#vm-image-migration) for preparation, method selection, and post-migration steps.
-
-## Quick Install
-
-On an Ubuntu server:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/mr-ulusoy/OCI_migration_tool/main/scripts/bootstrap.sh -o bootstrap.sh
-chmod +x bootstrap.sh
-./bootstrap.sh --public-host <server-ip-or-dns> --prompt-admin-password
-```
-
-Open:
-
-```text
-http://<server-ip-or-dns>:8000
-```
-
-Use this HTTP address only for initial setup. Sign in, open `Settings` -> `HTTPS & Certificates`, and configure Let's Encrypt, a corporate certificate, or external TLS termination before production use. The installer opens the local Ubuntu firewall for TCP `22` (SSH), `80`/`443` (HTTPS), `8000` (setup/app API), `445` (SMB), and `2049` (NFSv4) by default. Your OCI Security List, NSG, or on-premises firewall must allow only the traffic required by the selected deployment.
-
-The installer stores a hashed admin password in `~/.oci-migrator.env`. If you do not pass or prompt for a password, the installer generates one and prints it once.
-
-### Retrieve the admin login
-
-The default admin username is `admin`. To retrieve the generated password from the server, run the following command from your workstation (replace `<server-ip-or-dns>`):
-
-```bash
-ssh ubuntu@<server-ip-or-dns> 'cat ~/oci-migrator-admin-password.txt'
-```
-
-You can also set it non-interactively:
-
-```bash
-./bootstrap.sh --public-host <server-ip-or-dns> --admin-password '<strong-password>'
-```
-
-The installer configures server time sync with `systemd-timesyncd`, `Europe/Stockholm`, and the Swedish NTP pool by default. Override it when needed:
-
-```bash
-./bootstrap.sh --public-host <server-ip-or-dns> --timezone Europe/Stockholm --ntp-servers "0.se.pool.ntp.org 1.se.pool.ntp.org"
-```
 
 ## Common Commands
 

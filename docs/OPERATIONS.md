@@ -9,13 +9,19 @@ On an Ubuntu server:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mr-ulusoy/OCI_migration_tool/main/scripts/bootstrap.sh -o bootstrap.sh
 chmod +x bootstrap.sh
-./bootstrap.sh --public-host <server-ip-or-dns> --prompt-admin-password
+./bootstrap.sh --prompt-admin-password
 ```
 
-Open the initial setup address:
+The installer automatically detects the server's first local IP address and prints the initial setup URL. Open the address shown when installation completes, normally:
 
 ```text
-http://<server-ip-or-dns>:8000
+http://<detected-server-ip>:8000
+```
+
+`--public-host` is optional. Set it when the browser uses a DNS name, a public/NAT address that Ubuntu cannot detect, or a different interface on a multi-homed server:
+
+```bash
+./bootstrap.sh --public-host migrator.example.com --prompt-admin-password
 ```
 
 Use HTTP only for initial setup. Configure a production HTTPS mode under `Settings` -> `HTTPS & Certificates`. See the [Installation Guide](INSTALL.md) for firewall, DNS, certificate, and advanced installation options.
