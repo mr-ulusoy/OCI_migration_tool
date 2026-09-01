@@ -29,7 +29,7 @@ Self-hosted admin console for moving file and object data into Oracle Cloud Infr
 - `New Backup Job` creates scheduled or manual copy/sync pipelines.
 - `Credentials` manages OCI, cloud, S3-compatible, local folder, SMB, and NFS sources.
 - `OCI Object Storage` explores buckets and objects and manages supported bucket settings and lifecycle rules.
-- `VM Image Migration` scans OCI compute instances and starts boot-volume image migration workflows.
+- `VM Image Migration` scans OCI compute instances and migrates the boot image plus selected attached data volumes between OCI tenancies.
 - `Settings` contains system upgrade, remote syslog notifications, runtime config backup/import, time and NTP, network, job defaults, local disk warnings, log rotation, admin password controls, and a protected uninstall workflow.
 
 ## Main Use Cases
@@ -39,7 +39,7 @@ Self-hosted admin console for moving file and object data into Oracle Cloud Infr
 - Create scheduled backup jobs with copy/sync mode, bandwidth and API TPS limits, OCI object metadata, local cleanup after successful jobs, persistent run history, and downloadable job logs.
 - Manage OCI Object Storage buckets, folders, object versioning state, auto-tiering state, and bucket lifecycle policy rules.
 - Export and import runtime configuration backups for easier rebuilds, upgrades, and repeated installations.
-- Migrate OCI VM images from one OCI tenant/profile to another tenant/profile. VM image migration is separate from file backup jobs and can stop selected source VMs before creating and moving images.
+- Migrate OCI VM boot images and selected attached data volumes from one OCI tenant/profile to another. Data volumes support OCI cross-tenancy clone or backup/restore in the same region.
 
 ## Supported Data Paths
 
@@ -52,7 +52,7 @@ Self-hosted admin console for moving file and object data into Oracle Cloud Infr
 | S3-compatible object storage | OCI Object Storage bucket |
 | Server local folder, SMB/NFS ingest folder, or mounted on-premises share | OCI Object Storage bucket |
 
-For VM image migration, the source is an OCI tenant/profile with compute instances and the destination is another OCI tenant/profile with an Object Storage bucket for the exported image workflow. The current workflow migrates the boot volume image only. Attached data volumes are discovered and shown but must be migrated separately.
+For VM image migration, the source is an OCI tenant/profile with compute instances and the destination is another OCI tenant/profile with an Object Storage bucket for the exported boot image. The scan shows attached data volumes and lets the operator choose which disks to migrate using OCI cross-tenancy clone or backup/restore. Created target data volumes are left available and ready to attach; OCI Migrator does not yet provision or attach them to a target VM.
 
 ## Quick Install
 

@@ -523,6 +523,7 @@ export default function App() {
 
   const [vms, setVms] = useState([]);
   const [selectedVms, setSelectedVms] = useState([]);
+  const [selectedDataVolumes, setSelectedDataVolumes] = useState({});
   const [loading, setLoading] = useState(false);
   const [view, setView] = useState('datasync');
   const [searchTerm, setSearchTerm] = useState('');
@@ -545,6 +546,7 @@ export default function App() {
   const [jobs, setJobs] = useState([]);
   const [sourceBuckets, setSourceBuckets] = useState([]);
   const [destBuckets, setDestBuckets] = useState([]);
+  const [destAvailabilityDomains, setDestAvailabilityDomains] = useState([]);
   const [bucketProtection, setBucketProtection] = useState(null);
   const [bucketProtectionLoading, setBucketProtectionLoading] = useState(false);
 
@@ -576,7 +578,10 @@ export default function App() {
 
   // VM Migration Panel State
   const [vmMigrationConfig, setVmMigrationConfig] = useState({
-    destProfile: '', destBucket: ''
+    destProfile: '',
+    destBucket: '',
+    dataVolumeMethod: 'clone',
+    destinationAvailabilityDomain: ''
   });
   
   const [vmTasks, setVmTasks] = useState({});
@@ -1555,12 +1560,14 @@ export default function App() {
       setActiveSourceProfile('');
       setVms([]);
       setSelectedVms([]);
+      setSelectedDataVolumes({});
       setView('explorer');
       return;
     }
 
     setLoading(true);
     setSelectedVms([]);
+    setSelectedDataVolumes({});
     try {
       const res = await api.get(`/list-vms/${encodeURIComponent(profile)}`);
       setVms(res.data);
@@ -2108,6 +2115,39 @@ export default function App() {
     ].filter(Boolean).join(' ').toLowerCase();
     return searchText.includes(query);
   });
+
+  const toggleVmMigrationSelection = (vm) => {
+    const isSelected = selectedVms.includes(vm.id);
+    setSelectedVms(prev => isSelected ? prev.filter(id => id !== vm.id) : [...prev, vm.id]);
+    setSelectedDataVolumes(prev => {
+      const next = { ...prev };
+      if (isSelected) {
+        delete next[vm.id];
+      } else {
+        next[vm.id] = (vm.data_volumes || []).map(volume => volume.id).filter(Boolean);
+      }
+      return next;
+    });
+  };
+
+  const toggleVmDataVolume = (event, vm, volumeId) => {
+    event.stopPropagation();
+    if (!selectedVms.includes(vm.id)) {
+      setSelectedVms(prev => [...prev, vm.id]);
+    }
+    setSelectedDataVolumes(prev => {
+      const current = prev[vm.id] || [];
+      const nextVolumeIds = current.includes(volumeId)
+        ? current.filter(id => id !== volumeId)
+        : [...current, volumeId];
+      return { ...prev, [vm.id]: nextVolumeIds };
+    });
+  };
+
+  const selectedDataVolumeCount = selectedVms.reduce(
+    (total, vmId) => total + (selectedDataVolumes[vmId]?.length || 0),
+    0
+  );
 
   const getStatusColor = (status) => {
     if (status === 'SUCCESS') return 'text-green-500';
@@ -4190,23 +4230,34 @@ export default function App() {
 	                    <div className="mb-4 flex items-start gap-2 rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800">
 	                      <AlertCircle size={15} className="mt-0.5 shrink-0" />
 	                      <div>
-	                        <div>This action will shut down the selected server(s) and create a backup in the selected storage bucket.</div>
-	                        <div className="mt-1 font-semibold">Boot volume image only. Attached data volumes are not included and must be migrated separately.</div>
+	                        <div>This action stops each running source VM while consistent boot and data-volume copies are requested. A source VM that was already stopped remains stopped.</div>
+	                        <div className="mt-1 font-semibold">The boot volume is exported as an OCI image. Selected data volumes are created in the target tenancy and are ready to attach after migration.</div>
 	                      </div>
 	                    </div>
-	                    <div className="grid grid-cols-1 xl:grid-cols-[minmax(220px,1fr)_minmax(220px,1fr)_220px] gap-4 items-end">
+	                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 items-end">
 	                      <div>
 	                        <div className="flex items-center justify-between mb-1">
 	                          <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Dest Profile</label>
-	                          <span className="text-[10px] font-bold text-[#9c3029] uppercase">{selectedVms.length} selected</span>
 	                        </div>
 	                        <select value={vmMigrationConfig.destProfile} onChange={e => {
 	                          const profile = e.target.value;
-	                          setVmMigrationConfig({...vmMigrationConfig, destProfile: profile, destBucket: ''});
+	                          setVmMigrationConfig(prev => ({
+	                            ...prev,
+	                            destProfile: profile,
+	                            destBucket: '',
+	                            destinationAvailabilityDomain: ''
+	                          }));
 	                          if (profile) {
-	                            api.get(`/list-buckets/${profile}`).then(res => setDestBuckets(res.data));
+	                            Promise.all([
+	                              api.get(`/list-buckets/${encodeURIComponent(profile)}`),
+	                              api.get(`/list-availability-domains/${encodeURIComponent(profile)}`)
+	                            ]).then(([bucketResponse, domainResponse]) => {
+	                              setDestBuckets(bucketResponse.data);
+	                              setDestAvailabilityDomains(domainResponse.data);
+	                            }).catch(err => showError('Failed to load migration target', err));
 	                          } else {
 	                            setDestBuckets([]);
+	                            setDestAvailabilityDomains([]);
 	                          }
 	                        }} className="w-full bg-white border border-gray-200 p-2.5 rounded-md text-sm focus:outline-none focus:border-[#9c3029]">
 	                          <option value="">Select Target...</option>
@@ -4220,21 +4271,69 @@ export default function App() {
 	                          {destBuckets.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
 	                        </select>
 	                      </div>
+	                      <div>
+	                        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Data Volume Method</label>
+	                        <select
+	                          value={vmMigrationConfig.dataVolumeMethod}
+	                          onChange={e => setVmMigrationConfig(prev => ({
+	                            ...prev,
+	                            dataVolumeMethod: e.target.value,
+	                            destinationAvailabilityDomain: e.target.value === 'restore' ? prev.destinationAvailabilityDomain : ''
+	                          }))}
+	                          disabled={!selectedDataVolumeCount}
+	                          className="w-full bg-white border border-gray-200 p-2.5 rounded-md text-sm focus:outline-none focus:border-[#9c3029] disabled:bg-gray-50 disabled:text-gray-400"
+	                        >
+	                          <option value="clone">Cross-tenancy Clone</option>
+	                          <option value="restore">Backup and Restore</option>
+	                        </select>
+	                      </div>
+	                      <div>
+	                        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Target Availability Domain</label>
+	                        <select
+	                          value={vmMigrationConfig.destinationAvailabilityDomain}
+	                          onChange={e => setVmMigrationConfig(prev => ({ ...prev, destinationAvailabilityDomain: e.target.value }))}
+	                          disabled={!selectedDataVolumeCount || vmMigrationConfig.dataVolumeMethod !== 'restore' || !vmMigrationConfig.destProfile}
+	                          className="w-full bg-white border border-gray-200 p-2.5 rounded-md text-sm focus:outline-none focus:border-[#9c3029] disabled:bg-gray-50 disabled:text-gray-400"
+	                        >
+	                          <option value="">{vmMigrationConfig.dataVolumeMethod === 'restore' ? 'Select AD...' : 'Inferred by OCI for clone'}</option>
+	                          {destAvailabilityDomains.map(domain => <option key={domain.name} value={domain.name}>{domain.name}</option>)}
+	                        </select>
+	                      </div>
+	                    </div>
+	                    <div className="mt-4 flex flex-col gap-3 border-t border-gray-100 pt-4 lg:flex-row lg:items-center lg:justify-between">
+	                      <div className="text-xs text-gray-500">
+	                        <span className="font-bold text-[#9c3029]">{selectedVms.length} VM(s)</span>
+	                        <span className="mx-2 text-gray-300">|</span>
+	                        <span className="font-semibold">{selectedDataVolumeCount} data volume(s)</span>
+	                        {selectedDataVolumeCount > 0 && <span className="block mt-1">Cross-tenancy Admit and Endorse IAM policies must already be configured.</span>}
+	                      </div>
 	                      <button onClick={async () => {
 	                        if (!vmMigrationConfig.destProfile || !vmMigrationConfig.destBucket) {
 	                          setNotice({ type: 'error', title: 'Missing migration target', message: 'Select destination profile and bucket.' });
 	                          return;
 	                        }
+	                        if (selectedDataVolumeCount > 0 && vmMigrationConfig.dataVolumeMethod === 'restore' && !vmMigrationConfig.destinationAvailabilityDomain) {
+	                          setNotice({ type: 'error', title: 'Missing availability domain', message: 'Select a target availability domain for data volume restore.' });
+	                          return;
+	                        }
 	                        try {
 	                          const res = await api.post(`/start-bulk-migration`, {
-	                            vm_ids: selectedVms, source_profile: activeSourceProfile, dest_profile: vmMigrationConfig.destProfile, bucket_name: vmMigrationConfig.destBucket
+	                            vm_ids: selectedVms,
+	                            source_profile: activeSourceProfile,
+	                            dest_profile: vmMigrationConfig.destProfile,
+	                            bucket_name: vmMigrationConfig.destBucket,
+	                            data_volume_ids: Object.fromEntries(selectedVms.map(vmId => [vmId, selectedDataVolumes[vmId] || []])),
+	                            data_volume_method: vmMigrationConfig.dataVolumeMethod,
+	                            destination_availability_domain: vmMigrationConfig.destinationAvailabilityDomain
 	                          });
 	                          const newTasks = {}; res.data.tasks.forEach(t => { newTasks[t.task_id] = { vm_id: t.vm_id, status: 'PENDING', details: 'Starting...' }; });
-	                          setVmTasks(prev => ({ ...prev, ...newTasks })); setSelectedVms([]);
+	                          setVmTasks(prev => ({ ...prev, ...newTasks }));
+	                          setSelectedVms([]);
+	                          setSelectedDataVolumes({});
 	                          fetchJobRuns();
 	                          showSuccess('VM migration queued.');
 	                        } catch (err) { showError('Failed to start VM migration', err); }
-	                      }} className="w-full bg-[#9c3029] text-white px-4 py-2.5 rounded-md font-semibold text-sm flex items-center justify-center gap-2 hover:bg-[#a63d2e] transition-colors shadow-sm">
+	                      }} className="w-full lg:w-auto bg-[#9c3029] text-white px-5 py-2.5 rounded-md font-semibold text-sm flex items-center justify-center gap-2 hover:bg-[#a63d2e] transition-colors shadow-sm">
 	                        Execute Migration <ArrowRight size={16} />
 	                      </button>
 	                    </div>
@@ -4257,6 +4356,7 @@ export default function App() {
                           const isMigrating = !!taskData && taskData.status !== 'SUCCESS' && taskData.status !== 'FAILURE';
                           const isSelected = selectedVms.includes(vm.id);
                           const dataVolumes = Array.isArray(vm.data_volumes) ? vm.data_volumes : [];
+                          const selectedVolumeIds = selectedDataVolumes[vm.id] || [];
                           const stateClass = vm.state === 'RUNNING'
                             ? 'bg-green-50 text-green-700 border-green-200'
                             : vm.state === 'STOPPED'
@@ -4265,7 +4365,7 @@ export default function App() {
                           return (
                             <div
                               key={vm.id}
-                              onClick={() => { if (!isMigrating) setSelectedVms(prev => prev.includes(vm.id) ? prev.filter(i => i !== vm.id) : [...prev, vm.id]); }}
+                              onClick={() => { if (!isMigrating) toggleVmMigrationSelection(vm); }}
                               className={`grid grid-cols-1 xl:grid-cols-[minmax(360px,1.7fr)_minmax(330px,1.35fr)_minmax(110px,0.55fr)_minmax(180px,0.8fr)] gap-3 xl:gap-4 items-start p-4 transition-colors ${isSelected ? 'bg-red-50' : 'bg-white hover:bg-gray-50'} ${isMigrating ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'}`}
                             >
                               <div className="flex items-start gap-3 min-w-0">
@@ -4284,11 +4384,44 @@ export default function App() {
                                         ? `${vm.boot_volume.name}${vm.boot_volume.size_gb ? ` (${vm.boot_volume.size_gb} GB)` : ''}`
                                         : vm.volume_scan_status === 'partial' ? 'Details unavailable' : 'Not found'}
                                     </div>
-                                    <div className="break-words" title={dataVolumes.map(volume => volume.id).filter(Boolean).join('\n')}>
-                                      <span className="font-bold uppercase text-gray-400">Data:</span>{' '}
-                                      {dataVolumes.length
-                                        ? dataVolumes.map(volume => `${volume.name}${volume.size_gb ? ` (${volume.size_gb} GB)` : ''}`).join(', ')
-                                        : vm.volume_scan_status === 'partial' ? 'Details unavailable' : 'None attached'}
+                                    <div>
+                                      <span className="font-bold uppercase text-gray-400">Data volumes:</span>
+                                      {dataVolumes.length ? (
+                                        <div className="mt-1.5 space-y-1.5">
+                                          {dataVolumes.map(volume => (
+                                            <label
+                                              key={volume.id}
+                                              onClick={event => event.stopPropagation()}
+                                              className={`flex items-start gap-2 rounded border px-2 py-1.5 ${selectedVolumeIds.includes(volume.id) ? 'border-red-200 bg-white' : 'border-gray-100 bg-gray-50'}`}
+                                              title={volume.id}
+                                            >
+                                              <input
+                                                type="checkbox"
+                                                checked={selectedVolumeIds.includes(volume.id)}
+                                                disabled={isMigrating}
+                                                onChange={event => toggleVmDataVolume(event, vm, volume.id)}
+                                                className="mt-0.5 accent-[#9c3029]"
+                                              />
+                                              <span className="min-w-0">
+                                                <span className="block break-words font-semibold text-gray-700">{volume.name}</span>
+                                                <span className="block break-words text-[9px] text-gray-400">
+                                                  {[
+                                                    volume.size_gb ? `${volume.size_gb} GB` : '',
+                                                    volume.device || '',
+                                                    volume.attachment_type || '',
+                                                    volume.availability_domain || '',
+                                                    volume.is_read_only ? 'read-only' : ''
+                                                  ].filter(Boolean).join(' | ') || 'Attached volume'}
+                                                </span>
+                                              </span>
+                                            </label>
+                                          ))}
+                                        </div>
+                                      ) : (
+                                        <span className="ml-1">
+                                          {vm.volume_scan_status === 'partial' ? 'Details unavailable' : 'None attached'}
+                                        </span>
+                                      )}
                                     </div>
                                   </div>
                                   {taskData && (

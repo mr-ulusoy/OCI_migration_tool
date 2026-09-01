@@ -567,6 +567,53 @@ class BulkMigrationJob(BaseModel):
     source_profile: str
     dest_profile: str
     bucket_name: str
+    data_volume_ids: dict[str, List[str]] = Field(default_factory=dict)
+    data_volume_method: str = "clone"
+    destination_availability_domain: str = ""
+
+    @field_validator("vm_ids")
+    @classmethod
+    def validate_vm_ids(cls, value):
+        normalized = list(dict.fromkeys(str(item or "").strip() for item in value if str(item or "").strip()))
+        if not normalized:
+            raise ValueError("Select at least one VM.")
+        if len(normalized) > 50:
+            raise ValueError("No more than 50 VMs can be migrated in one request.")
+        return normalized
+
+    @field_validator("data_volume_ids", mode="before")
+    @classmethod
+    def validate_data_volume_ids(cls, value):
+        if value in (None, ""):
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("Data volume selections must be grouped by VM OCID.")
+
+        normalized = {}
+        for raw_vm_id, raw_volume_ids in value.items():
+            vm_id = str(raw_vm_id or "").strip()
+            if not vm_id or not isinstance(raw_volume_ids, list):
+                raise ValueError("Each data volume selection must contain a VM OCID and a list of volume OCIDs.")
+            volume_ids = list(
+                dict.fromkeys(str(item or "").strip() for item in raw_volume_ids if str(item or "").strip())
+            )
+            if len(volume_ids) > 32:
+                raise ValueError("No more than 32 data volumes can be selected per VM.")
+            normalized[vm_id] = volume_ids
+        return normalized
+
+    @field_validator("data_volume_method")
+    @classmethod
+    def validate_data_volume_method(cls, value):
+        method = str(value or "clone").strip().lower()
+        if method not in {"clone", "restore"}:
+            raise ValueError("Data volume method must be clone or restore.")
+        return method
+
+    @field_validator("source_profile", "dest_profile", "bucket_name", "destination_availability_domain")
+    @classmethod
+    def strip_migration_text(cls, value):
+        return str(value or "").strip()
 
 
 class JobLogSettingsRequest(BaseModel):
@@ -4174,6 +4221,8 @@ async def list_vms(profile: str):
                     instance_id=instance.id,
                 ).data
                 for attachment in volume_attachments:
+                    if str(getattr(attachment, "lifecycle_state", "")).upper() == "DETACHED":
+                        continue
                     volume_id = getattr(attachment, "volume_id", "")
                     volume = data_volume_cache.get(volume_id)
                     if volume_id and volume is None:
@@ -4185,9 +4234,13 @@ async def list_vms(profile: str):
                             "name": getattr(volume, "display_name", "") or getattr(attachment, "display_name", "") or "Data volume",
                             "size_gb": getattr(volume, "size_in_gbs", None),
                             "state": getattr(volume, "lifecycle_state", "") or getattr(attachment, "lifecycle_state", ""),
+                            "availability_domain": getattr(volume, "availability_domain", ""),
+                            "vpus_per_gb": getattr(volume, "vpus_per_gb", None),
+                            "attachment_id": getattr(attachment, "id", ""),
                             "attachment_type": getattr(attachment, "attachment_type", ""),
                             "device": getattr(attachment, "device", ""),
                             "is_read_only": bool(getattr(attachment, "is_read_only", False)),
+                            "is_shareable": bool(getattr(attachment, "is_shareable", False)),
                         }
                     )
             except Exception as exc:
@@ -4228,6 +4281,25 @@ async def list_buckets(profile: str):
         return [{"name": b.name} for b in buckets]
     except Exception as e:
         raise_operation_error(500, "List buckets", e, "Check storage compartment access for this OCI profile.")
+
+
+@app.get("/list-availability-domains/{profile}")
+async def list_availability_domains(profile: str):
+    try:
+        config = oci.config.from_file(CONFIG_PATH, profile)
+        identity = oci.identity.IdentityClient(config)
+        tenancy_id = config.get("tenancy")
+        if not tenancy_id:
+            raise ValueError("The OCI profile does not contain a tenancy OCID.")
+        domains = identity.list_availability_domains(compartment_id=tenancy_id).data
+        return [{"name": domain.name} for domain in domains if getattr(domain, "name", "")]
+    except Exception as e:
+        raise_operation_error(
+            500,
+            "List availability domains",
+            e,
+            "Check the target profile region, tenancy OCID, and IAM access.",
+        )
 
 
 @app.get("/bucket-protection")
@@ -4476,14 +4548,90 @@ async def delete_object(profile_name: str, bucket_name: str, object_name: str):
         raise_operation_error(500, "Delete object", e, "Check object path and delete permission.")
 
 # --- 6. VM Migration Tasks & Progress ---
+def validate_vm_migration_request(job: BulkMigrationJob) -> tuple[dict, dict, dict[str, list[str]]]:
+    if not job.source_profile or not job.dest_profile:
+        raise HTTPException(status_code=400, detail="Source and destination OCI profiles are required.")
+    if not job.bucket_name:
+        raise HTTPException(status_code=400, detail="Destination Object Storage bucket is required.")
+
+    try:
+        source_config = oci.config.from_file(CONFIG_PATH, job.source_profile)
+        destination_config = oci.config.from_file(CONFIG_PATH, job.dest_profile)
+    except Exception as exc:
+        raise_operation_error(
+            400,
+            "Validate VM migration profiles",
+            exc,
+            "Open Credentials and verify both OCI profiles before starting the migration.",
+        )
+
+    selections = {vm_id: list(job.data_volume_ids.get(vm_id, [])) for vm_id in job.vm_ids}
+    unexpected_vm_ids = sorted(set(job.data_volume_ids) - set(job.vm_ids))
+    if unexpected_vm_ids:
+        raise HTTPException(status_code=400, detail="Data volumes were supplied for a VM that is not selected.")
+
+    selected_volume_count = sum(len(volume_ids) for volume_ids in selections.values())
+    if selected_volume_count:
+        source_region = str(source_config.get("region") or "").strip()
+        destination_region = str(destination_config.get("region") or "").strip()
+        if not source_region or source_region != destination_region:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Cross-tenancy data volume clone/restore currently requires source and destination profiles "
+                    "in the same OCI region."
+                ),
+            )
+
+        if job.data_volume_method == "restore":
+            if not job.destination_availability_domain:
+                raise HTTPException(status_code=400, detail="Select a destination availability domain for restore.")
+            identity = oci.identity.IdentityClient(destination_config)
+            domains = identity.list_availability_domains(
+                compartment_id=destination_config.get("tenancy")
+            ).data
+            domain_names = {str(getattr(domain, "name", "")) for domain in domains}
+            if job.destination_availability_domain not in domain_names:
+                raise HTTPException(status_code=400, detail="The selected destination availability domain is invalid.")
+
+        compute = oci.core.ComputeClient(source_config)
+        source_compartment = source_config.get("compartment", source_config.get("tenancy"))
+        for vm_id, requested_volume_ids in selections.items():
+            if not requested_volume_ids:
+                continue
+            instance = compute.get_instance(vm_id).data
+            instance_compartment = getattr(instance, "compartment_id", source_compartment) or source_compartment
+            attachments = oci.pagination.list_call_get_all_results(
+                compute.list_volume_attachments,
+                compartment_id=instance_compartment,
+                instance_id=vm_id,
+            ).data
+            attached_volume_ids = {
+                str(getattr(attachment, "volume_id", ""))
+                for attachment in attachments
+                if str(getattr(attachment, "lifecycle_state", "")).upper() != "DETACHED"
+                and getattr(attachment, "volume_id", "")
+            }
+            invalid_volume_ids = sorted(set(requested_volume_ids) - attached_volume_ids)
+            if invalid_volume_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"One or more selected data volumes are no longer attached to VM {vm_id}.",
+                )
+
+    validate_destination_bucket(job.dest_profile, job.bucket_name)
+    return source_config, destination_config, selections
+
+
 @app.post("/start-bulk-migration")
 async def start_bulk_migration(job: BulkMigrationJob):
     tasks = []
     try:
-        config = oci.config.from_file(CONFIG_PATH, job.dest_profile)
-        dest_comp = config.get("compartment", config.get("tenancy"))
+        _, destination_config, selections = validate_vm_migration_request(job)
+        dest_comp = destination_config.get("compartment", destination_config.get("tenancy"))
 
         for vm_id in job.vm_ids:
+            selected_data_volumes = selections.get(vm_id, [])
             run_id = str(uuid.uuid4())
             upsert_job_run(
                 {
@@ -4496,12 +4644,27 @@ async def start_bulk_migration(job: BulkMigrationJob):
                     "dest_profile": job.dest_profile,
                     "dest_bucket": job.bucket_name,
                     "vm_id": vm_id,
+                    "data_volume_ids": selected_data_volumes,
+                    "data_volume_count": len(selected_data_volumes),
+                    "data_volume_method": job.data_volume_method if selected_data_volumes else "none",
+                    "destination_availability_domain": (
+                        job.destination_availability_domain if selected_data_volumes else ""
+                    ),
                     "details": "Queued for worker.",
                 }
             )
             try:
                 task = migrate_single_vm.apply_async(
-                    args=[job.source_profile, job.dest_profile, vm_id, dest_comp, job.bucket_name],
+                    args=[
+                        job.source_profile,
+                        job.dest_profile,
+                        vm_id,
+                        dest_comp,
+                        job.bucket_name,
+                        selected_data_volumes,
+                        job.data_volume_method,
+                        job.destination_availability_domain,
+                    ],
                     task_id=run_id,
                 )
             except Exception as e:

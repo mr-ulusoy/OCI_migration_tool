@@ -1,4 +1,5 @@
 import json
+import hashlib
 import logging
 import os
 import re
@@ -10,7 +11,7 @@ from celery import Celery
 from celery.signals import worker_ready
 import oci
 from job_logs import ensure_job_log_dir, job_log_path, summarize_rclone_json_log, tail_file
-from job_store import list_job_runs, update_job_run
+from job_store import get_job_run, list_job_runs, update_job_run
 
 logging.basicConfig(level=os.getenv("OCI_MIGRATOR_LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
@@ -60,39 +61,222 @@ def recover_interrupted_runs_on_worker_start(**_kwargs):
         logger.warning("Marked %s interrupted backup run(s) as failed after worker start.", recovered)
 
 # --- HELPERS ---
+def get_config(profile):
+    return oci.config.from_file(os.path.expanduser("~/.oci/config"), profile)
+
+
 def get_client(ctype, profile):
-    cfg = oci.config.from_file(os.path.expanduser("~/.oci/config"), profile)
+    cfg = get_config(profile)
     return getattr(oci.core, f"{ctype}Client")(cfg) if hasattr(oci.core, f"{ctype}Client") else getattr(oci.object_storage, f"{ctype}Client")(cfg)
+
+
+def migration_retry_token(run_id, operation, resource_id=""):
+    value = f"{run_id}:{operation}:{resource_id}".encode("utf-8")
+    return hashlib.sha256(value).hexdigest()
+
+
+def migration_resource_name(prefix, instance_name, volume_name, run_id):
+    raw_name = f"{prefix}-{instance_name}-{volume_name}-{run_id[:8]}"
+    return raw_name[:255]
+
+
+def begin_data_volume_migrations(
+    run_id,
+    source_block,
+    destination_block,
+    destination_compartment,
+    instance_name,
+    volume_ids,
+    method,
+):
+    pending = []
+    for volume_id in volume_ids:
+        source_volume = source_block.get_volume(volume_id).data
+        volume_name = getattr(source_volume, "display_name", "") or volume_id.rsplit(".", 1)[-1]
+        target_name = migration_resource_name("MIGR", instance_name, volume_name, run_id)
+        item = {
+            "source_volume_id": volume_id,
+            "source_volume_name": volume_name,
+            "size_gb": getattr(source_volume, "size_in_gbs", None),
+            "method": method,
+            "target_volume_id": "",
+            "backup_id": "",
+            "status": "capturing",
+        }
+
+        if method == "clone":
+            response = destination_block.create_volume(
+                oci.core.models.CreateVolumeDetails(
+                    compartment_id=destination_compartment,
+                    display_name=target_name,
+                    source_details=oci.core.models.VolumeSourceFromVolumeDetails(id=volume_id),
+                ),
+                opc_retry_token=migration_retry_token(run_id, "clone-volume", volume_id),
+            )
+            item["target_volume_id"] = response.data.id
+        else:
+            response = source_block.create_volume_backup(
+                oci.core.models.CreateVolumeBackupDetails(
+                    volume_id=volume_id,
+                    display_name=migration_resource_name("MIGR-BACKUP", instance_name, volume_name, run_id),
+                    type="FULL",
+                ),
+                opc_retry_token=migration_retry_token(run_id, "backup-volume", volume_id),
+            )
+            item["backup_id"] = response.data.id
+
+        pending.append(item)
+    return pending
+
+
+def complete_data_volume_migrations(
+    run_id,
+    source_block,
+    destination_block,
+    destination_compartment,
+    destination_availability_domain,
+    instance_name,
+    pending,
+    progress_callback=None,
+):
+    completed = []
+    total = len(pending)
+    for index, item in enumerate(pending, start=1):
+        volume_name = item["source_volume_name"]
+        if progress_callback:
+            progress_callback(f"Migrating data volume {index}/{total}: {volume_name}...")
+
+        if item["method"] == "restore":
+            backup_id = item["backup_id"]
+            oci.wait_until(
+                source_block,
+                source_block.get_volume_backup(backup_id),
+                "lifecycle_state",
+                "AVAILABLE",
+                max_wait_seconds=21600,
+            )
+            target_name = migration_resource_name("MIGR", instance_name, volume_name, run_id)
+            response = destination_block.create_volume(
+                oci.core.models.CreateVolumeDetails(
+                    availability_domain=destination_availability_domain,
+                    compartment_id=destination_compartment,
+                    display_name=target_name,
+                    source_details=oci.core.models.VolumeSourceFromVolumeBackupDetails(id=backup_id),
+                ),
+                opc_retry_token=migration_retry_token(run_id, "restore-volume", item["source_volume_id"]),
+            )
+            item["target_volume_id"] = response.data.id
+
+        target_volume_id = item["target_volume_id"]
+        target_volume = oci.wait_until(
+            destination_block,
+            destination_block.get_volume(target_volume_id),
+            "lifecycle_state",
+            "AVAILABLE",
+            max_wait_seconds=21600,
+        ).data
+        item["status"] = "available"
+        item["target_availability_domain"] = getattr(target_volume, "availability_domain", "")
+        completed.append(item)
+    return completed
 
 # --- TASK 1: VM Migration ---
 @celery_app.task(bind=True, max_retries=3)
-def migrate_single_vm(self, src_p, dst_p, vm_id, dst_comp, bucket):
+def migrate_single_vm(
+    self,
+    src_p,
+    dst_p,
+    vm_id,
+    dst_comp,
+    bucket,
+    data_volume_ids=None,
+    data_volume_method="clone",
+    destination_availability_domain="",
+):
     run_id = self.request.id
+    data_volume_ids = list(dict.fromkeys(data_volume_ids or []))
+    source_was_running = False
+    source_restarted = False
+    c_src = None
 
     def set_progress(step: str) -> None:
         self.update_state(state='PROGRESS', meta={'step': step})
         update_job_run(run_id, status="running", details=step)
 
     try:
-        set_progress('1/6: Connecting to OCI & Fetching VM...')
+        set_progress('Connecting to OCI and fetching the source VM...')
         c_src = get_client("Compute", src_p)
         inst = c_src.get_instance(vm_id).data
-        update_job_run(run_id, job_name=f"VM migration {inst.display_name}", vm_name=inst.display_name)
-        
-        if inst.lifecycle_state != 'STOPPED':
-            set_progress(f'2/6: Soft-stopping VM ({inst.display_name})...')
+        existing_run = get_job_run(run_id) or {}
+        source_initial_state = existing_run.get("source_initial_state") or inst.lifecycle_state
+        source_was_running = source_initial_state == "RUNNING"
+        if inst.lifecycle_state not in {"RUNNING", "STOPPED"}:
+            raise ValueError(
+                f"VM {inst.display_name} must be RUNNING or STOPPED before migration; "
+                f"current state is {inst.lifecycle_state}."
+            )
+        update_job_run(
+            run_id,
+            job_name=f"VM migration {inst.display_name}",
+            vm_name=inst.display_name,
+            source_initial_state=source_initial_state,
+        )
+
+        if inst.lifecycle_state == "RUNNING":
+            set_progress(f'Soft-stopping source VM {inst.display_name}...')
             c_src.instance_action(vm_id, "SOFTSTOP")
             oci.wait_until(c_src, c_src.get_instance(vm_id), 'lifecycle_state', 'STOPPED', max_wait_seconds=600)
 
-        set_progress('3/6: Creating Custom Image from Boot Volume...')
-        img_name = f"migr-{inst.display_name}-{int(time.time())}"
-        img = c_src.create_image(oci.core.models.CreateImageDetails(compartment_id=inst.compartment_id, instance_id=vm_id, display_name=img_name)).data
+        set_progress('Creating a custom image from the boot volume...')
+        img_name = migration_resource_name("MIGR", inst.display_name, "BOOT", run_id)
+        img = c_src.create_image(
+            oci.core.models.CreateImageDetails(
+                compartment_id=inst.compartment_id,
+                instance_id=vm_id,
+                display_name=img_name,
+            ),
+            opc_retry_token=migration_retry_token(run_id, "create-boot-image", vm_id),
+        ).data
+        update_job_run(run_id, source_image_id=img.id)
         oci.wait_until(c_src, c_src.get_image(img.id), 'lifecycle_state', 'AVAILABLE', max_wait_seconds=3600)
-        
-        set_progress('Turning source VM back on...')
-        c_src.instance_action(vm_id, "START")
 
-        set_progress('4/6: Building Cross-Tenant Bridge (PAR)...')
+        pending_data_volumes = []
+        if data_volume_ids:
+            set_progress(f'Capturing {len(data_volume_ids)} attached data volume(s)...')
+            pending_data_volumes = begin_data_volume_migrations(
+                run_id,
+                get_client("Blockstorage", src_p),
+                get_client("Blockstorage", dst_p),
+                dst_comp,
+                inst.display_name,
+                data_volume_ids,
+                data_volume_method,
+            )
+            update_job_run(run_id, data_volume_results=pending_data_volumes)
+
+        if source_was_running:
+            set_progress('Restarting the source VM after volume capture...')
+            c_src.instance_action(vm_id, "START")
+            oci.wait_until(c_src, c_src.get_instance(vm_id), 'lifecycle_state', 'RUNNING', max_wait_seconds=600)
+            source_restarted = True
+
+        completed_data_volumes = []
+        if pending_data_volumes:
+            source_block = get_client("Blockstorage", src_p)
+            destination_block = get_client("Blockstorage", dst_p)
+            completed_data_volumes = complete_data_volume_migrations(
+                run_id,
+                source_block,
+                destination_block,
+                dst_comp,
+                destination_availability_domain,
+                inst.display_name,
+                pending_data_volumes,
+                set_progress,
+            )
+            update_job_run(run_id, data_volume_results=completed_data_volumes)
+
+        set_progress('Building the cross-tenant Object Storage bridge...')
         # Cross-tenant Export via PAR
         os_dst = get_client("ObjectStorage", dst_p)
         ns_dst = os_dst.get_namespace().data
@@ -102,23 +286,69 @@ def migrate_single_vm(self, src_p, dst_p, vm_id, dst_comp, bucket):
         
         par_url = f"https://objectstorage.{os_dst.base_client.config['region']}.oraclecloud.com{par.access_uri}"
         
-        set_progress('5/6: Exporting Image to Destination Bucket (This takes time)...')
+        set_progress('Exporting the boot image to the destination bucket...')
         exp = c_src.export_image(img.id, {"destinationType": "objectStorageUri", "destinationUri": par_url, "exportFormat": "OCI"})
         
         oci.wait_until(oci.work_requests.WorkRequestClient(c_src.base_client.config), 
                        oci.work_requests.WorkRequestClient(c_src.base_client.config).get_work_request(exp.headers["opc-work-request-id"]), 
                        'status', 'SUCCEEDED', max_wait_seconds=7200)
 
-        set_progress('6/6: Importing Image into Destination Region...')
-        get_client("Compute", dst_p).create_image(oci.core.models.CreateImageDetails(
-            compartment_id=dst_comp, display_name=f"IMP-{img_name}",
-            image_source_details=oci.core.models.ImageSourceViaObjectStorageTupleDetails(
-                source_type="objectStorageTuple", namespace_name=ns_dst, bucket_name=bucket, object_name=f"{img_name}.oci")))
-        
-        update_job_run(run_id, status="success", details=f"Success! {inst.display_name} migrated.", finished_at=datetime.utcnow().isoformat() + "Z")
-        return f"Success! {inst.display_name} migrated."
+        set_progress('Importing the boot image into the destination tenancy...')
+        c_dst = get_client("Compute", dst_p)
+        imported_image = c_dst.create_image(
+            oci.core.models.CreateImageDetails(
+                compartment_id=dst_comp,
+                display_name=f"IMP-{img_name}"[:255],
+                image_source_details=oci.core.models.ImageSourceViaObjectStorageTupleDetails(
+                    source_type="objectStorageTuple",
+                    namespace_name=ns_dst,
+                    bucket_name=bucket,
+                    object_name=f"{img_name}.oci",
+                ),
+            ),
+            opc_retry_token=migration_retry_token(run_id, "import-boot-image", vm_id),
+        ).data
+        update_job_run(run_id, target_image_id=imported_image.id)
+        oci.wait_until(
+            c_dst,
+            c_dst.get_image(imported_image.id),
+            "lifecycle_state",
+            "AVAILABLE",
+            max_wait_seconds=7200,
+        )
+
+        volume_summary = (
+            f" {len(completed_data_volumes)} data volume(s) were created and are ready to attach."
+            if completed_data_volumes
+            else ""
+        )
+        details = f"Success! {inst.display_name} boot image migrated.{volume_summary}"
+        update_job_run(
+            run_id,
+            status="success",
+            details=details,
+            data_volume_results=completed_data_volumes,
+            finished_at=datetime.utcnow().isoformat() + "Z",
+        )
+        return details
     except Exception as e:
         logger.exception("VM migration failed for vm_id=%s", vm_id)
+        if source_was_running and not source_restarted and c_src is not None:
+            try:
+                current_state = c_src.get_instance(vm_id).data.lifecycle_state
+                if current_state == "STOPPED":
+                    c_src.instance_action(vm_id, "START")
+                    oci.wait_until(
+                        c_src,
+                        c_src.get_instance(vm_id),
+                        "lifecycle_state",
+                        "RUNNING",
+                        max_wait_seconds=600,
+                    )
+                    source_restarted = True
+            except Exception as restart_error:
+                logger.exception("Failed to restart source VM after migration error for vm_id=%s", vm_id)
+                update_job_run(run_id, source_restart_error=str(restart_error))
         retrying = self.request.retries < self.max_retries
         update_job_run(
             run_id,

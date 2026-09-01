@@ -272,11 +272,40 @@ No filter means the rule applies to the entire bucket. Keep each action in its o
 Open `VM Image Migration` and configure:
 
 - `Source`: OCI profile used to scan compute instances.
-- `VM`: selected instance from the scan results.
+- `VM`: selected instance from the scan results. Selecting a VM selects all attached data volumes by default.
+- `Data Volumes`: individually select or clear attached disks. The scan shows the volume name, size, device, attachment type, and availability domain.
 - `Destination Profile`: OCI profile that receives the exported image workflow.
 - `Storage Bucket`: destination Object Storage bucket.
+- `Data Volume Method`: `Cross-tenancy Clone` creates a target volume directly from the source volume; `Backup and Restore` first creates a full source volume backup and restores it in the target tenancy.
+- `Target Availability Domain`: required for backup/restore. OCI infers the matching physical availability domain for cross-tenancy clone.
 
-Executing a migration can stop the selected source VM and creates a boot-volume image backup in the selected destination workflow. The current workflow migrates the boot volume image only. Attached data volumes are displayed during scanning but must be migrated separately.
+The source and destination profiles must use the same OCI region for data-volume migration. OCI cross-tenancy policies must be configured before execution. The target IAM group needs local permission to manage volumes in the destination compartment, an `Endorse` policy in the target tenancy, and matching `Admit` policies in the source tenancy. The source profile also needs local permission to create a volume backup when `Backup and Restore` is selected. See [OCI cross-tenancy volume migration](https://docs.oracle.com/en/solutions/migrate-data-across-tenancies/volume-data-migration-process1.html).
+
+Example policy structure, with names and OCIDs replaced for the environment:
+
+```text
+# Source tenancy: clone access
+Define tenancy TargetTenancy as <target-tenancy-ocid>
+Define group TargetVolumeAdmins as <target-group-ocid>
+Admit group TargetVolumeAdmins of tenancy TargetTenancy to use volumes in compartment <source-compartment-name> where ANY { request.operation='CreateVolume', request.operation='GetVolume' }
+
+# Source tenancy: restore access
+Admit group TargetVolumeAdmins of tenancy TargetTenancy to read volume-backups in compartment <source-compartment-name>
+Admit group TargetVolumeAdmins of tenancy TargetTenancy to inspect volumes in compartment <source-compartment-name>
+
+# Target tenancy: clone access
+Define tenancy SourceTenancy as <source-tenancy-ocid>
+Endorse group <target-group-name> to use volumes in tenancy SourceTenancy where ANY { request.operation='CreateVolume', request.operation='GetVolume' }
+
+# Target tenancy: restore access and local target access
+Endorse group <target-group-name> to read volume-backups in tenancy SourceTenancy
+Endorse group <target-group-name> to inspect volumes in tenancy SourceTenancy
+Allow group <target-group-name> to manage volume-family in compartment <target-compartment-name>
+```
+
+During execution, a running source VM is soft-stopped while the boot image and selected data-volume copies are requested. It is restarted after capture. A VM that was already stopped remains stopped. The boot volume becomes a custom image in the target tenancy. Each selected data volume becomes an available Block Volume in the target tenancy, and the run history stores its target volume OCID and any intermediate backup OCID.
+
+OCI Migrator does not currently provision the target VM or attach the created data volumes. After creating the target VM from the imported image, attach each available target volume in the OCI Console or through OCI automation and preserve the intended device mapping. Validate application mounts and Windows drive assignments before placing the migrated VM in service.
 
 ## Settings
 
