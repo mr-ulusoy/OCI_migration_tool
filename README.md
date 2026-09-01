@@ -25,6 +25,17 @@ Oracle and Oracle Cloud Infrastructure are trademarks of Oracle and/or its affil
 - OCI SDK VM and Object Storage operations
 - persistent job run history and runtime config export
 
+## Recommended Server Size
+
+For a production Cloud Migration Console installation handling large backup and migration jobs, use the following as a starting point:
+
+| Resource | Recommendation |
+| --- | --- |
+| CPU | **8 vCPU** or **4 OCI OCPU** |
+| RAM | **16 GB** |
+| System disk | **80-100 GB SSD** |
+| OS | Ubuntu Server 24.04 LTS |
+
 ## Quick Install
 
 On an Ubuntu server:
