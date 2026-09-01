@@ -77,7 +77,7 @@ The installer configures server time sync with `systemd-timesyncd`, `Europe/Stoc
 - `Credentials` manages OCI, cloud, S3-compatible, local folder, SMB, and NFS sources.
 - `OCI Object Storage` explores buckets and objects and manages supported bucket settings and lifecycle rules.
 - `VM Image Migration` scans OCI compute instances and migrates the boot image plus selected attached data volumes between OCI tenancies.
-- `Settings` contains managed HTTPS, system upgrade, remote syslog notifications, runtime config backup/import, time and NTP, network, job defaults, local disk warnings, log rotation, admin password controls, and a protected uninstall workflow.
+- `Settings` contains managed HTTPS, a daily GitHub update check with controlled system upgrades, remote syslog notifications, runtime config backup/import, time and NTP, network, job defaults, local disk warnings, log rotation, admin password controls, and a protected uninstall workflow.
 
 ## Main Use Cases
 
