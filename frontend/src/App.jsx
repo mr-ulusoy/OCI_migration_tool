@@ -499,6 +499,13 @@ export default function App() {
   const upgradePhase = upgradeStatus?.phase || (upgradeStatus?.status === 'success' ? 'complete' : upgradeStatus?.status === 'failed' ? 'failed' : '');
   const upgradePhaseIndex = UPGRADE_PHASES.findIndex(item => item.id === upgradePhase);
   const upgradeDisplayPhaseIndex = upgradePhase === 'queued' ? 0 : Math.max(upgradePhaseIndex, 0);
+  const upgradeProgressPercent = upgradeStatus?.status === 'success'
+    ? 100
+    : upgradePhase === 'queued'
+      ? 4
+      : upgradePhaseIndex >= 0
+        ? Math.min(95, ((upgradePhaseIndex + 0.5) / UPGRADE_PHASES.length) * 100)
+        : 0;
 
   const api = useMemo(() => {
     const headers = {};
@@ -2961,6 +2968,19 @@ export default function App() {
                           </div>
                         );
                       })}
+                    </div>
+                    <div
+                      className="mt-3 h-1.5 overflow-hidden rounded-full bg-gray-100"
+                      role="progressbar"
+                      aria-label="System upgrade progress"
+                      aria-valuemin="0"
+                      aria-valuemax="100"
+                      aria-valuenow={Math.round(upgradeProgressPercent)}
+                    >
+                      <div
+                        className={`h-full rounded-full transition-[width] duration-500 ease-out ${upgradeStatus?.status === 'success' ? 'bg-green-500' : upgradeStatus?.status === 'failed' ? 'bg-red-500' : 'bg-blue-500'}`}
+                        style={{ width: `${upgradeProgressPercent}%` }}
+                      />
                     </div>
                   </div>
                 )}
