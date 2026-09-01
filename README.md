@@ -36,6 +36,24 @@ For a production Cloud Migration Console installation handling large backup and 
 | System disk | **80-100 GB SSD** |
 | OS | Ubuntu Server 24.04 LTS |
 
+## How Data Moves
+
+Cloud Migration Console streams data from cloud providers and mounted external SMB/NFS file shares directly to OCI Object Storage:
+
+```text
+Cloud provider or external file share
+                  |
+                  v
+Cloud Migration Console (memory buffers)
+                  |
+                  v
+          OCI Object Storage
+```
+
+Complete files are not downloaded to a local staging area or copied into the managed local backup folder. The transfer traffic passes through the Cloud Migration Console server, while only configuration, job history, and logs are stored locally. The server must remain online for the duration of the transfer.
+
+`Server Local Folder` is the intentional exception: those source files already reside on the Cloud Migration Console server before the backup job starts.
+
 ## Quick Install
 
 On an Ubuntu server:
