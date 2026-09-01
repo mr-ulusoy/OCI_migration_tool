@@ -603,7 +603,8 @@ export default function App() {
     destProfile: '',
     destBucket: '',
     dataVolumeMethod: 'clone',
-    destinationAvailabilityDomain: ''
+    destinationAvailabilityDomain: '',
+    restartSourceVms: true
   });
   
   const [vmTasks, setVmTasks] = useState({});
@@ -4566,7 +4567,7 @@ export default function App() {
 	                    <div className="mb-4 flex items-start gap-2 rounded-md border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800">
 	                      <AlertCircle size={15} className="mt-0.5 shrink-0" />
 	                      <div>
-	                        <div>This action stops each running source VM while consistent boot and data-volume copies are requested. A source VM that was already stopped remains stopped.</div>
+	                        <div>This action stops each running source VM while consistent boot and data-volume copies are requested. A source VM that was already stopped always remains stopped.</div>
 	                        <div className="mt-1 font-semibold">The boot volume is exported as an OCI image. Selected data volumes are created in the target tenancy and are ready to attach after migration.</div>
 	                      </div>
 	                    </div>
@@ -4636,6 +4637,34 @@ export default function App() {
 	                        </select>
 	                      </div>
 	                    </div>
+	                    <div className="mt-4 flex flex-col gap-3 rounded-md border border-gray-200 bg-gray-50 px-3 py-3 lg:flex-row lg:items-center lg:justify-between">
+	                      <div>
+	                        <div className="text-[10px] font-bold uppercase tracking-wider text-gray-500">Source VMs after capture</div>
+	                        <div className="mt-0.5 text-xs text-gray-500">This single choice applies to every selected VM that was running when the migration started.</div>
+	                      </div>
+	                      <div className="flex flex-col gap-2 sm:flex-row" role="radiogroup" aria-label="Source VMs after capture">
+	                        <label className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-xs font-semibold transition-colors ${vmMigrationConfig.restartSourceVms ? 'border-[#9c3029] bg-white text-[#9c3029]' : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'}`}>
+	                          <input
+	                            type="radio"
+	                            name="source-vm-final-state"
+	                            checked={vmMigrationConfig.restartSourceVms}
+	                            onChange={() => setVmMigrationConfig(prev => ({ ...prev, restartSourceVms: true }))}
+	                            className="accent-[#9c3029]"
+	                          />
+	                          Restart originally running VMs
+	                        </label>
+	                        <label className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-xs font-semibold transition-colors ${!vmMigrationConfig.restartSourceVms ? 'border-[#9c3029] bg-white text-[#9c3029]' : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'}`}>
+	                          <input
+	                            type="radio"
+	                            name="source-vm-final-state"
+	                            checked={!vmMigrationConfig.restartSourceVms}
+	                            onChange={() => setVmMigrationConfig(prev => ({ ...prev, restartSourceVms: false }))}
+	                            className="accent-[#9c3029]"
+	                          />
+	                          Keep source VMs stopped
+	                        </label>
+	                      </div>
+	                    </div>
 	                    <div className="mt-4 flex flex-col gap-3 border-t border-gray-100 pt-4 lg:flex-row lg:items-center lg:justify-between">
 	                      <div className="text-xs text-gray-500">
 	                        <span className="font-bold text-[#9c3029]">{selectedVms.length} VM(s)</span>
@@ -4663,7 +4692,8 @@ export default function App() {
 	                            bucket_name: vmMigrationConfig.destBucket,
 	                            data_volume_ids: selectedVolumeSnapshot,
 	                            data_volume_method: vmMigrationConfig.dataVolumeMethod,
-	                            destination_availability_domain: vmMigrationConfig.destinationAvailabilityDomain
+	                            destination_availability_domain: vmMigrationConfig.destinationAvailabilityDomain,
+	                            restart_source_vms: vmMigrationConfig.restartSourceVms
 	                          };
 	                          const res = await api.post(`/start-bulk-migration`, migrationRequest);
 	                          const newTasks = {};
@@ -4680,6 +4710,7 @@ export default function App() {
 	                                data_volume_ids: selectedVolumeSnapshot[t.vm_id] || [],
 	                                data_volume_method: vmMigrationConfig.dataVolumeMethod,
 	                                destination_availability_domain: vmMigrationConfig.destinationAvailabilityDomain,
+	                                restart_source_vm: vmMigrationConfig.restartSourceVms,
 	                                data_volume_results: []
 	                              }
 	                            };
@@ -4829,9 +4860,16 @@ export default function App() {
                                     </div>
                                   </div>
                                   {taskData && (
-                                    <div className={`mt-2 text-[10px] uppercase font-bold tracking-wider truncate ${getStatusColor(taskData.status)}`}>
-                                      {isMigrating && <Loader2 size={12} className="inline animate-spin mr-1"/>}
-                                      {taskData.details}
+                                    <div className="mt-2 space-y-1">
+                                      <div className={`text-[10px] uppercase font-bold tracking-wider break-words ${getStatusColor(taskData.status)}`}>
+                                        {isMigrating && <Loader2 size={12} className="inline animate-spin mr-1"/>}
+                                        {taskData.details}
+                                      </div>
+                                      <div className="text-[9px] font-semibold text-gray-500">
+                                        Source VM policy: {taskData.migration?.restart_source_vm === false
+                                          ? 'Keep stopped after capture'
+                                          : 'Restart if it was originally running'}
+                                      </div>
                                     </div>
                                   )}
                                 </div>

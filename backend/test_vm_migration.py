@@ -13,6 +13,16 @@ def response(data):
 
 
 class VmMigrationValidationTests(unittest.TestCase):
+    def test_restarts_source_vms_by_default(self):
+        job = main.BulkMigrationJob(
+            vm_ids=["vm-1"],
+            source_profile="SOURCE",
+            dest_profile="TARGET",
+            bucket_name="images",
+        )
+
+        self.assertTrue(job.restart_source_vms)
+
     def test_rejects_cross_region_data_volume_migration(self):
         job = main.BulkMigrationJob(
             vm_ids=["vm-1"],
@@ -103,6 +113,44 @@ class VmMigrationValidationTests(unittest.TestCase):
         validate_bucket.assert_called_once_with("TARGET", "images")
 
 
+class VmMigrationQueueTests(unittest.IsolatedAsyncioTestCase):
+    async def test_keep_stopped_policy_is_applied_to_every_vm(self):
+        job = main.BulkMigrationJob(
+            vm_ids=["vm-1", "vm-2"],
+            source_profile="SOURCE",
+            dest_profile="TARGET",
+            bucket_name="images",
+            restart_source_vms=False,
+        )
+        queued_tasks = [SimpleNamespace(id="run-1"), SimpleNamespace(id="run-2")]
+
+        with patch.object(
+            main,
+            "validate_vm_migration_request",
+            return_value=({}, {"compartment": "target-compartment"}, {"vm-1": [], "vm-2": []}),
+        ), patch.object(
+            main.migrate_single_vm,
+            "apply_async",
+            side_effect=queued_tasks,
+        ) as apply_async, patch.object(main, "upsert_job_run") as upsert_job_run:
+            result = await main.start_bulk_migration(job)
+
+        self.assertEqual(len(result["tasks"]), 2)
+        self.assertEqual(apply_async.call_count, 2)
+        for queued_call in apply_async.call_args_list:
+            self.assertFalse(queued_call.kwargs["args"][-1])
+        queued_runs = [call.args[0] for call in upsert_job_run.call_args_list]
+        self.assertEqual([run["restart_source_vm"] for run in queued_runs], [False, False])
+
+
+class VmMigrationPowerPolicyTests(unittest.TestCase):
+    def test_restart_only_when_vm_started_running_and_policy_allows_it(self):
+        self.assertTrue(worker.should_restart_source_vm(True, True))
+        self.assertFalse(worker.should_restart_source_vm(True, False))
+        self.assertFalse(worker.should_restart_source_vm(False, True))
+        self.assertFalse(worker.should_restart_source_vm(True, True, source_restarted=True))
+
+
 class DataVolumeMigrationTests(unittest.TestCase):
     def test_clone_uses_source_volume_details_in_target_tenancy(self):
         source_block = Mock()
@@ -191,6 +239,9 @@ class VmMigrationStatusTests(unittest.IsolatedAsyncioTestCase):
             "data_volume_ids": ["source-volume"],
             "data_volume_method": "restore",
             "destination_availability_domain": "target-ad-1",
+            "restart_source_vm": False,
+            "source_initial_state": "RUNNING",
+            "source_final_state": "STOPPED",
             "data_volume_results": [
                 {
                     "source_volume_id": "source-volume",
@@ -209,6 +260,8 @@ class VmMigrationStatusTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "PROGRESS")
         self.assertEqual(result["migration"]["data_volume_ids"], ["source-volume"])
         self.assertEqual(result["migration"]["data_volume_method"], "restore")
+        self.assertFalse(result["migration"]["restart_source_vm"])
+        self.assertEqual(result["migration"]["source_final_state"], "STOPPED")
         self.assertEqual(
             result["migration"]["data_volume_results"][0]["target_volume_id"],
             "target-volume",

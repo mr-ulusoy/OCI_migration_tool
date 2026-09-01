@@ -80,6 +80,10 @@ def migration_resource_name(prefix, instance_name, volume_name, run_id):
     return raw_name[:255]
 
 
+def should_restart_source_vm(source_was_running, restart_source_vm, source_restarted=False):
+    return bool(source_was_running and restart_source_vm and not source_restarted)
+
+
 def begin_data_volume_migrations(
     run_id,
     source_block,
@@ -193,6 +197,7 @@ def migrate_single_vm(
     data_volume_ids=None,
     data_volume_method="clone",
     destination_availability_domain="",
+    restart_source_vm=True,
 ):
     run_id = self.request.id
     data_volume_ids = list(dict.fromkeys(data_volume_ids or []))
@@ -221,6 +226,7 @@ def migrate_single_vm(
             job_name=f"VM migration {inst.display_name}",
             vm_name=inst.display_name,
             source_initial_state=source_initial_state,
+            restart_source_vm=bool(restart_source_vm),
         )
 
         if inst.lifecycle_state == "RUNNING":
@@ -255,11 +261,17 @@ def migrate_single_vm(
             )
             update_job_run(run_id, data_volume_results=pending_data_volumes)
 
-        if source_was_running:
+        if should_restart_source_vm(source_was_running, restart_source_vm, source_restarted):
             set_progress('Restarting the source VM after volume capture...')
             c_src.instance_action(vm_id, "START")
             oci.wait_until(c_src, c_src.get_instance(vm_id), 'lifecycle_state', 'RUNNING', max_wait_seconds=600)
             source_restarted = True
+        elif source_was_running:
+            update_job_run(
+                run_id,
+                source_final_state="STOPPED",
+                details="Source VM will remain stopped after volume capture.",
+            )
 
         completed_data_volumes = []
         if pending_data_volumes:
@@ -323,18 +335,20 @@ def migrate_single_vm(
             if completed_data_volumes
             else ""
         )
-        details = f"Success! {inst.display_name} boot image migrated.{volume_summary}"
+        power_summary = " Source VM was restarted." if source_restarted else " Source VM remains stopped."
+        details = f"Success! {inst.display_name} boot image migrated.{volume_summary}{power_summary}"
         update_job_run(
             run_id,
             status="success",
             details=details,
             data_volume_results=completed_data_volumes,
+            source_final_state="RUNNING" if source_restarted else "STOPPED",
             finished_at=datetime.utcnow().isoformat() + "Z",
         )
         return details
     except Exception as e:
         logger.exception("VM migration failed for vm_id=%s", vm_id)
-        if source_was_running and not source_restarted and c_src is not None:
+        if should_restart_source_vm(source_was_running, restart_source_vm, source_restarted) and c_src is not None:
             try:
                 current_state = c_src.get_instance(vm_id).data.lifecycle_state
                 if current_state == "STOPPED":

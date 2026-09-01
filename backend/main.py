@@ -594,6 +594,7 @@ class BulkMigrationJob(BaseModel):
     data_volume_ids: dict[str, List[str]] = Field(default_factory=dict)
     data_volume_method: str = "clone"
     destination_availability_domain: str = ""
+    restart_source_vms: bool = True
 
     @field_validator("vm_ids")
     @classmethod
@@ -4958,6 +4959,7 @@ async def start_bulk_migration(job: BulkMigrationJob):
                     "destination_availability_domain": (
                         job.destination_availability_domain if selected_data_volumes else ""
                     ),
+                    "restart_source_vm": job.restart_source_vms,
                     "details": "Queued for worker.",
                 }
             )
@@ -4972,6 +4974,7 @@ async def start_bulk_migration(job: BulkMigrationJob):
                         selected_data_volumes,
                         job.data_volume_method,
                         job.destination_availability_domain,
+                        job.restart_source_vms,
                     ],
                     task_id=run_id,
                 )
@@ -5019,6 +5022,9 @@ async def get_migration_status(task_id: str):
             "data_volume_method": history_run.get("data_volume_method", "none"),
             "destination_availability_domain": history_run.get("destination_availability_domain", ""),
             "data_volume_results": history_run.get("data_volume_results", []),
+            "restart_source_vm": history_run.get("restart_source_vm", True),
+            "source_initial_state": history_run.get("source_initial_state", ""),
+            "source_final_state": history_run.get("source_final_state", ""),
         }
 
     return response
