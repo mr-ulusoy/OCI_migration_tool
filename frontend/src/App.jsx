@@ -882,11 +882,7 @@ export default function App() {
 
   const handleCheckUpgrade = () => fetchUpgradeCheck(false, true);
 
-  const handleStartUpgrade = async () => {
-    if (!window.confirm('Start upgrade from GitHub now? The service may restart during installation.')) {
-      return;
-    }
-
+  const startUpgrade = async () => {
     setStartingUpgrade(true);
     try {
       const res = await api.post('/upgrade/start');
@@ -900,6 +896,17 @@ export default function App() {
       showError('Failed to start upgrade', err);
     }
     setStartingUpgrade(false);
+  };
+
+  const handleStartUpgrade = () => {
+    setConfirmDialog({
+      icon: 'download',
+      title: 'Install system update?',
+      message: 'OCI Migrator will download and install the latest version from GitHub.',
+      detail: 'The dashboard and API may be briefly unavailable while services restart. Runtime configuration, credentials, and backup jobs are preserved.',
+      confirmLabel: 'Start Upgrade',
+      onConfirm: startUpgrade
+    });
   };
 
   const latestRunByJob = useMemo(() => {
@@ -2440,13 +2447,13 @@ export default function App() {
       )}
       {confirmDialog && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-950/45 p-4">
-          <div className="w-full max-w-lg bg-white border border-gray-200 rounded-md shadow-2xl">
+          <div className="w-full max-w-lg bg-white border border-gray-200 rounded-md shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-title">
             <div className="flex items-start gap-4 p-5 border-b border-gray-100 text-left">
               <div className="mt-0.5 h-10 w-10 rounded-md bg-red-50 border border-red-100 flex items-center justify-center text-[#9c3029] shrink-0">
-                {confirmDialog.icon === 'shield' ? <Shield size={20} /> : <Archive size={20} />}
+                {confirmDialog.icon === 'shield' ? <Shield size={20} /> : confirmDialog.icon === 'download' ? <Download size={20} /> : <Archive size={20} />}
               </div>
               <div className="min-w-0 flex-1">
-                <h3 className="text-base font-bold text-gray-900">{confirmDialog.title}</h3>
+                <h3 id="confirm-dialog-title" className="text-base font-bold text-gray-900">{confirmDialog.title}</h3>
                 <p className="mt-1 text-sm text-gray-600 leading-6">{confirmDialog.message}</p>
                 {confirmDialog.detail && (
                   <p className="mt-2 text-xs text-gray-500 leading-5">{confirmDialog.detail}</p>
