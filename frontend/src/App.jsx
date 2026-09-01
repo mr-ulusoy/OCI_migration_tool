@@ -17,6 +17,7 @@ const API_BASE = import.meta.env.VITE_API_BASE || (
 const SESSION_TOKEN_KEY = 'OCI_MIGRATOR_SESSION_TOKEN';
 const SESSION_USERNAME_KEY = 'OCI_MIGRATOR_SESSION_USERNAME';
 const THEME_KEY = 'OCI_MIGRATOR_THEME';
+const LICENSE_URL = 'https://github.com/mr-ulusoy/OCI_migration_tool/blob/main/LICENSE';
 const DEFAULT_REMOTE_CONFIG = {
   name: '',
   provider: 'oci',
@@ -2333,8 +2334,8 @@ export default function App() {
     return (
       <div data-theme={theme} className="min-h-screen bg-[#f5f6f8] flex items-center justify-center p-5 sm:p-8 font-sans">
         <div className="login-shell grid min-h-[560px] w-full max-w-7xl overflow-hidden rounded-2xl border border-gray-200 bg-white lg:grid-cols-[0.7fr_1.3fr]">
-          <section className="login-form-panel flex min-h-[500px] items-center justify-center px-7 py-12 sm:px-12 lg:px-14">
-            <form onSubmit={handleLogin} className="w-full max-w-sm text-left">
+          <section className="login-form-panel flex min-h-[500px] flex-col items-center justify-center px-7 py-8 sm:px-12 lg:px-14">
+            <form onSubmit={handleLogin} className="my-auto w-full max-w-sm text-left">
               <div className="mb-10 flex items-center gap-3">
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#9c3029] shadow-sm">
                   <Lock size={19} className="text-white" />
@@ -2376,6 +2377,9 @@ export default function App() {
                 </button>
               </div>
             </form>
+            <a href={LICENSE_URL} target="_blank" rel="noreferrer" className="mt-6 text-center text-[10px] leading-4 text-gray-400 transition-colors hover:text-[#9c3029]">
+              © 2026 Cengiz Ulusoy (mr-ulusoy). All rights reserved.
+            </a>
           </section>
           <aside className="login-hero relative hidden overflow-hidden bg-[#061b38] lg:block">
             <img src={loginHeroImage} alt="" aria-hidden="true" className="absolute inset-0 h-full w-full scale-110 object-cover opacity-35 blur-xl" />
@@ -2580,6 +2584,9 @@ export default function App() {
             <LogOut size={17} />
             <span>Log out</span>
           </button>
+          <a href={LICENSE_URL} target="_blank" rel="noreferrer" className="mt-3 block border-t border-white/10 px-2 pt-3 text-[9px] leading-4 text-gray-600 transition-colors hover:text-gray-400">
+            © 2026 Cengiz Ulusoy (mr-ulusoy). All rights reserved.
+          </a>
         </div>
       </nav>
 
