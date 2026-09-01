@@ -28,7 +28,7 @@ fail() {
 
 usage() {
   cat <<EOF
-OCI Migrator local SMB/NFS share helper
+Cloud Migration Console local SMB/NFS share helper
 
 Usage:
   oci-migrator-local-share enable --share-name NAME --path PATH --access everyone|user [--user USER --password-file PATH]

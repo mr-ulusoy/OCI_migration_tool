@@ -3378,7 +3378,7 @@ async def monitoring_status():
 
 def prometheus_metrics_payload(status_payload: dict) -> str:
     lines = [
-        "# HELP oci_migrator_up Whether the OCI Migrator API is responding.",
+        "# HELP oci_migrator_up Whether the Cloud Migration Console API is responding.",
         "# TYPE oci_migrator_up gauge",
         "oci_migrator_up 1",
         "# HELP oci_migrator_component_ok Component health status, 1 means ok.",

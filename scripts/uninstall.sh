@@ -22,7 +22,7 @@ fi
 
 usage() {
   cat <<EOF
-Uninstall OCI Migrator systemd services.
+Uninstall Cloud Migration Console systemd services.
 
 Usage:
   scripts/uninstall.sh [options]
@@ -124,7 +124,7 @@ units=(
   "$SERVICE_PREFIX-tls.service"
 )
 
-echo "Stopping and disabling OCI Migrator services with prefix: $SERVICE_PREFIX"
+echo "Stopping and disabling Cloud Migration Console services with prefix: $SERVICE_PREFIX"
 "${SUDO[@]}" systemctl stop "${units[@]}" 2>/dev/null || true
 "${SUDO[@]}" systemctl disable "${units[@]}" 2>/dev/null || true
 

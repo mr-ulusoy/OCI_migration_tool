@@ -10,11 +10,13 @@
 
 
 
-# OCI Migrator Pro
+# Cloud Migration Console
 
 [![CI](https://github.com/mr-ulusoy/OCI_migration_tool/actions/workflows/ci.yml/badge.svg)](https://github.com/mr-ulusoy/OCI_migration_tool/actions/workflows/ci.yml)
 
 Self-hosted admin console for moving file and object data into Oracle Cloud Infrastructure (OCI) Object Storage, and for migrating OCI VM images between OCI tenants.
+
+Oracle and Oracle Cloud Infrastructure are trademarks of Oracle and/or its affiliates. Cloud Migration Console is independently developed and is not affiliated with, endorsed by, or sponsored by Oracle.
 
 - React/Vite frontend
 - FastAPI backend
@@ -99,7 +101,7 @@ The installer configures server time sync with `systemd-timesyncd`, `Europe/Stoc
 | S3-compatible object storage | OCI Object Storage bucket |
 | Server local folder, SMB/NFS ingest folder, or mounted on-premises share | OCI Object Storage bucket |
 
-For VM image migration, the source is an OCI tenant/profile with compute instances and the destination is another OCI tenant/profile with an Object Storage bucket for the exported boot image. The scan shows attached data volumes and lets the operator choose which disks to migrate using OCI cross-tenancy clone or backup/restore. Created target data volumes are left available and ready to attach; OCI Migrator does not yet provision or attach them to a target VM.
+For VM image migration, the source is an OCI tenant/profile with compute instances and the destination is another OCI tenant/profile with an Object Storage bucket for the exported boot image. The scan shows attached data volumes and lets the operator choose which disks to migrate using OCI cross-tenancy clone or backup/restore. Created target data volumes are left available and ready to attach; Cloud Migration Console does not yet provision or attach them to a target VM.
 
 ## HTTPS Modes
 
@@ -155,7 +157,7 @@ GET /metrics
 
 Both require an admin session or `X-API-Token`. See the [Server Runbook](docs/RUNBOOK.md#monitoring).
 
-Push monitoring is available through `Settings` -> `Notifications`. OCI Migrator can send backup failures, timeouts, recovery, and optionally every completed run to a remote syslog server over UDP or TCP.
+Push monitoring is available through `Settings` -> `Notifications`. Cloud Migration Console can send backup failures, timeouts, recovery, and optionally every completed run to a remote syslog server over UDP or TCP.
 
 ## Manual Install
 
@@ -228,7 +230,7 @@ Per-job local cleanup can be enabled for managed server local folder sources. Cl
 
 Settings -> Local Disk Usage shows the managed local data disk usage and configurable warning/critical thresholds. The same status is exposed through `/health`, `/monitoring/status`, and `/metrics`.
 
-Settings -> Uninstall OCI Migrator schedules `uninstall.sh --purge-project` after verifying the current admin password and the exact confirmation text `UNINSTALL`. Runtime configuration, OCI/rclone credentials, OCI Object Storage data, and external mounted shares are preserved. An additional checkbox can permanently remove only the configured server-local backup directory.
+Settings -> Uninstall Cloud Migration Console schedules `uninstall.sh --purge-project` after verifying the current admin password and the exact confirmation text `UNINSTALL`. Runtime configuration, OCI/rclone credentials, OCI Object Storage data, and external mounted shares are preserved. An additional checkbox can permanently remove only the configured server-local backup directory.
 
 Server local folders can optionally be shared from the UI with SMB, NFSv4, or both. SMB can be opened as guest access or a named Samba user on TCP `445`. NFSv4 requires an allowed client IP/hostname/CIDR list and uses TCP `2049`. No share is enabled during installation; the installed root helper applies the share only when a user chooses it in `Add Remote`.
 
@@ -243,10 +245,10 @@ Server local folders can optionally be shared from the UI with SMB, NFSv4, or bo
 
 ## License
 
-OCI Migrator Pro is source-available proprietary software owned by Cengiz Ulusoy (`mr-ulusoy`).
+Cloud Migration Console is source-available proprietary software owned by Cengiz Ulusoy (`mr-ulusoy`).
 You may download, install, and run unmodified copies, but you may not modify, redistribute, publish, sublicense, sell, or provide modified versions without prior written permission.
 
-Attribution is required: `OCI Migrator Pro by Cengiz Ulusoy (mr-ulusoy)`.
+Attribution is required: `Cloud Migration Console by Cengiz Ulusoy (mr-ulusoy)`.
 See [LICENSE](LICENSE) for the full terms.
 
 ## Security Note

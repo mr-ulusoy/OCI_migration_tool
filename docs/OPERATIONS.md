@@ -1,6 +1,6 @@
 # Dashboard Configuration
 
-This guide documents the configuration available in the OCI Migrator Pro web dashboard. For service commands, health endpoints, monitoring integrations, runtime files, and command-line recovery procedures, see the [Server Runbook](RUNBOOK.md).
+This guide documents the configuration available in the Cloud Migration Console web dashboard. For service commands, health endpoints, monitoring integrations, runtime files, and command-line recovery procedures, see the [Server Runbook](RUNBOOK.md).
 
 ## Quick Install
 
@@ -47,21 +47,21 @@ An OCI profile requires:
 
 The quickest method is to create or inspect an API signing key in the OCI Console. OCI then displays a `Configuration File Preview` containing the user OCID, fingerprint, tenancy OCID, and region together.
 
-1. Sign in to the [OCI Console](https://cloud.oracle.com/) and select the region that contains the resources you want to use. The current region appears in the Region menu at the top of the Console. Open Oracle's [Regions and Availability Domains](https://docs.oracle.com/en-us/iaas/Content/General/Concepts/regions.htm) list and copy the matching **Region Identifier** into OCI Migrator, not the region name or region key.
-2. Choose a `Profile Name` yourself. It is only the friendly name shown in OCI Migrator, for example `OCI-PRODUCTION` or `SOURCE-TENANT`.
+1. Sign in to the [OCI Console](https://cloud.oracle.com/) and select the region that contains the resources you want to use. The current region appears in the Region menu at the top of the Console. Open Oracle's [Regions and Availability Domains](https://docs.oracle.com/en-us/iaas/Content/General/Concepts/regions.htm) list and copy the matching **Region Identifier** into Cloud Migration Console, not the region name or region key.
+2. Choose a `Profile Name` yourself. It is only the friendly name shown in Cloud Migration Console, for example `OCI-PRODUCTION` or `SOURCE-TENANT`.
 3. Find the compartment OCIDs:
    - Open the navigation menu and select `Identity & Security` -> `Compartments`.
    - Open or locate the compartment containing the compute instances and copy its OCID into `Compute Compartment`.
    - Open or locate the compartment containing the Object Storage buckets and copy its OCID into `Storage Compartment`.
    - If compute instances and buckets use the same compartment, enter the same compartment OCID in both fields.
-4. Open the OCI IAM user that OCI Migrator will use:
+4. Open the OCI IAM user that Cloud Migration Console will use:
    - For your own user, open the Profile menu and select `User settings`.
    - For another service user, open `Identity & Security` -> `Users`, then select that user. Administrator permissions may be required.
 5. Under the user's resources, select `API Keys`, then select `Add API Key`.
 6. Select `Generate API Key Pair`, download the **private key**, and then select `Add`. Store the downloaded PEM file securely; OCI does not provide the private key again later.
-7. OCI displays the `Configuration File Preview`. Copy these values into OCI Migrator:
+7. OCI displays the `Configuration File Preview`. Copy these values into Cloud Migration Console:
 
-| Configuration File Preview | OCI Migrator field |
+| Configuration File Preview | Cloud Migration Console field |
 | --- | --- |
 | `tenancy=ocid1.tenancy...` | `Tenancy OCID` |
 | `user=ocid1.user...` | `User OCID` |
@@ -228,7 +228,7 @@ Do not use TPS limiting as the primary network control. Use `Bandwidth Limit` fo
 
 #### Recommended baseline
 
-For a dedicated OCI Migrator server with a 1 Gbit/s connection and mixed file sizes, use this initial profile:
+For a dedicated Cloud Migration Console server with a 1 Gbit/s connection and mixed file sizes, use this initial profile:
 
 | Setting | Initial value |
 | --- | ---: |
@@ -269,7 +269,7 @@ For the selected bucket, the dashboard shows the default tier, versioning state,
 
 - `Enable/Suspend Object Versioning`: controls whether OCI keeps previous versions after overwrite or deletion. Existing versions remain when versioning is suspended.
 - `Enable/Disable Auto-Tiering`: controls automatic movement to Infrequent Access.
-- `OCI Retention Rules (WORM)`: status only. Create and manage immutable retention rules in the OCI Console. While a time-bound rule protects an object, its data and metadata cannot be updated, overwritten, or deleted until that object's retention period expires; OCI calculates the period individually from the object's `Last Modified` timestamp. An indefinite rule protects objects until the rule is removed. Locking a retention rule is irreversible: the duration can only be increased, and neither a tenancy administrator nor Oracle Support can unlock or delete the rule separately. Because an accidental rule or lock can make customer data undeletable for the configured period, OCI Migrator deliberately does not create, change, or lock WORM rules. See [OCI retention rule documentation](https://docs.oracle.com/en-us/iaas/Content/Object/Tasks/usingretentionrules.htm).
+- `OCI Retention Rules (WORM)`: status only. Create and manage immutable retention rules in the OCI Console. While a time-bound rule protects an object, its data and metadata cannot be updated, overwritten, or deleted until that object's retention period expires; OCI calculates the period individually from the object's `Last Modified` timestamp. An indefinite rule protects objects until the rule is removed. Locking a retention rule is irreversible: the duration can only be increased, and neither a tenancy administrator nor Oracle Support can unlock or delete the rule separately. Because an accidental rule or lock can make customer data undeletable for the configured period, Cloud Migration Console deliberately does not create, change, or lock WORM rules. See [OCI retention rule documentation](https://docs.oracle.com/en-us/iaas/Content/Object/Tasks/usingretentionrules.htm).
 
 OCI does not allow Object Versioning to be enabled while active retention rules exist on the bucket. Auto-Tiering cannot be enabled while a lifecycle rule moves objects to Infrequent Access.
 
@@ -317,12 +317,12 @@ Selecting a VM selects all discovered attached data volumes by default. Clear an
 
 ### Choosing a data-volume method
 
-| Method | What OCI Migrator requests | When to use it |
+| Method | What Cloud Migration Console requests | When to use it |
 | --- | --- | --- |
 | `Cross-tenancy Clone` | Creates a target Block Volume directly from the source volume OCID | Preferred when the source and target tenancy policies allow cross-tenancy volume cloning and the matching availability domain is available |
 | `Backup and Restore` | Creates a full source Block Volume backup, waits for it to become available, and restores a target Block Volume from that backup | Use when the backup-based workflow is required or when the target volume must be restored into an explicitly selected availability domain |
 
-The destination Object Storage bucket is used only for the boot-image export/import bridge. Data-volume clone and backup/restore remain OCI Block Volume operations; data disks are not downloaded to the OCI Migrator server and are not uploaded as ordinary Object Storage files.
+The destination Object Storage bucket is used only for the boot-image export/import bridge. Data-volume clone and backup/restore remain OCI Block Volume operations; data disks are not downloaded to the Cloud Migration Console server and are not uploaded as ordinary Object Storage files.
 
 The source and destination profiles must use the same OCI region for data-volume migration. OCI cross-tenancy policies must be configured before execution. The target IAM group needs local permission to manage volumes in the destination compartment, an `Endorse` policy in the target tenancy, and matching `Admit` policies in the source tenancy. The source profile also needs local permission to create a volume backup when `Backup and Restore` is selected. See [OCI cross-tenancy volume migration](https://docs.oracle.com/en/solutions/migrate-data-across-tenancies/volume-data-migration-process1.html).
 
@@ -361,11 +361,11 @@ The worker then:
 5. Imports the exported object as a custom image in the target tenancy.
 6. Waits for every target data volume to reach `AVAILABLE`.
 
-The migration run history records the target image OCID, target volume OCIDs, and intermediate backup OCIDs when backup/restore is used. A failed migration attempts to restart a source VM that OCI Migrator stopped.
+The migration run history records the target image OCID, target volume OCIDs, and intermediate backup OCIDs when backup/restore is used. A failed migration attempts to restart a source VM that Cloud Migration Console stopped.
 
 ### After migration
 
-OCI Migrator does not currently provision the target VM or attach the created data volumes. After creating the target VM from the imported image, attach each available target volume in the OCI Console or through OCI automation and preserve the intended device mapping. Validate application mounts and Windows drive assignments before placing the migrated VM in service.
+Cloud Migration Console does not currently provision the target VM or attach the created data volumes. After creating the target VM from the imported image, attach each available target volume in the OCI Console or through OCI automation and preserve the intended device mapping. Validate application mounts and Windows drive assignments before placing the migrated VM in service.
 
 Also verify:
 
@@ -379,7 +379,7 @@ Also verify:
 
 ### System Upgrade
 
-OCI Migrator checks GitHub automatically when the dashboard is used and refreshes the result at most once every 24 hours. The last check time, available commit, and commit title are shown in the dashboard. `Check` bypasses the daily cache and performs a fresh comparison immediately.
+Cloud Migration Console checks GitHub automatically when the dashboard is used and refreshes the result at most once every 24 hours. The last check time, available commit, and commit title are shown in the dashboard. `Check` bypasses the daily cache and performs a fresh comparison immediately.
 
 `Upgrade` asks for confirmation before installing the latest version and reports the controlled workflow as Check, Download, Install, and Complete. The detailed package-manager and service output is hidden by default; open `Technical Log` only when troubleshooting is required. Runtime configuration is preserved by the managed upgrade process while the API and frontend restart.
 
@@ -389,7 +389,7 @@ HTTPS is required for production use. The direct HTTP endpoint is retained for i
 
 - `Let's Encrypt`: Caddy obtains and automatically renews a public certificate. The DNS hostname must resolve to the server and inbound TCP `80` and `443` must be allowed.
 - `Corporate Certificate`: upload a customer-issued PEM full chain and matching unencrypted PEM private key. The files are validated and copied into protected storage.
-- `External TLS`: an existing load balancer or reverse proxy owns the certificate and forwards requests to OCI Migrator with `X-Forwarded-Proto: https`.
+- `External TLS`: an existing load balancer or reverse proxy owns the certificate and forwards requests to Cloud Migration Console with `X-Forwarded-Proto: https`.
 - `HTTP Setup`: recovery and initial configuration only. Credentials and session tokens are not encrypted in transit.
 
 #### Mode requirements
@@ -401,7 +401,7 @@ HTTPS is required for production use. The direct HTTP endpoint is retained for i
 | `External TLS` | External proxy forwards to the app/API port and sends `X-Forwarded-Proto: https` | Managed entirely by the external platform |
 | `HTTP Setup` | Access is restricted to a trusted setup or recovery network; the administrator acknowledges the unencrypted-traffic warning | No certificate |
 
-For managed modes, OCI Migrator validates the generated Caddy configuration and checks the HTTPS health endpoint before accepting the change. If startup or the health check fails, the previous managed Caddy files and service state are restored. With the default service prefix, Caddy runs as the dedicated `migrator-tls.service`, proxies to `127.0.0.1:8000`, and keeps its state below `/var/lib/oci-migrator/tls`.
+For managed modes, Cloud Migration Console validates the generated Caddy configuration and checks the HTTPS health endpoint before accepting the change. If startup or the health check fails, the previous managed Caddy files and service state are restored. With the default service prefix, Caddy runs as the dedicated `migrator-tls.service`, proxies to `127.0.0.1:8000`, and keeps its state below `/var/lib/oci-migrator/tls`.
 
 When `HTTP Setup` is deliberately retained, select the acknowledgement checkbox and apply the setting. The acknowledgement is stored in the server runtime configuration so the health overview does not repeatedly warn about an accepted deployment decision. The dashboard still labels the connection as HTTP and does not treat it as encrypted.
 
@@ -422,7 +422,7 @@ Configure outbound syslog notifications for backup results:
 
 Use `Send Test` before enabling notifications. `Last Sent` and `Last Error` show the most recent delivery state. Delivery is best effort and a notification failure does not change the backup result.
 
-Messages are sent outbound from OCI Migrator; no inbound syslog port is required on this server.
+Messages are sent outbound from Cloud Migration Console; no inbound syslog port is required on this server.
 
 ### Change Password
 
@@ -477,7 +477,7 @@ The panel reports used, free, and total capacity for the managed local data disk
 
 The log directory is displayed for reference and is not editable from the dashboard.
 
-### Uninstall OCI Migrator
+### Uninstall Cloud Migration Console
 
 Dashboard uninstall requires the current admin password and the exact confirmation text `UNINSTALL`.
 

@@ -89,7 +89,7 @@ fail() {
 
 usage() {
   cat <<EOF
-OCI Migrator installer
+Cloud Migration Console installer
 
 Usage:
   ./install.sh [options]
@@ -573,7 +573,7 @@ install_caddy_support() {
     "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y caddy
   fi
 
-  # OCI Migrator uses its own isolated Caddy unit and never edits /etc/caddy/Caddyfile.
+  # Cloud Migration Console uses its own isolated Caddy unit and never edits /etc/caddy/Caddyfile.
   "${SUDO[@]}" systemctl disable --now caddy.service caddy-api.service >/dev/null 2>&1 || true
 }
 
@@ -896,7 +896,7 @@ install_job_log_helper() {
   sudoers_file="/etc/sudoers.d/$SERVICE_PREFIX-job-log"
   sudoers_temp="$(mktemp)"
   {
-    printf '# Allow OCI Migrator to update its managed job logrotate settings only.\n'
+    printf '# Allow Cloud Migration Console to update its managed job logrotate settings only.\n'
     printf '%s ALL=(root) NOPASSWD: %s\n' "$RUN_USER" "$JOB_LOG_HELPER"
   } > "$sudoers_temp"
 
@@ -927,7 +927,7 @@ install_time_sync_helper() {
   sudoers_file="/etc/sudoers.d/$SERVICE_PREFIX-time-sync"
   sudoers_temp="$(mktemp)"
   {
-    printf '# Allow OCI Migrator to update its managed timezone/NTP settings only.\n'
+    printf '# Allow Cloud Migration Console to update its managed timezone/NTP settings only.\n'
     printf '%s ALL=(root) NOPASSWD: %s\n' "$RUN_USER" "$TIME_SYNC_HELPER"
   } > "$sudoers_temp"
 
@@ -954,7 +954,7 @@ install_network_helper() {
   timer_temp="$(mktemp)"
   {
     printf '[Unit]\n'
-    printf 'Description=Rollback unconfirmed OCI Migrator network configuration\n'
+    printf 'Description=Rollback unconfirmed Cloud Migration Console network configuration\n'
     printf 'After=network.target\n\n'
     printf '[Service]\n'
     printf 'Type=oneshot\n'
@@ -962,7 +962,7 @@ install_network_helper() {
   } > "$service_temp"
   {
     printf '[Unit]\n'
-    printf 'Description=Rollback timer for OCI Migrator network configuration\n\n'
+    printf 'Description=Rollback timer for Cloud Migration Console network configuration\n\n'
     printf '[Timer]\n'
     printf 'OnActiveSec=3min\n'
     printf 'AccuracySec=1s\n'
@@ -979,7 +979,7 @@ install_network_helper() {
   sudoers_file="/etc/sudoers.d/$SERVICE_PREFIX-network"
   sudoers_temp="$(mktemp)"
   {
-    printf '# Allow OCI Migrator to manage its validated Netplan configuration only.\n'
+    printf '# Allow Cloud Migration Console to manage its validated Netplan configuration only.\n'
     printf '%s ALL=(root) NOPASSWD: %s\n' "$RUN_USER" "$NETWORK_HELPER"
   } > "$sudoers_temp"
 
@@ -1015,7 +1015,7 @@ install_tls_helper() {
 
   "${SUDO[@]}" tee "/etc/systemd/system/$TLS_SERVICE" >/dev/null <<EOF
 [Unit]
-Description=OCI Migrator managed HTTPS endpoint
+Description=Cloud Migration Console managed HTTPS endpoint
 After=network-online.target $SERVICE_PREFIX-api.service
 Wants=network-online.target $SERVICE_PREFIX-api.service
 
@@ -1045,7 +1045,7 @@ EOF
   sudoers_file="/etc/sudoers.d/$SERVICE_PREFIX-tls"
   sudoers_temp="$(mktemp)"
   {
-    printf '# Allow OCI Migrator to manage only its validated HTTPS configuration.\n'
+    printf '# Allow Cloud Migration Console to manage only its validated HTTPS configuration.\n'
     printf '%s ALL=(root) NOPASSWD: %s\n' "$RUN_USER" "$TLS_HELPER"
   } > "$sudoers_temp"
   "${SUDO[@]}" visudo -cf "$sudoers_temp" >/dev/null
@@ -1086,7 +1086,7 @@ install_local_share_helper() {
   sudoers_file="/etc/sudoers.d/$SERVICE_PREFIX-local-share"
   sudoers_temp="$(mktemp)"
   {
-    printf '# Allow OCI Migrator to enable/disable managed local SMB/NFS shares only.\n'
+    printf '# Allow Cloud Migration Console to enable/disable managed local SMB/NFS shares only.\n'
     printf '%s ALL=(root) NOPASSWD: %s\n' "$RUN_USER" "$LOCAL_SHARE_HELPER"
   } > "$sudoers_temp"
 
@@ -1158,7 +1158,7 @@ install_upgrade_helper() {
   sudoers_file="/etc/sudoers.d/$SERVICE_PREFIX-upgrade"
   sudoers_temp="$(mktemp)"
   {
-    printf '# Allow OCI Migrator to run its controlled self-upgrade only.\n'
+    printf '# Allow Cloud Migration Console to run its controlled self-upgrade only.\n'
     printf '%s ALL=(root) NOPASSWD: %s start\n' "$RUN_USER" "$UPGRADE_HELPER"
   } > "$sudoers_temp"
 
@@ -1201,7 +1201,7 @@ install_uninstall_helper() {
   sudoers_file="/etc/sudoers.d/$SERVICE_PREFIX-uninstall"
   sudoers_temp="$(mktemp)"
   {
-    printf '# Allow OCI Migrator to schedule its controlled self-uninstall only.\n'
+    printf '# Allow Cloud Migration Console to schedule its controlled self-uninstall only.\n'
     printf '%s ALL=(root) NOPASSWD: %s schedule\n' "$RUN_USER" "$UNINSTALL_HELPER"
     printf '%s ALL=(root) NOPASSWD: %s schedule --purge-local-data\n' "$RUN_USER" "$UNINSTALL_HELPER"
   } > "$sudoers_temp"
@@ -1292,7 +1292,7 @@ write_systemd_units() {
 
   "${SUDO[@]}" tee "/etc/systemd/system/$SERVICE_PREFIX-api.service" >/dev/null <<EOF
 [Unit]
-Description=OCI Migrator FastAPI backend
+Description=Cloud Migration Console FastAPI backend
 After=network-online.target redis-server.service
 Wants=network-online.target redis-server.service
 
@@ -1314,7 +1314,7 @@ EOF
 
   "${SUDO[@]}" tee "/etc/systemd/system/$SERVICE_PREFIX-worker.service" >/dev/null <<EOF
 [Unit]
-Description=OCI Migrator Celery worker
+Description=Cloud Migration Console Celery worker
 After=network-online.target redis-server.service
 Wants=network-online.target redis-server.service
 
@@ -1335,7 +1335,7 @@ EOF
 
   "${SUDO[@]}" tee "/etc/systemd/system/$SERVICE_PREFIX-scheduler.service" >/dev/null <<EOF
 [Unit]
-Description=OCI Migrator scheduled job runner
+Description=Cloud Migration Console scheduled job runner
 After=network-online.target redis-server.service
 Wants=network-online.target redis-server.service
 
@@ -1351,7 +1351,7 @@ EOF
 
   "${SUDO[@]}" tee "/etc/systemd/system/$SERVICE_PREFIX-scheduler.timer" >/dev/null <<EOF
 [Unit]
-Description=Run OCI Migrator scheduler every minute
+Description=Run Cloud Migration Console scheduler every minute
 
 [Timer]
 OnBootSec=30s

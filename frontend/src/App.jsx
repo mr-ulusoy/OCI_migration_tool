@@ -903,7 +903,7 @@ export default function App() {
     setConfirmDialog({
       icon: 'download',
       title: 'Install system update?',
-      message: 'OCI Migrator will download and install the latest version from GitHub.',
+      message: 'Cloud Migration Console will download and install the latest version from GitHub.',
       detail: 'The dashboard and API may be briefly unavailable while services restart. Runtime configuration, credentials, and backup jobs are preserved.',
       confirmLabel: 'Start Upgrade',
       onConfirm: startUpgrade
@@ -1348,7 +1348,7 @@ export default function App() {
     event.preventDefault();
     const mode = tlsSettingsForm.mode;
     if (mode !== 'http' && !tlsSettingsForm.hostname.trim()) {
-      setNotice({ type: 'error', title: 'Hostname required', message: 'Enter the DNS hostname clients will use for OCI Migrator.' });
+      setNotice({ type: 'error', title: 'Hostname required', message: 'Enter the DNS hostname clients will use for Cloud Migration Console.' });
       return;
     }
     if (mode === 'custom' && (!tlsSettingsForm.certFile || !tlsSettingsForm.keyFile)) {
@@ -2341,8 +2341,8 @@ export default function App() {
                   <Lock size={19} className="text-white" />
                 </div>
                 <div>
-                  <h1 className="text-lg font-bold tracking-tight text-gray-900">OCI Migrator Pro</h1>
-                  <p className="text-xs text-gray-500">Cloud migration console</p>
+                  <h1 className="text-lg font-bold tracking-tight text-gray-900">Cloud Migration Console</h1>
+                  <p className="text-xs text-gray-500">Backup &amp; migration operations</p>
                 </div>
               </div>
               <div className="mb-7">
@@ -2407,7 +2407,7 @@ export default function App() {
                 <Trash2 size={20} />
               </div>
               <div className="min-w-0 flex-1">
-                <h3 className="text-base font-bold text-gray-900">Uninstall OCI Migrator</h3>
+                <h3 className="text-base font-bold text-gray-900">Uninstall Cloud Migration Console</h3>
                 <p className="mt-1 text-sm leading-6 text-gray-600">Services will stop and the installed project directory will be removed. This console will become unavailable.</p>
               </div>
               <button type="button" onClick={() => setUninstallDialogOpen(false)} disabled={uninstalling} className="rounded-md p-1.5 text-gray-400 hover:bg-gray-50 hover:text-gray-700" aria-label="Close"><X size={16} /></button>
@@ -2507,8 +2507,8 @@ export default function App() {
           <div className="flex min-w-0 items-center gap-3">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[#a9342d] shadow-sm"><Cpu size={19} className="text-white" /></div>
             <div className="min-w-0">
-              <h1 className="truncate text-sm font-bold text-white">OCI Migrator Pro</h1>
-              <p className="mt-0.5 text-[11px] text-gray-500">Backup operations</p>
+              <h1 className="truncate text-sm font-bold text-white">Cloud Migration Console</h1>
+              <p className="mt-0.5 text-[11px] text-gray-500">Backup &amp; migration operations</p>
             </div>
           </div>
           <button type="button" onClick={() => setSidebarOpen(false)} className="app-sidebar-icon mobile-only" title="Close navigation"><X size={17} /></button>
@@ -3142,8 +3142,8 @@ export default function App() {
 
                   <div className={`mt-4 rounded-md border px-3 py-2 text-[11px] ${tlsSettingsForm.mode === 'http' && !tlsSettingsForm.acknowledgeHttp ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-gray-100 bg-gray-50 text-gray-600'}`}>
                     {tlsSettingsForm.mode === 'letsencrypt' && 'The DNS A/AAAA record must resolve to this server. Inbound TCP 80 and 443 must also be allowed by the network firewall, Security List, or NSG. Caddy obtains and renews the certificate automatically.'}
-                    {tlsSettingsForm.mode === 'custom' && 'Upload a PEM full chain and matching unencrypted PEM private key. OCI Migrator validates the hostname, expiration, and key match, copies them into protected Caddy storage, and removes the temporary uploads. Upload the renewed files and reapply after certificate renewal.'}
-                    {tlsSettingsForm.mode === 'external' && 'Use this when a customer load balancer or reverse proxy owns the certificate. It must forward requests to this OCI Migrator API port and send X-Forwarded-Proto: https.'}
+                    {tlsSettingsForm.mode === 'custom' && 'Upload a PEM full chain and matching unencrypted PEM private key. Cloud Migration Console validates the hostname, expiration, and key match, copies them into protected Caddy storage, and removes the temporary uploads. Upload the renewed files and reapply after certificate renewal.'}
+                    {tlsSettingsForm.mode === 'external' && 'Use this when a customer load balancer or reverse proxy owns the certificate. It must forward requests to this Cloud Migration Console API port and send X-Forwarded-Proto: https.'}
                     {tlsSettingsForm.mode === 'http' && (
                       <label className="flex cursor-pointer items-start gap-2">
                         <input
@@ -3292,7 +3292,7 @@ export default function App() {
                       </div>
                     </div>
                   </div>
-                  <p className="mt-3 text-[11px] text-gray-500">Messages are sent outbound from OCI Migrator. No inbound firewall rule is required. Save stores the configuration; Send Test uses the values currently shown above.</p>
+                  <p className="mt-3 text-[11px] text-gray-500">Messages are sent outbound from Cloud Migration Console. No inbound firewall rule is required. Save stores the configuration; Send Test uses the values currently shown above.</p>
                 </form>
                 {authState.mode === 'session' && (
                 <form onSubmit={handleChangePassword} className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
@@ -3819,7 +3819,7 @@ export default function App() {
                 <div className="rounded-md border border-red-200 bg-white p-4 text-left shadow-sm">
                   <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
                     <div>
-                      <h3 className="flex items-center gap-2 text-sm font-bold text-gray-900"><Trash2 size={16} className="text-red-700" /> Uninstall OCI Migrator</h3>
+                      <h3 className="flex items-center gap-2 text-sm font-bold text-gray-900"><Trash2 size={16} className="text-red-700" /> Uninstall Cloud Migration Console</h3>
                       <p className="mt-1 text-[11px] leading-5 text-gray-500">Remove the application services and installed project. Runtime configuration and cloud data are preserved unless local backup deletion is explicitly selected.</p>
                     </div>
                     <button type="button" onClick={openUninstallDialog} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-md border border-red-300 bg-white px-3 py-2 text-xs font-semibold text-red-700 hover:bg-red-50">
@@ -4994,7 +4994,7 @@ export default function App() {
                            <div className="px-4 py-3 border-b border-gray-300 flex items-center justify-between gap-3">
                              <div>
                                <h4 className="text-sm font-bold text-black flex items-center gap-2"><Shield size={16}/> OCI Retention Rules (WORM)</h4>
-                               <p className="mt-1 text-[11px] text-black">Immutable/WORM retention rules are managed in the OCI Dashboard. OCI Migrator only shows the current WORM rule count here.</p>
+                               <p className="mt-1 text-[11px] text-black">Immutable/WORM retention rules are managed in the OCI Dashboard. Cloud Migration Console only shows the current WORM rule count here.</p>
                              </div>
                              <div className="flex items-center gap-2 shrink-0">
                                <span className="px-2 py-1 rounded-full border border-gray-300 bg-white text-[10px] font-bold uppercase text-black">{bucketProtection?.retention_rule_count || 0} WORM</span>

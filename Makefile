@@ -11,12 +11,12 @@ ADMIN_ARGS := $(if $(ADMIN_PASSWORD),--admin-password "$(ADMIN_PASSWORD)") $(if 
 .PHONY: help install install-print-token deploy doctor status start stop restart logs logs-api logs-worker package uninstall
 
 help:
-	@printf 'OCI Migrator commands\n\n'
+	@printf 'Cloud Migration Console commands\n\n'
 	@printf '  make install              Install on this server\n'
 	@printf '  make deploy               Deploy to SSH_HOST with scripts/deploy.sh\n'
 	@printf '  make doctor               Check dependencies, services, ports, and API health\n'
 	@printf '  make status               Show systemd service status\n'
-	@printf '  make restart              Restart all OCI Migrator services\n'
+	@printf '  make restart              Restart all Cloud Migration Console services\n'
 	@printf '  make logs-api             Follow backend logs\n'
 	@printf '  make logs-worker          Follow worker logs\n'
 	@printf '  make package              Create a source tar.gz in dist-packages/\n'

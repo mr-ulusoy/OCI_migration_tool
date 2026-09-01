@@ -16,7 +16,7 @@ fail() {
 
 usage() {
   cat <<EOF
-OCI Migrator job log helper
+Cloud Migration Console job log helper
 
 Usage:
   oci-migrator-job-log configure --job-log-dir PATH --max-size SIZE --retention-days DAYS --run-user USER [--logrotate-file PATH]

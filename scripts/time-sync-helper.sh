@@ -14,7 +14,7 @@ fail() {
 
 usage() {
   cat <<EOF
-OCI Migrator time sync helper
+Cloud Migration Console time sync helper
 
 Usage:
   oci-migrator-time-sync configure --timezone ZONE --ntp-servers "LIST" [--timesyncd-conf PATH]

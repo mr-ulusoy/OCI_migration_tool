@@ -314,7 +314,7 @@ def notify_backup_run(run: dict[str, Any], previous_job_status: str = "") -> dic
 def send_test_notification(settings: dict[str, Any]) -> dict[str, Any]:
     return send_syslog_event(
         "notification.test",
-        {"status": "ok", "message": "OCI Migrator syslog test message."},
+        {"status": "ok", "message": "Cloud Migration Console syslog test message."},
         severity=5,
         settings=settings,
         force=True,

@@ -23,9 +23,9 @@ fi
 
 usage() {
   cat <<EOF
-OCI Migrator bootstrap
+Cloud Migration Console bootstrap
 
-This script clones or updates OCI Migrator, then runs install.sh.
+This script clones or updates Cloud Migration Console, then runs install.sh.
 
 Usage:
   scripts/bootstrap.sh [options] [-- extra install.sh args]

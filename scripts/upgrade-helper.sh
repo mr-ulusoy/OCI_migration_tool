@@ -12,7 +12,7 @@ fail() {
 
 usage() {
   cat <<EOF
-OCI Migrator upgrade helper
+Cloud Migration Console upgrade helper
 
 Usage:
   oci-migrator-upgrade start
@@ -201,7 +201,7 @@ schedule_upgrade() {
     systemd-run \
       --unit="$SERVICE_PREFIX-self-upgrade" \
       --collect \
-      --description="OCI Migrator self upgrade" \
+      --description="Cloud Migration Console self upgrade" \
       --setenv="OCI_MIGRATOR_UPGRADE_CONFIG=$CONFIG_FILE" \
       "$UPGRADE_HELPER" run >>"$UPGRADE_LOG_FILE" 2>&1
   else

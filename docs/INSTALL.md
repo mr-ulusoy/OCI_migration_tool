@@ -1,6 +1,6 @@
 # Installation Guide
 
-OCI Migrator is designed for repeatable installs on Ubuntu servers.
+Cloud Migration Console is designed for repeatable installs on Ubuntu servers.
 
 ## Recommended: Bootstrap From GitHub
 
@@ -81,19 +81,19 @@ Use this when the customer PKI team issues the certificate.
 
 1. Select `Corporate Certificate` and enter the dashboard DNS hostname.
 2. Upload the PEM full-chain certificate and its matching unencrypted PEM private key.
-3. Apply the setting. OCI Migrator verifies the hostname, expiration, certificate/key match, and Caddy configuration before activating it.
+3. Apply the setting. Cloud Migration Console verifies the hostname, expiration, certificate/key match, and Caddy configuration before activating it.
 
-Each upload is limited to 2 MiB. The validated files are copied into protected OCI Migrator TLS storage and the temporary uploads are removed. Upload the renewed files and reapply the setting after the PKI team replaces the certificate. Client devices must trust the corporate issuing CA.
+Each upload is limited to 2 MiB. The validated files are copied into protected Cloud Migration Console TLS storage and the temporary uploads are removed. Upload the renewed files and reapply the setting after the PKI team replaces the certificate. Client devices must trust the corporate issuing CA.
 
 ### External TLS
 
-Use this when an enterprise load balancer, ingress gateway, or existing reverse proxy owns the certificate. Enter the public DNS hostname and configure that external component to forward requests to the OCI Migrator app/API port. It must send `X-Forwarded-Proto: https`. Caddy is not started in this mode.
+Use this when an enterprise load balancer, ingress gateway, or existing reverse proxy owns the certificate. Enter the public DNS hostname and configure that external component to forward requests to the Cloud Migration Console app/API port. It must send `X-Forwarded-Proto: https`. Caddy is not started in this mode.
 
 ### HTTP Setup
 
 Use this only for initial configuration or controlled recovery. Select the acknowledgement checkbox before applying the mode. The acknowledgement records that the administrator accepts unencrypted traffic and suppresses the repeated health warning; it does not add encryption or make HTTP suitable for production.
 
-The managed local Caddy service is isolated from `/etc/caddy/Caddyfile`; OCI Migrator uses `/etc/oci-migrator/Caddyfile` and its own `migrator-tls.service`. Failed Caddy activation restores the previous managed TLS files.
+The managed local Caddy service is isolated from `/etc/caddy/Caddyfile`; Cloud Migration Console uses `/etc/oci-migrator/Caddyfile` and its own `migrator-tls.service`. Failed Caddy activation restores the previous managed TLS files.
 
 ## DHCP and Static IPv4
 
@@ -120,7 +120,7 @@ If `Enable NFSv4 Share` is selected, the helper will:
 
 - install/configure `nfs-kernel-server` if needed
 - export the created folder to the allowed client IPs, hostnames, or CIDR ranges
-- map NFS client users to the OCI Migrator service user so the managed ingest folder remains writable without `no_root_squash` or world-writable permissions
+- map NFS client users to the Cloud Migration Console service user so the managed ingest folder remains writable without `no_root_squash` or world-writable permissions
 - ensure inbound TCP `2049` is open and save the firewall rule when supported
 - return a Linux mount command, for example `sudo mount -t nfs4 SERVER:/var/lib/oci-migrator/local/customer-a /mnt/customer-a`
 

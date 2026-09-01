@@ -80,7 +80,7 @@ read_env_value() {
 
 FAILED=0
 
-echo "OCI Migrator doctor"
+echo "Cloud Migration Console doctor"
 echo
 
 if [ -f /etc/os-release ]; then

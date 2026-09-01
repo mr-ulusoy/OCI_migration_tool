@@ -22,7 +22,7 @@ fail() {
 
 usage() {
   cat <<EOF
-OCI Migrator network settings helper
+Cloud Migration Console network settings helper
 
 Usage:
   oci-migrator-network status
@@ -124,7 +124,7 @@ write_candidate() {
 
   if [ "$mode" = "dhcp" ]; then
     {
-      printf '# Managed by OCI Migrator Pro.\n'
+      printf '# Managed by Cloud Migration Console.\n'
       printf 'network:\n'
       printf '  version: 2\n'
       printf '  ethernets:\n'
@@ -139,7 +139,7 @@ write_candidate() {
       separator=", "
     done
     {
-      printf '# Managed by OCI Migrator Pro.\n'
+      printf '# Managed by Cloud Migration Console.\n'
       printf 'network:\n'
       printf '  version: 2\n'
       printf '  ethernets:\n'

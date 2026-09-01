@@ -1,6 +1,6 @@
 # Production Readiness
 
-OCI Migrator Pro is intended to run as a self-hosted administrative service. The installation, dashboard configuration, backup operations, monitoring, recovery, and runtime backup procedures are documented in the [Dashboard Configuration](OPERATIONS.md) and [Server Runbook](RUNBOOK.md). This page tracks only the remaining controls that matter before wider production use.
+Cloud Migration Console is intended to run as a self-hosted administrative service. The installation, dashboard configuration, backup operations, monitoring, recovery, and runtime backup procedures are documented in the [Dashboard Configuration](OPERATIONS.md) and [Server Runbook](RUNBOOK.md). This page tracks only the remaining controls that matter before wider production use.
 
 ## 1. Enforce HTTPS And Network Boundaries
 
