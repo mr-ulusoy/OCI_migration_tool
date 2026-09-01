@@ -93,6 +93,12 @@ const LIFECYCLE_ACTION_LABELS = {
   DELETE: 'Delete',
   ABORT: 'Abort Multipart Uploads'
 };
+const UPGRADE_PHASES = [
+  { id: 'checking', label: 'Check' },
+  { id: 'downloading', label: 'Download' },
+  { id: 'installing', label: 'Install' },
+  { id: 'complete', label: 'Complete' }
+];
 const DEFAULT_NEW_BUCKET_CONFIG = {
   storageTier: 'Standard',
   autoTiering: 'Disabled',
@@ -490,6 +496,9 @@ export default function App() {
       && upgradeStatus.current_commit === latestUpgradeCommit
   );
   const upgradeIsCurrent = upgradeCheck?.up_to_date === true || upgradeVersionsMatch;
+  const upgradePhase = upgradeStatus?.phase || (upgradeStatus?.status === 'success' ? 'complete' : upgradeStatus?.status === 'failed' ? 'failed' : '');
+  const upgradePhaseIndex = UPGRADE_PHASES.findIndex(item => item.id === upgradePhase);
+  const upgradeDisplayPhaseIndex = upgradePhase === 'queued' ? 0 : Math.max(upgradePhaseIndex, 0);
 
   const api = useMemo(() => {
     const headers = {};
@@ -842,13 +851,13 @@ export default function App() {
     }
   };
 
-  const fetchUpgradeCheck = async (silent = false) => {
+  const fetchUpgradeCheck = async (silent = false, force = false) => {
     setCheckingUpgrade(true);
     try {
-      const res = await api.post('/upgrade/check');
+      const res = await api.post('/upgrade/check', null, { params: { force } });
       setUpgradeCheck(res.data);
       setUpgradeReconnecting(false);
-      setUpgradeStatus(prev => ({
+      setUpgradeStatus(prev => prev?.status === 'running' ? prev : ({
         ...(prev || {}),
         ...res.data,
         status: res.data.up_to_date ? 'success' : 'idle',
@@ -864,7 +873,7 @@ export default function App() {
     }
   };
 
-  const handleCheckUpgrade = () => fetchUpgradeCheck(false);
+  const handleCheckUpgrade = () => fetchUpgradeCheck(false, true);
 
   const handleStartUpgrade = async () => {
     if (!window.confirm('Start upgrade from GitHub now? The service may restart during installation.')) {
@@ -875,7 +884,7 @@ export default function App() {
     try {
       const res = await api.post('/upgrade/start');
       setUpgradeStatus(res.data);
-      setShowUpgradeLog(true);
+      setShowUpgradeLog(false);
       setUpgradeLog('');
       setUpgradeReconnecting(false);
       window.setTimeout(fetchUpgradeStatus, 1500);
@@ -1393,13 +1402,21 @@ export default function App() {
   }, [isAuthenticated, showUpgradeLog, upgradeStatus?.status, api]);
 
   useEffect(() => {
+    if (!isAuthenticated) return undefined;
+    const interval = window.setInterval(() => fetchUpgradeCheck(true, false), 60 * 60 * 1000);
+    return () => window.clearInterval(interval);
+    // The server-side cache ensures GitHub is contacted at most once every 24 hours.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthenticated, api]);
+
+  useEffect(() => {
     if (!isAuthenticated || upgradeStatus?.status !== 'success' || !upgradeStatus?.finished_at) return;
     if (upgradeCheck?.current_commit === upgradeStatus?.current_commit && upgradeCheck?.latest_commit) return;
 
     const refreshCompletedUpgrade = async () => {
       await fetchUpgradeLog();
       try {
-        const res = await api.post('/upgrade/check');
+        const res = await api.post('/upgrade/check', null, { params: { force: true } });
         setUpgradeCheck(res.data);
         setUpgradeReconnecting(false);
       } catch (err) {
@@ -2884,7 +2901,7 @@ export default function App() {
                       className="px-3 py-2 bg-white border border-gray-200 text-gray-600 rounded-md font-semibold text-xs hover:text-[#9c3029] hover:bg-gray-50 flex items-center gap-2"
                     >
                       <Terminal size={14} />
-                      Log
+                      Technical Log
                     </button>
                   </div>
                 </div>
@@ -2897,7 +2914,11 @@ export default function App() {
                   <div className="bg-gray-50 border border-gray-100 rounded-md p-3">
                     <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Latest GitHub</div>
                     <div className="text-sm font-mono text-gray-800">{latestUpgradeShort || 'not checked'}</div>
-                    <div className="text-[11px] text-gray-500 truncate mt-1">{upgradeIsCurrent ? 'You are on the latest version.' : upgradeCheck?.up_to_date === false ? 'A new version is available.' : 'Run check when needed'}</div>
+                    <div className="text-[11px] text-gray-500 truncate mt-1">{upgradeIsCurrent ? 'You are on the latest version.' : upgradeCheck?.up_to_date === false ? 'A new version is available.' : 'Waiting for automatic check'}</div>
+                    {latestUpgradeTitle && <div className="mt-1 truncate text-[11px] font-medium text-gray-700" title={latestUpgradeTitle}>{latestUpgradeTitle}</div>}
+                    <div className="mt-1 text-[10px] text-gray-400">
+                      {upgradeCheck?.checked_at ? `Checked ${formatTimestamp(upgradeCheck.checked_at)}` : 'Checked automatically every 24 hours'}
+                    </div>
                   </div>
                   <div className="bg-gray-50 border border-gray-100 rounded-md p-3">
                     <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Status</div>
@@ -2912,8 +2933,45 @@ export default function App() {
                     Upgrade helper is missing. Rerun ./install.sh once on the server to enable dashboard upgrades.
                   </div>
                 )}
+                {(upgradeStatus?.status === 'running' || upgradeStatus?.status === 'failed' || (upgradeStatus?.status === 'success' && upgradeStatus?.finished_at)) && (
+                  <div className="mt-4 border-t border-gray-100 pt-4">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-xs font-bold text-gray-800">Upgrade progress</div>
+                        <div className={`mt-1 text-[11px] ${upgradeStatus?.status === 'failed' ? 'text-red-600' : 'text-gray-500'}`}>
+                          {upgradeStatus?.message || 'Preparing upgrade.'}
+                        </div>
+                      </div>
+                      {upgradeStatus?.started_at && (
+                        <div className="text-[10px] text-gray-400">
+                          Started {formatTimestamp(upgradeStatus.started_at)}
+                        </div>
+                      )}
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                      {UPGRADE_PHASES.map((phase, index) => {
+                        const complete = upgradeStatus?.status === 'success' || index < upgradeDisplayPhaseIndex;
+                        const active = upgradeStatus?.status === 'running' && index === upgradeDisplayPhaseIndex;
+                        return (
+                          <div key={phase.id} className="flex min-w-0 items-center gap-2 border-t border-gray-100 pt-2">
+                            <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border ${complete ? 'border-green-200 bg-green-50 text-green-700' : active ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-gray-200 bg-gray-50 text-gray-400'}`}>
+                              {active ? <Loader2 size={12} className="animate-spin" /> : complete ? <CheckCircle size={12} /> : <span className="text-[9px] font-bold">{index + 1}</span>}
+                            </span>
+                            <span className={`truncate text-[10px] font-semibold ${complete ? 'text-green-700' : active ? 'text-blue-700' : 'text-gray-400'}`}>{phase.label}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
                 {showUpgradeLog && (
                   <div className="mt-4 bg-gray-900 border border-gray-800 rounded-md p-4 shadow-inner">
+                    <div className="mb-3 flex items-center justify-between gap-3 text-left">
+                      <div>
+                        <div className="text-[11px] font-bold text-gray-100">Technical Log</div>
+                        <div className="mt-0.5 text-[10px] text-gray-400">Detailed package and service output for troubleshooting.</div>
+                      </div>
+                    </div>
                     {upgradeReconnecting && (
                       <div className="mb-3 flex items-center gap-2 text-[11px] font-semibold text-blue-300">
                         <Loader2 className="animate-spin" size={13} />

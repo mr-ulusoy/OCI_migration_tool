@@ -456,6 +456,10 @@ UNINSTALL_HELPER = Path(os.getenv("OCI_MIGRATOR_UNINSTALL_HELPER", "/usr/local/s
 UPGRADE_STATUS_FILE = Path(
     os.getenv("OCI_MIGRATOR_UPGRADE_STATUS_FILE", "/var/lib/oci-migrator/upgrade/status.json")
 ).resolve()
+UPGRADE_CHECK_FILE = Path(
+    os.getenv("OCI_MIGRATOR_UPGRADE_CHECK_FILE", str(UPGRADE_STATUS_FILE.parent / "check.json"))
+).resolve()
+UPGRADE_CHECK_INTERVAL_SECONDS = 24 * 60 * 60
 UPGRADE_LOG_FILE = Path(os.getenv("OCI_MIGRATOR_UPGRADE_LOG_FILE", "/var/log/oci-migrator/upgrade.log")).resolve()
 UPGRADE_LOCK_DIR = UPGRADE_STATUS_FILE.parent / "upgrade.lock"
 SERVICE_PREFIX = os.getenv("OCI_MIGRATOR_SERVICE_PREFIX", "migrator")
@@ -2457,6 +2461,62 @@ def latest_git_info() -> dict:
     }
 
 
+def read_upgrade_check_file() -> dict:
+    try:
+        with open(UPGRADE_CHECK_FILE, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        return payload if isinstance(payload, dict) else {}
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+
+
+def write_upgrade_check_file(payload: dict) -> None:
+    try:
+        UPGRADE_CHECK_FILE.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(dir=UPGRADE_CHECK_FILE.parent)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2)
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, UPGRADE_CHECK_FILE)
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+    except OSError as exc:
+        logger.warning("Could not persist update check result: %s", exc)
+
+
+def cached_latest_git_info(force: bool = False) -> dict:
+    current = current_git_info()
+    cached = read_upgrade_check_file()
+    try:
+        checked_at_epoch = datetime.fromisoformat(str(cached.get("checked_at", ""))).timestamp()
+    except (TypeError, ValueError):
+        checked_at_epoch = None
+    cache_matches_install = bool(current.get("current_commit")) and cached.get("current_commit") == current.get("current_commit")
+    cache_is_fresh = (
+        isinstance(checked_at_epoch, (int, float))
+        and time.time() - float(checked_at_epoch) < UPGRADE_CHECK_INTERVAL_SECONDS
+    )
+    if not force and cache_matches_install and cache_is_fresh and cached.get("latest_commit"):
+        return {**cached, "cached": True}
+
+    result = latest_git_info()
+    checked_at_epoch = time.time()
+    checked_at = datetime.fromtimestamp(checked_at_epoch, timezone.utc)
+    payload = {
+        **result,
+        "checked_at": checked_at.isoformat(),
+        "next_check_at": datetime.fromtimestamp(
+            checked_at_epoch + UPGRADE_CHECK_INTERVAL_SECONDS,
+            timezone.utc,
+        ).isoformat(),
+        "cached": False,
+    }
+    write_upgrade_check_file(payload)
+    return payload
+
+
 def read_upgrade_status_file() -> dict:
     default_status = {
         "status": "idle",
@@ -3643,8 +3703,9 @@ async def upgrade_status():
 
 
 @app.post("/upgrade/check")
-async def check_for_upgrade():
-    return latest_git_info()
+async def check_for_upgrade(force: bool = Query(default=False)):
+    with UPGRADE_LOCK:
+        return cached_latest_git_info(force=force)
 
 
 @app.post("/upgrade/start")
@@ -3676,6 +3737,7 @@ async def start_upgrade():
     return {
         **upgrade_status_payload(),
         "status": "running",
+        "phase": "queued",
         "message": "Upgrade started. The service may restart during installation.",
     }
 

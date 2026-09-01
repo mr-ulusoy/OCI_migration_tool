@@ -156,7 +156,9 @@ cd /opt/oci-migrator
 
 ## Upgrade
 
-The managed dashboard upgrade is the normal path. For manual recovery:
+The managed dashboard upgrade is the normal path. Update availability is cached in `/var/lib/oci-migrator/upgrade/check.json` for 24 hours; the dashboard `Check` command forces an immediate refresh. Structured progress is stored in `/var/lib/oci-migrator/upgrade/status.json`, while the complete troubleshooting output remains in `/var/log/oci-migrator/upgrade.log`.
+
+For manual recovery:
 
 ```bash
 cd /opt/oci-migrator

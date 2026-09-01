@@ -72,12 +72,14 @@ write_status() {
   local message="$2"
   local current_commit="${3:-}"
   local target_commit="${4:-}"
+  local phase="${5:-}"
 
   STATUS_FILE="$UPGRADE_STATUS_FILE" \
   STATE="$state" \
   MESSAGE="$message" \
   CURRENT_COMMIT="$current_commit" \
   TARGET_COMMIT="$target_commit" \
+  PHASE="$phase" \
   LOG_FILE="$UPGRADE_LOG_FILE" \
   python3 - <<'PY'
 import json
@@ -106,6 +108,7 @@ data.update(
     {
         "status": state,
         "message": os.environ["MESSAGE"],
+        "phase": os.environ.get("PHASE", ""),
         "current_commit": os.environ.get("CURRENT_COMMIT", ""),
         "target_commit": os.environ.get("TARGET_COMMIT", ""),
         "updated_at": now,
@@ -174,7 +177,7 @@ finish_failed() {
   local exit_code=$?
   if [ "$exit_code" -ne 0 ]; then
     log "Upgrade failed with exit code $exit_code."
-    write_status "failed" "Upgrade failed. Check the upgrade log." "$(git_value rev-parse HEAD)" "$(git_value rev-parse "origin/$BRANCH")"
+    write_status "failed" "Upgrade failed. Open the technical log for details." "$(git_value rev-parse HEAD)" "$(git_value rev-parse "origin/$BRANCH")" "failed"
   fi
   rm -rf "$UPGRADE_STATE_DIR/upgrade.lock"
   exit "$exit_code"
@@ -188,11 +191,11 @@ schedule_upgrade() {
 
   clear_stale_upgrade_lock || true
   if [ -d "$UPGRADE_STATE_DIR/upgrade.lock" ]; then
-    write_status "running" "Upgrade is already running." "$(git_value rev-parse HEAD)" "$(git_value rev-parse "origin/$BRANCH")"
+    write_status "running" "Upgrade is already running." "$(git_value rev-parse HEAD)" "$(git_value rev-parse "origin/$BRANCH")" "queued"
     fail "Upgrade is already running."
   fi
 
-  write_status "running" "Upgrade queued." "$(git_value rev-parse HEAD)" ""
+  write_status "running" "Upgrade queued." "$(git_value rev-parse HEAD)" "" "queued"
 
   if command -v systemd-run >/dev/null 2>&1; then
     systemd-run \
@@ -214,7 +217,7 @@ run_upgrade() {
 
   clear_stale_upgrade_lock || true
   if ! mkdir "$UPGRADE_STATE_DIR/upgrade.lock" 2>/dev/null; then
-    write_status "running" "Upgrade is already running." "$(git_value rev-parse HEAD)" "$(git_value rev-parse "origin/$BRANCH")"
+    write_status "running" "Upgrade is already running." "$(git_value rev-parse HEAD)" "$(git_value rev-parse "origin/$BRANCH")" "queued"
     fail "Upgrade is already running."
   fi
   printf '%s\n' "$$" > "$UPGRADE_STATE_DIR/upgrade.lock/pid"
@@ -227,7 +230,7 @@ run_upgrade() {
 
   local current_commit target_commit new_commit
   current_commit="$(git_value rev-parse HEAD)"
-  write_status "running" "Checking GitHub for updates." "$current_commit" ""
+  write_status "running" "Checking GitHub for updates." "$current_commit" "" "checking"
   log "Starting controlled upgrade for $INSTALL_DIR ($BRANCH)."
 
   run_as_user git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL"
@@ -236,18 +239,18 @@ run_upgrade() {
 
   if [ -n "$current_commit" ] && [ "$current_commit" = "$target_commit" ]; then
     log "Already up to date at $current_commit."
-    write_status "success" "Already up to date." "$current_commit" "$target_commit"
+    write_status "success" "Already up to date." "$current_commit" "$target_commit" "complete"
     rm -rf "$UPGRADE_STATE_DIR/upgrade.lock"
     trap - EXIT
     exit 0
   fi
 
-  write_status "running" "Downloading latest version." "$current_commit" "$target_commit"
+  write_status "running" "Downloading latest version." "$current_commit" "$target_commit" "downloading"
   run_as_user git -C "$INSTALL_DIR" checkout "$BRANCH"
   run_as_user git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH"
   new_commit="$(git_value rev-parse HEAD)"
 
-  write_status "running" "Installing latest version." "$new_commit" "$target_commit"
+  write_status "running" "Installing dependencies and restarting services." "$new_commit" "$target_commit" "installing"
   local install_cmd
   install_cmd=(
     ./install.sh
@@ -281,7 +284,7 @@ run_upgrade() {
   log "+ ${install_cmd[*]}"
   "${install_cmd[@]}" >>"$UPGRADE_LOG_FILE" 2>&1
 
-  write_status "success" "Upgrade complete." "$new_commit" "$target_commit"
+  write_status "success" "Upgrade complete." "$new_commit" "$target_commit" "complete"
   log "Upgrade complete at $new_commit."
   rm -rf "$UPGRADE_STATE_DIR/upgrade.lock"
   trap - EXIT
