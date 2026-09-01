@@ -2507,8 +2507,11 @@ export default function App() {
           <div className="flex min-w-0 items-center gap-3">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-[#a9342d] shadow-sm"><Cpu size={19} className="text-white" /></div>
             <div className="min-w-0">
-              <h1 className="truncate text-sm font-bold text-white">Cloud Migration Console</h1>
-              <p className="mt-0.5 text-[11px] text-gray-500">Backup &amp; migration operations</p>
+              <h1 className="text-sm font-bold leading-5 text-white">
+                <span className="block">Cloud Migration</span>
+                <span className="block">Console</span>
+              </h1>
+              <p className="mt-0.5 whitespace-nowrap text-[11px] text-gray-500">Backup &amp; migration</p>
             </div>
           </div>
           <button type="button" onClick={() => setSidebarOpen(false)} className="app-sidebar-icon mobile-only" title="Close navigation"><X size={17} /></button>
