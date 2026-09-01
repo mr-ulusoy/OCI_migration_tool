@@ -79,13 +79,112 @@ Add optional metadata as name/value pairs. Enter names such as `site` or `ticket
 
 ### Transfer settings
 
-- `Transfers`: number of parallel file transfers.
-- `Checkers`: number of parallel object checks.
-- `Buffer Size`: per-transfer memory buffer.
-- `Bandwidth Limit`: optional rclone bandwidth limit such as `700M` or `1G`; blank means unlimited.
-- `API TPS Limit`: optional API transaction limit; blank or `0` means unlimited.
+These fields control rclone concurrency, memory use, network utilization, and API request rate. Change one setting at a time and compare several completed runs before increasing it again.
 
-Higher concurrency can improve throughput but also increases memory use and API request load. Start conservatively and tune from measured backup runs.
+#### Transfers
+
+`Transfers` is the number of files rclone can transfer at the same time.
+
+- Increase it when the job contains many small or medium files and the network is not fully utilized.
+- Reduce it when the source disk is overloaded, memory use is high, connections are unstable, or the cloud provider starts throttling requests.
+- A few very large files normally need less concurrency than millions of small files.
+
+Recommended starting values:
+
+| Workload | Transfers |
+| --- | ---: |
+| Mostly large files, 1 GB or larger | `4` to `8` |
+| Mixed file sizes | `8` to `16` |
+| Mostly small files | `16` to `32` |
+
+For the planned 1 Gbit/s backup server, start at `16` for mixed data. Lower it to `8` for large sequential files or increase it carefully toward `32` only when CPU, RAM, source storage, and API limits all have available capacity.
+
+#### Checkers
+
+`Checkers` is the number of parallel checks used while listing and comparing source and destination objects. Checkers do not transfer file contents, but they can generate many metadata/list API requests.
+
+- Increase it when a job spends a long time scanning before or between transfers.
+- Reduce it when the source or destination reports rate limiting, timeouts, or excessive API traffic.
+- A useful starting point is approximately two checkers per transfer.
+
+Recommended starting values:
+
+| Workload | Checkers |
+| --- | ---: |
+| Mostly large files | `8` to `16` |
+| Mixed file sizes | `16` to `32` |
+| Millions of small files | `32` to `64`, after testing |
+
+For the planned server, start at `32` with `16` transfers.
+
+#### Buffer Size
+
+`Buffer Size` is the in-memory read buffer allocated for each active transfer. A larger buffer can help on high-latency paths, but it does not automatically make a fast local or OCI connection faster.
+
+Approximate transfer buffer memory is:
+
+```text
+Transfers x Buffer Size
+```
+
+Examples:
+
+| Transfers | Buffer Size | Approximate transfer buffers |
+| ---: | ---: | ---: |
+| `8` | `16M` | `128 MiB` |
+| `16` | `16M` | `256 MiB` |
+| `16` | `128M` | `2 GiB` |
+| `16` | `512M` | `8 GiB` |
+
+This is not the application's total memory use. rclone, multipart uploads, the API, worker, Redis, and the operating system require additional memory.
+
+- `16M`: recommended default and safest starting point.
+- `128M`: use only after testing shows that buffering improves throughput and the server has sufficient free RAM.
+- `512M`: not recommended for normal use; reserve it for measured high-latency cases on a high-memory server with low transfer concurrency.
+
+#### Bandwidth Limit
+
+`Bandwidth Limit` caps the total rclone transfer rate for the job. Blank or `off` means unlimited.
+
+The suffix is **bytes per second**, not bits per second. For example, `100M` is approximately 100 MiB/s or 839 Mbit/s. Do not enter `700M` to mean 700 Mbit/s; approximately `83M` represents 700 Mbit/s.
+
+Recommended values for a 1 Gbit/s connection:
+
+| Goal | Bandwidth Limit | Approximate network rate | Approximate maximum per day |
+| --- | ---: | ---: | ---: |
+| Leave capacity for other services | `80M` | 671 Mbit/s | 7.2 TB |
+| Backup-focused shared link | `90M` | 755 Mbit/s | 8.2 TB |
+| Mostly dedicated backup link | `100M` | 839 Mbit/s | 9.1 TB |
+| Maximum available throughput | blank / `off` | Up to line speed | Up to 10.8 TB theoretical |
+
+Daily figures are transfer-rate estimates before protocol overhead, retries, file checks, API latency, and source disk limits. Moving 10 TB every day over 1 Gbit/s requires the connection to remain close to full utilization for almost the entire day, so blank/`off` is normally required and the practical result may still be lower.
+
+#### API TPS Limit
+
+`API TPS Limit` caps rclone transactions per second. A transaction is approximately one backend API request. Blank or `0` means unlimited.
+
+- Keep it blank or `0` under normal conditions.
+- Start at `10` when a provider returns rate-limit responses, HTTP `429`, throttling, or repeated API timeouts.
+- If the job becomes stable, increase in small steps such as `10`, `20`, and `30` while monitoring errors and completion time.
+- Lower values reduce pressure on the provider but can significantly slow jobs containing many small files because each file requires multiple API operations.
+
+Do not use TPS limiting as the primary network control. Use `Bandwidth Limit` for data throughput and `API TPS Limit` only for API request pressure.
+
+#### Recommended baseline
+
+For a dedicated OCI Migrator server with a 1 Gbit/s connection and mixed file sizes, use this initial profile:
+
+| Setting | Initial value |
+| --- | ---: |
+| Transfers | `16` |
+| Checkers | `32` |
+| Buffer Size | `16M` |
+| Bandwidth Limit | `90M`, or blank on a dedicated link |
+| API TPS Limit | blank / `0` |
+
+Run representative jobs before raising concurrency. If the network is below the target while CPU, RAM, source disk, and API error counts remain healthy, increase `Transfers` first. Increase `Checkers` only when listing/comparison is the bottleneck. Increase `Buffer Size` last.
+
+See the official [rclone global options documentation](https://rclone.org/docs/) for the precise flag behavior and units.
 
 ### Schedule
 
