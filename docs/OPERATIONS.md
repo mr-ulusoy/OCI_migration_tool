@@ -313,6 +313,17 @@ OCI Migrator does not currently provision the target VM or attach the created da
 
 `Check` compares the installed commit with the latest GitHub commit. `Upgrade` installs the latest version, and `Log` shows progress while the API and frontend restart. Runtime configuration is preserved by the managed upgrade process.
 
+### HTTPS & Certificates
+
+HTTPS is required for production use. Select one mode:
+
+- `Let's Encrypt`: Caddy obtains and automatically renews a public certificate. The DNS hostname must resolve to the server and inbound TCP `80` and `443` must be allowed.
+- `Corporate Certificate`: Caddy serves a customer-issued PEM full chain and matching unencrypted PEM private key. Enter absolute file paths on the server; the files are validated and copied into protected storage.
+- `External TLS`: an existing load balancer or reverse proxy owns the certificate and forwards requests to OCI Migrator with `X-Forwarded-Proto: https`.
+- `HTTP Setup`: recovery and initial configuration only. Credentials and session tokens are not encrypted in transit.
+
+`Open HTTPS` opens the configured dashboard hostname. The status line shows whether the managed Caddy service is active. Reapply `Corporate Certificate` after replacing renewed certificate files. See the [Installation Guide](INSTALL.md#https-setup) for DNS, firewall, and certificate preparation.
+
 ### Notifications
 
 Configure outbound syslog notifications for backup results:
@@ -338,6 +349,8 @@ Enter the current admin password, the new password, and confirmation. Use a uniq
 - `Import`: uploads a previously exported ZIP and restores the contained configuration after validation.
 
 The ZIP contains secrets. Store it encrypted or in another access-controlled location. Import can replace active credentials and job configuration, so take a fresh export before restoring an older archive.
+
+TLS mode, dashboard hostname, certificate source, and allowed browser origins are server-specific and remain unchanged during import. Managed Caddy certificate/private-key copies are not included in the portable ZIP; configure HTTPS separately on a replacement server.
 
 ### Network
 

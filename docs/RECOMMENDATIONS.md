@@ -2,17 +2,11 @@
 
 OCI Migrator Pro is intended to run as a self-hosted administrative service. The installation, dashboard configuration, backup operations, monitoring, recovery, and runtime backup procedures are documented in the [Dashboard Configuration](OPERATIONS.md) and [Server Runbook](RUNBOOK.md). This page tracks only the remaining controls that matter before wider production use.
 
-## 1. Protect Administrative Traffic With TLS
+## 1. Enforce HTTPS And Network Boundaries
 
-Use TLS for all browser and API access, including access from internal corporate networks. The application currently serves HTTP on its configured app/API port, typically `8000`.
+Use `Settings` -> `HTTPS & Certificates` to configure managed Let's Encrypt, a corporate certificate, or external TLS termination. HTTPS is required for all production browser and API access, including access from internal corporate networks.
 
-Terminate TLS with infrastructure that fits the target environment, for example:
-
-- a corporate load balancer or ingress gateway
-- an existing reverse proxy
-- a VPN or private access gateway that provides encrypted application access
-
-Restrict the application port to approved management networks. A dedicated Caddy or Nginx installation is optional when existing infrastructure already provides TLS and access control.
+The direct app/API port, typically `8000`, remains available for initial setup, health monitoring, and recovery. Restrict it to approved management or monitoring networks with the customer firewall, OCI Security List, or NSG. Expose TCP `80` and `443` only where required by the selected certificate mode. See the [Installation Guide](INSTALL.md#https-setup) for the supported deployment models.
 
 ## 2. Harden Browser Sessions
 

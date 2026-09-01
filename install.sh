@@ -14,6 +14,11 @@ JOB_LOG_HELPER="${OCI_MIGRATOR_JOB_LOG_HELPER:-/usr/local/sbin/oci-migrator-job-
 LOCAL_SHARE_HELPER="${OCI_MIGRATOR_LOCAL_SHARE_HELPER:-/usr/local/sbin/oci-migrator-local-share}"
 TIME_SYNC_HELPER="${OCI_MIGRATOR_TIME_SYNC_HELPER:-/usr/local/sbin/oci-migrator-time-sync}"
 NETWORK_HELPER="${OCI_MIGRATOR_NETWORK_HELPER:-/usr/local/sbin/oci-migrator-network}"
+TLS_HELPER="${OCI_MIGRATOR_TLS_HELPER:-/usr/local/sbin/oci-migrator-tls}"
+TLS_CONFIG="${OCI_MIGRATOR_TLS_CONFIG:-/etc/oci-migrator/tls.conf}"
+TLS_STATE_DIR="${OCI_MIGRATOR_TLS_STATE_DIR:-/var/lib/oci-migrator/tls}"
+TLS_CADDYFILE="${OCI_MIGRATOR_TLS_CADDYFILE:-/etc/oci-migrator/Caddyfile}"
+TLS_SERVICE="${OCI_MIGRATOR_TLS_SERVICE:-}"
 LOCAL_SHARE_CONFIG="/etc/oci-migrator/local-share.conf"
 UPGRADE_HELPER="${OCI_MIGRATOR_UPGRADE_HELPER:-/usr/local/sbin/oci-migrator-upgrade}"
 UPGRADE_CONFIG="${OCI_MIGRATOR_UPGRADE_CONFIG:-/etc/oci-migrator/upgrade.conf}"
@@ -103,6 +108,7 @@ Options:
   --local-share-helper PATH   Root helper used by the UI for optional SMB/NFS shares. Default: $LOCAL_SHARE_HELPER
   --time-sync-helper PATH     Root helper used by the UI for timezone/NTP. Default: $TIME_SYNC_HELPER
   --network-helper PATH       Root helper used by the UI for DHCP/static IPv4. Default: $NETWORK_HELPER
+  --tls-helper PATH           Root helper used by the UI for HTTPS configuration. Default: $TLS_HELPER
   --upgrade-helper PATH       Root helper used by the UI for controlled upgrades. Default: $UPGRADE_HELPER
   --uninstall-helper PATH     Root helper used by the UI for controlled uninstall. Default: $UNINSTALL_HELPER
   --timezone ZONE             Server timezone for schedules/logs. Default: $SERVER_TIMEZONE
@@ -124,6 +130,7 @@ Environment variables with the same names are also supported:
   OCI_MIGRATOR_JOB_LOG_RETENTION_DAYS, OCI_MIGRATOR_JOB_LOG_HELPER,
   OCI_MIGRATOR_LOCAL_SHARE_HELPER, OCI_MIGRATOR_TIME_SYNC_HELPER,
   OCI_MIGRATOR_NETWORK_HELPER,
+  OCI_MIGRATOR_TLS_HELPER,
   OCI_MIGRATOR_UPGRADE_HELPER, OCI_MIGRATOR_UNINSTALL_HELPER,
   OCI_MIGRATOR_TIMEZONE, OCI_MIGRATOR_NTP_SERVERS,
   OCI_MIGRATOR_ENV_FILE, OPEN_FIREWALL, STOP_LEGACY_PROCESSES,
@@ -193,6 +200,10 @@ parse_args() {
         ;;
       --network-helper)
         NETWORK_HELPER="$2"
+        shift 2
+        ;;
+      --tls-helper)
+        TLS_HELPER="$2"
         shift 2
         ;;
       --upgrade-helper)
@@ -270,6 +281,7 @@ parse_args() {
 }
 
 initialize_runtime_paths() {
+  TLS_SERVICE="${TLS_SERVICE:-$SERVICE_PREFIX-tls.service}"
   if [ -z "$RUN_USER" ]; then
     if [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER:-}" != "root" ]; then
       RUN_USER="$SUDO_USER"
@@ -326,6 +338,14 @@ validate_job_log_settings() {
       ;;
     *)
       fail "--network-helper must be an absolute path."
+      ;;
+  esac
+
+  case "$TLS_HELPER" in
+    /*)
+      ;;
+    *)
+      fail "--tls-helper must be an absolute path."
       ;;
   esac
 }
@@ -516,6 +536,9 @@ install_system_dependencies() {
     ca-certificates \
     cifs-utils \
     curl \
+    apt-transport-https \
+    debian-archive-keyring \
+    debian-keyring \
     gnupg \
     iproute2 \
     iptables \
@@ -532,6 +555,26 @@ install_system_dependencies() {
     systemd-timesyncd \
     tzdata \
     unzip
+}
+
+install_caddy_support() {
+  if command -v caddy >/dev/null 2>&1; then
+    log "Caddy $(caddy version 2>/dev/null || printf 'is installed')"
+    return
+  fi
+
+  log "Installing Caddy for managed HTTPS"
+  if ! "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y caddy; then
+    curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key -o /tmp/caddy-stable.gpg.key
+    curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt -o /tmp/caddy-stable.list
+    "${SUDO[@]}" gpg --dearmor --yes -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg /tmp/caddy-stable.gpg.key
+    "${SUDO[@]}" install -o root -g root -m 644 /tmp/caddy-stable.list /etc/apt/sources.list.d/caddy-stable.list
+    "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get update
+    "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y caddy
+  fi
+
+  # OCI Migrator uses its own isolated Caddy unit and never edits /etc/caddy/Caddyfile.
+  "${SUDO[@]}" systemctl disable --now caddy.service caddy-api.service >/dev/null 2>&1 || true
 }
 
 configure_time_sync() {
@@ -631,6 +674,11 @@ ensure_env_file() {
       printf 'OCI_MIGRATOR_LOCAL_SHARE_TIMEOUT_SECONDS=300\n'
       printf 'OCI_MIGRATOR_TIME_SYNC_HELPER=%s\n' "$TIME_SYNC_HELPER"
       printf 'OCI_MIGRATOR_NETWORK_HELPER=%s\n' "$NETWORK_HELPER"
+      printf 'OCI_MIGRATOR_TLS_HELPER=%s\n' "$TLS_HELPER"
+      printf 'OCI_MIGRATOR_TLS_MODE=http\n'
+      printf 'OCI_MIGRATOR_TLS_HOSTNAME=\n'
+      printf 'OCI_MIGRATOR_TLS_EMAIL=\n'
+      printf 'OCI_MIGRATOR_TLS_CERT_SOURCE=\n'
       printf 'OCI_MIGRATOR_UPGRADE_HELPER=%s\n' "$UPGRADE_HELPER"
       printf 'OCI_MIGRATOR_UNINSTALL_HELPER=%s\n' "$UNINSTALL_HELPER"
       printf 'OCI_MIGRATOR_UPGRADE_STATUS_FILE=%s\n' "$UPGRADE_STATUS_FILE"
@@ -667,6 +715,11 @@ ensure_env_file() {
     grep -q '^OCI_MIGRATOR_LOCAL_SHARE_TIMEOUT_SECONDS=' "$ENV_FILE" || printf 'OCI_MIGRATOR_LOCAL_SHARE_TIMEOUT_SECONDS=300\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_TIME_SYNC_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_TIME_SYNC_HELPER=%s\n' "$TIME_SYNC_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_NETWORK_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_NETWORK_HELPER=%s\n' "$NETWORK_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_TLS_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_TLS_HELPER=%s\n' "$TLS_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_TLS_MODE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_TLS_MODE=http\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_TLS_HOSTNAME=' "$ENV_FILE" || printf 'OCI_MIGRATOR_TLS_HOSTNAME=\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_TLS_EMAIL=' "$ENV_FILE" || printf 'OCI_MIGRATOR_TLS_EMAIL=\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_TLS_CERT_SOURCE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_TLS_CERT_SOURCE=\n' | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UPGRADE_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_HELPER=%s\n' "$UPGRADE_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UNINSTALL_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UNINSTALL_HELPER=%s\n' "$UNINSTALL_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UPGRADE_STATUS_FILE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_STATUS_FILE=%s\n' "$UPGRADE_STATUS_FILE" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
@@ -773,6 +826,16 @@ load_network_helper_from_env() {
   configured_network_helper="$(grep '^OCI_MIGRATOR_NETWORK_HELPER=' "$ENV_FILE" | tail -1 | cut -d= -f2- || true)"
   if [ -n "$configured_network_helper" ]; then
     NETWORK_HELPER="$configured_network_helper"
+  fi
+}
+
+load_tls_helper_from_env() {
+  [ -f "$ENV_FILE" ] || return 0
+
+  local configured_tls_helper
+  configured_tls_helper="$(grep '^OCI_MIGRATOR_TLS_HELPER=' "$ENV_FILE" | tail -1 | cut -d= -f2- || true)"
+  if [ -n "$configured_tls_helper" ]; then
+    TLS_HELPER="$configured_tls_helper"
   fi
 }
 
@@ -923,6 +986,72 @@ install_network_helper() {
   rm -f "$sudoers_temp"
 }
 
+install_tls_helper() {
+  log "Installing managed HTTPS helper"
+
+  local helper_source
+  helper_source="$PROJECT_DIR/scripts/tls-helper.sh"
+  [ -f "$helper_source" ] || fail "Missing helper source: $helper_source"
+
+  "${SUDO[@]}" install -d -o root -g root -m 755 "$(dirname "$TLS_HELPER")" "$(dirname "$TLS_CONFIG")"
+  "${SUDO[@]}" install -o root -g root -m 755 "$helper_source" "$TLS_HELPER"
+  "${SUDO[@]}" install -d -o root -g root -m 700 "$TLS_STATE_DIR"
+  "${SUDO[@]}" install -d -o caddy -g caddy -m 750 "$TLS_STATE_DIR/data" "$TLS_STATE_DIR/config" "$TLS_STATE_DIR/logs"
+
+  local helper_config
+  helper_config="$(mktemp)"
+  {
+    printf 'ENV_FILE=%q\n' "$ENV_FILE"
+    printf 'API_PORT=%q\n' "$API_PORT"
+    printf 'SERVICE_PREFIX=%q\n' "$SERVICE_PREFIX"
+    printf 'CADDYFILE=%q\n' "$TLS_CADDYFILE"
+    printf 'TLS_STATE_DIR=%q\n' "$TLS_STATE_DIR"
+    printf 'TLS_SERVICE=%q\n' "$TLS_SERVICE"
+  } > "$helper_config"
+  "${SUDO[@]}" install -o root -g root -m 600 "$helper_config" "$TLS_CONFIG"
+  rm -f "$helper_config"
+
+  "${SUDO[@]}" tee "/etc/systemd/system/$TLS_SERVICE" >/dev/null <<EOF
+[Unit]
+Description=OCI Migrator managed HTTPS endpoint
+After=network-online.target $SERVICE_PREFIX-api.service
+Wants=network-online.target $SERVICE_PREFIX-api.service
+
+[Service]
+Type=notify
+User=caddy
+Group=caddy
+Environment=XDG_DATA_HOME=$TLS_STATE_DIR/data
+Environment=XDG_CONFIG_HOME=$TLS_STATE_DIR/config
+ExecStart=/usr/bin/caddy run --environ --config $TLS_CADDYFILE --adapter caddyfile
+ExecReload=/usr/bin/caddy reload --config $TLS_CADDYFILE --adapter caddyfile --force
+TimeoutStopSec=5s
+LimitNOFILE=1048576
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=$TLS_STATE_DIR
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  local sudoers_file sudoers_temp
+  sudoers_file="/etc/sudoers.d/$SERVICE_PREFIX-tls"
+  sudoers_temp="$(mktemp)"
+  {
+    printf '# Allow OCI Migrator to manage only its validated HTTPS configuration.\n'
+    printf '%s ALL=(root) NOPASSWD: %s\n' "$RUN_USER" "$TLS_HELPER"
+  } > "$sudoers_temp"
+  "${SUDO[@]}" visudo -cf "$sudoers_temp" >/dev/null
+  "${SUDO[@]}" install -o root -g root -m 440 "$sudoers_temp" "$sudoers_file"
+  rm -f "$sudoers_temp"
+  "${SUDO[@]}" systemctl daemon-reload
+}
+
 install_local_share_helper() {
   log "Installing optional local SMB/NFS share helper"
 
@@ -1009,6 +1138,7 @@ install_upgrade_helper() {
     printf 'LOCAL_SHARE_HELPER=%q\n' "$LOCAL_SHARE_HELPER"
     printf 'TIME_SYNC_HELPER=%q\n' "$TIME_SYNC_HELPER"
     printf 'NETWORK_HELPER=%q\n' "$NETWORK_HELPER"
+    printf 'TLS_HELPER=%q\n' "$TLS_HELPER"
     printf 'UPGRADE_HELPER=%q\n' "$UPGRADE_HELPER"
     printf 'UNINSTALL_HELPER=%q\n' "$UNINSTALL_HELPER"
     printf 'UPGRADE_STATE_DIR=%q\n' "$UPGRADE_STATE_DIR"
@@ -1241,10 +1371,25 @@ start_services() {
   "${SUDO[@]}" systemctl enable --now "$SERVICE_PREFIX-scheduler.timer"
 }
 
+restore_tls_service() {
+  local tls_mode
+  tls_mode="$(grep '^OCI_MIGRATOR_TLS_MODE=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+  case "$tls_mode" in
+    letsencrypt|custom)
+      [ -f "$TLS_CADDYFILE" ] || fail "HTTPS mode is $tls_mode but the managed Caddyfile is missing: $TLS_CADDYFILE"
+      log "Starting managed HTTPS service"
+      "${SUDO[@]}" systemctl enable "$TLS_SERVICE" >/dev/null
+      "${SUDO[@]}" systemctl restart "$TLS_SERVICE"
+      ;;
+    *)
+      ;;
+  esac
+}
+
 open_firewall_ports() {
   [ "$OPEN_FIREWALL" = "1" ] || return 0
 
-  local ports=(22 "$API_PORT" 445 2049)
+  local ports=(22 80 443 "$API_PORT" 445 2049)
   local port
   local seen=" "
 
@@ -1256,7 +1401,7 @@ open_firewall_ports() {
     esac
   done
 
-  log "Opening local firewall TCP ports: 22 $API_PORT 445 2049"
+  log "Opening local firewall TCP ports: 22 80 443 $API_PORT 445 2049"
   if command -v ufw >/dev/null 2>&1 && "${SUDO[@]}" ufw status | grep -q 'Status: active'; then
     for port in "${ports[@]}"; do
       case "$seen" in
@@ -1281,9 +1426,16 @@ open_firewall_ports() {
 }
 
 print_summary() {
+  local tls_mode tls_hostname
+  tls_mode="$(grep '^OCI_MIGRATOR_TLS_MODE=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || printf 'http')"
+  tls_hostname="$(grep '^OCI_MIGRATOR_TLS_HOSTNAME=' "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- || true)"
   printf '\n'
   printf 'Installation complete.\n'
-  printf 'App:      http://%s:%s\n' "${PUBLIC_HOST:-localhost}" "$API_PORT"
+  if [ "$tls_mode" != "http" ] && [ -n "$tls_hostname" ]; then
+    printf 'App:      https://%s\n' "$tls_hostname"
+  else
+    printf 'App:      http://%s:%s (setup only; configure HTTPS in Settings)\n' "${PUBLIC_HOST:-localhost}" "$API_PORT"
+  fi
   printf 'API:      http://%s:%s\n' "${PUBLIC_HOST:-localhost}" "$API_PORT"
   printf 'Env file: %s\n' "$ENV_FILE"
   printf 'Time:     timezone %s, NTP %s\n' "$SERVER_TIMEZONE" "$NTP_SERVERS"
@@ -1313,6 +1465,7 @@ main() {
   initialize_runtime_paths
   ensure_supported_os
   install_system_dependencies
+  install_caddy_support
   load_admin_password_input
   install_node
   install_rclone
@@ -1323,6 +1476,7 @@ main() {
   load_time_settings_from_env
   load_time_sync_helper_from_env
   load_network_helper_from_env
+  load_tls_helper_from_env
   load_job_log_settings_from_env
   validate_time_settings
   validate_job_log_settings
@@ -1333,6 +1487,7 @@ main() {
   install_job_log_helper
   install_time_sync_helper
   install_network_helper
+  install_tls_helper
   install_local_share_helper
   install_upgrade_helper
   install_uninstall_helper
@@ -1342,6 +1497,7 @@ main() {
   check_ports
   write_systemd_units
   start_services
+  restore_tls_service
   open_firewall_ports
   print_summary
 }

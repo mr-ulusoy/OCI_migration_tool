@@ -263,6 +263,7 @@ run_upgrade() {
     --local-share-helper "${LOCAL_SHARE_HELPER:-/usr/local/sbin/oci-migrator-local-share}"
     --time-sync-helper "${TIME_SYNC_HELPER:-/usr/local/sbin/oci-migrator-time-sync}"
     --network-helper "${NETWORK_HELPER:-/usr/local/sbin/oci-migrator-network}"
+    --tls-helper "${TLS_HELPER:-/usr/local/sbin/oci-migrator-tls}"
     --upgrade-helper "$UPGRADE_HELPER"
     --uninstall-helper "${UNINSTALL_HELPER:-/usr/local/sbin/oci-migrator-uninstall}"
     --timezone "${SERVER_TIMEZONE:-Europe/Stockholm}"

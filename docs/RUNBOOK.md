@@ -27,7 +27,7 @@ journalctl -u migrator-worker -f
 curl http://127.0.0.1:8000/health
 ```
 
-The public health response reports overall status and checks for the admin hash, runtime files, OCI/rclone configuration, frontend build, local disk usage, upgrade/uninstall helpers, timezone, NTP, and Redis.
+The public health response reports overall status and checks for the admin hash, runtime files, OCI/rclone configuration, frontend build, local disk usage, HTTPS, upgrade/uninstall helpers, timezone, NTP, and Redis.
 
 `make doctor` additionally checks system dependencies, systemd services, listening ports, the public health endpoint, and an authenticated backend response.
 
@@ -38,13 +38,13 @@ Monitoring systems on the same network can pull JSON status or Prometheus metric
 Open health check:
 
 ```bash
-curl http://<server>:8000/health
+curl https://oci-migrator.example.internal/health
 ```
 
 Authenticated JSON status:
 
 ```bash
-curl -H "X-API-Token: <token>" http://<server>:8000/monitoring/status
+curl -H "X-API-Token: <token>" https://oci-migrator.example.internal/monitoring/status
 ```
 
 The JSON response includes service state, Redis/rclone/NTP checks, disk utilization, active backup job counts, latest success/failure timestamps, failed and running jobs, and jobs that have never run.
@@ -52,7 +52,7 @@ The JSON response includes service state, Redis/rclone/NTP checks, disk utilizat
 Prometheus metrics:
 
 ```bash
-curl -H "X-API-Token: <token>" http://<server>:8000/metrics
+curl -H "X-API-Token: <token>" https://oci-migrator.example.internal/metrics
 ```
 
 Example scrape configuration:
@@ -61,9 +61,9 @@ Example scrape configuration:
 scrape_configs:
   - job_name: oci-migrator
     metrics_path: /metrics
-    scheme: http
+    scheme: https
     static_configs:
-      - targets: ["oci-migrator.example.internal:8000"]
+      - targets: ["oci-migrator.example.internal:443"]
     authorization:
       credentials: "<token>"
 ```

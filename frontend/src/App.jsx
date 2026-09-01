@@ -448,6 +448,9 @@ export default function App() {
   const [networkSettings, setNetworkSettings] = useState(null);
   const [networkSettingsForm, setNetworkSettingsForm] = useState({ mode: 'dhcp', interface: '', address: '', prefixLength: 24, gateway: '', dnsServers: '' });
   const [savingNetworkSettings, setSavingNetworkSettings] = useState(false);
+  const [tlsSettings, setTlsSettings] = useState(null);
+  const [tlsSettingsForm, setTlsSettingsForm] = useState({ mode: 'http', hostname: '', email: '', certPath: '', keyPath: '' });
+  const [savingTlsSettings, setSavingTlsSettings] = useState(false);
   const [networkNow, setNetworkNow] = useState(Date.now());
   const [rcloneDefaultSettings, setRcloneDefaultSettings] = useState({ bwlimit: '', tpslimit: null });
   const [rcloneDefaultSettingsForm, setRcloneDefaultSettingsForm] = useState({ bwlimit: '', tpslimit: '' });
@@ -743,6 +746,26 @@ export default function App() {
           gateway: res.data.gateway || selectedInterface?.gateway || '',
           dnsServers
         });
+      }
+      return res.data;
+    } catch (err) {
+      console.error(err);
+      return null;
+    }
+  };
+
+  const fetchTlsSettings = async (resetForm = true) => {
+    try {
+      const res = await api.get('/tls-settings');
+      setTlsSettings(res.data);
+      if (resetForm) {
+        setTlsSettingsForm(current => ({
+          mode: res.data.mode || 'http',
+          hostname: res.data.hostname || '',
+          email: res.data.email || '',
+          certPath: res.data.mode === 'custom' ? (res.data.certificate_source || current.certPath || '') : '',
+          keyPath: current.keyPath || ''
+        }));
       }
       return res.data;
     } catch (err) {
@@ -1264,6 +1287,52 @@ export default function App() {
     setTestingNotificationSettings(false);
   };
 
+  const applyTlsSettings = async () => {
+    setSavingTlsSettings(true);
+    try {
+      const res = await api.put('/tls-settings', {
+        mode: tlsSettingsForm.mode,
+        hostname: tlsSettingsForm.hostname.trim(),
+        email: tlsSettingsForm.email.trim(),
+        cert_path: tlsSettingsForm.certPath.trim(),
+        key_path: tlsSettingsForm.keyPath.trim()
+      });
+      setTlsSettings(res.data);
+      setTlsSettingsForm(current => ({ ...current, keyPath: '' }));
+      await fetchHealth();
+      showSuccess(res.data.mode === 'http' ? 'HTTP setup mode enabled.' : `HTTPS configured for ${res.data.hostname}.`);
+    } catch (err) {
+      showError('Failed to configure HTTPS', err);
+    }
+    setSavingTlsSettings(false);
+  };
+
+  const handleSaveTlsSettings = (event) => {
+    event.preventDefault();
+    const mode = tlsSettingsForm.mode;
+    if (mode !== 'http' && !tlsSettingsForm.hostname.trim()) {
+      setNotice({ type: 'error', title: 'Hostname required', message: 'Enter the DNS hostname clients will use for OCI Migrator.' });
+      return;
+    }
+    if (mode === 'custom' && (!tlsSettingsForm.certPath.trim() || !tlsSettingsForm.keyPath.trim())) {
+      setNotice({ type: 'error', title: 'Certificate paths required', message: 'Enter absolute server paths for the full certificate chain and unencrypted private key.' });
+      return;
+    }
+    const descriptions = {
+      http: 'This disables the managed HTTPS endpoint. Use HTTP only for initial setup or recovery.',
+      external: 'The external load balancer or reverse proxy must already provide HTTPS and forward requests to this server.',
+      letsencrypt: 'DNS must point to this server and inbound TCP 80 and 443 must be reachable.',
+      custom: 'The certificate will be validated, copied into protected storage, and served by Caddy.'
+    };
+    setConfirmDialog({
+      title: mode === 'http' ? 'Disable HTTPS?' : 'Apply HTTPS configuration?',
+      message: descriptions[mode],
+      confirmLabel: mode === 'http' ? 'Use HTTP Setup' : 'Apply HTTPS',
+      tone: mode === 'http' ? 'danger' : 'default',
+      onConfirm: applyTlsSettings
+    });
+  };
+
   useEffect(() => {
     if (!isAuthenticated) return;
     fetchProfiles();
@@ -1275,6 +1344,7 @@ export default function App() {
     fetchLocalDiskSettings();
     fetchTimeSettings();
     fetchNetworkSettings();
+    fetchTlsSettings();
     fetchRcloneDefaultSettings();
     fetchNotificationSettings();
     fetchUpgradeStatus();
@@ -2839,6 +2909,132 @@ export default function App() {
                   </div>
                 )}
                 </div>
+                <form onSubmit={handleSaveTlsSettings} className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
+                  <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 mb-4">
+                    <div>
+                      <h3 className="font-bold text-sm text-gray-800 flex items-center gap-2">
+                        <Shield size={16} className="text-[#9c3029]" /> HTTPS & Certificates
+                      </h3>
+                      <p className="mt-1 text-[11px] text-gray-500">Encrypt dashboard and API traffic with Caddy, or register HTTPS termination managed outside this server.</p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase ${tlsSettings?.status === 'ok' ? 'border-green-200 bg-green-50 text-green-700' : tlsSettings?.status === 'error' ? 'border-red-200 bg-red-50 text-red-700' : 'border-amber-200 bg-amber-50 text-amber-700'}`}>
+                        {tlsSettings?.secure ? 'HTTPS active' : 'Setup HTTP'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => fetchTlsSettings(true)}
+                        disabled={savingTlsSettings}
+                        title="Refresh HTTPS status"
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-gray-200 bg-white text-gray-500 hover:bg-gray-50 hover:text-[#9c3029] disabled:opacity-60"
+                      >
+                        <RefreshCw size={14} />
+                      </button>
+                      {tlsSettings?.https_url && (
+                        <a
+                          href={tlsSettings.https_url}
+                          className="inline-flex h-9 items-center gap-2 rounded-md border border-gray-200 bg-white px-3 text-xs font-semibold text-gray-700 hover:border-[#9c3029] hover:text-[#9c3029]"
+                        >
+                          Open HTTPS <ExternalLink size={13} />
+                        </a>
+                      )}
+                      <button
+                        type="submit"
+                        disabled={savingTlsSettings || tlsSettings?.helper_installed === false}
+                        className="inline-flex h-9 items-center justify-center gap-2 rounded-md bg-[#9c3029] px-4 text-xs font-semibold text-white shadow-sm hover:bg-[#7a2520] disabled:opacity-60"
+                      >
+                        {savingTlsSettings ? <Loader2 className="animate-spin" size={14} /> : <Save size={14} />}
+                        Apply HTTPS
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+                    {[
+                      { id: 'letsencrypt', title: "Let's Encrypt", detail: 'Automatic public certificate' },
+                      { id: 'custom', title: 'Corporate Certificate', detail: 'Use company PEM files' },
+                      { id: 'external', title: 'External TLS', detail: 'Load balancer or proxy' },
+                      { id: 'http', title: 'HTTP Setup', detail: 'Initial setup or recovery' }
+                    ].map(option => (
+                      <button
+                        key={option.id}
+                        type="button"
+                        onClick={() => setTlsSettingsForm({ ...tlsSettingsForm, mode: option.id })}
+                        className={`min-h-[64px] rounded-md border px-3 py-2 text-left transition-colors ${tlsSettingsForm.mode === option.id ? 'border-[#9c3029] bg-red-50 text-[#7a2520]' : 'border-gray-200 bg-gray-50 text-gray-600 hover:border-gray-300 hover:bg-white'}`}
+                      >
+                        <span className="block text-xs font-bold">{option.title}</span>
+                        <span className="mt-1 block text-[10px] leading-4 opacity-80">{option.detail}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  {tlsSettingsForm.mode !== 'http' && (
+                    <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Dashboard DNS Hostname</label>
+                        <input
+                          value={tlsSettingsForm.hostname}
+                          onChange={event => setTlsSettingsForm({ ...tlsSettingsForm, hostname: event.target.value })}
+                          placeholder="migrator.example.com"
+                          autoComplete="off"
+                          className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                        />
+                      </div>
+                      {tlsSettingsForm.mode === 'letsencrypt' && (
+                        <div>
+                          <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">ACME Contact Email (Optional)</label>
+                          <input
+                            type="email"
+                            value={tlsSettingsForm.email}
+                            onChange={event => setTlsSettingsForm({ ...tlsSettingsForm, email: event.target.value })}
+                            placeholder="cloud-operations@example.com"
+                            autoComplete="email"
+                            className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm focus:outline-none focus:border-[#9c3029]"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {tlsSettingsForm.mode === 'custom' && (
+                    <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Full Chain PEM Path</label>
+                        <input
+                          value={tlsSettingsForm.certPath}
+                          onChange={event => setTlsSettingsForm({ ...tlsSettingsForm, certPath: event.target.value })}
+                          placeholder="/etc/company-certs/migrator-fullchain.pem"
+                          autoComplete="off"
+                          className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Unencrypted Private Key Path</label>
+                        <input
+                          value={tlsSettingsForm.keyPath}
+                          onChange={event => setTlsSettingsForm({ ...tlsSettingsForm, keyPath: event.target.value })}
+                          placeholder="/etc/company-certs/migrator-key.pem"
+                          autoComplete="off"
+                          className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  <div className={`mt-4 rounded-md border px-3 py-2 text-[11px] ${tlsSettingsForm.mode === 'http' ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-gray-100 bg-gray-50 text-gray-600'}`}>
+                    {tlsSettingsForm.mode === 'letsencrypt' && 'The DNS A/AAAA record must resolve to this server. Inbound TCP 80 and 443 must also be allowed by the network firewall, Security List, or NSG. Caddy obtains and renews the certificate automatically.'}
+                    {tlsSettingsForm.mode === 'custom' && 'Place the certificate files on the server first. OCI Migrator validates the hostname, expiration, and key match, then copies them into protected Caddy storage. Reapply after certificate renewal.'}
+                    {tlsSettingsForm.mode === 'external' && 'Use this when a customer load balancer or reverse proxy owns the certificate. It must forward requests to this OCI Migrator API port and send X-Forwarded-Proto: https.'}
+                    {tlsSettingsForm.mode === 'http' && 'HTTP is not suitable for production because credentials and session tokens are not encrypted in transit.'}
+                  </div>
+                  <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-gray-500">
+                    <span><strong className="text-gray-700">Current:</strong> {tlsSettings?.message || 'Loading HTTPS status...'}</span>
+                    {tlsSettings?.service_state && <span><strong className="text-gray-700">Caddy:</strong> {tlsSettings.service_state}</span>}
+                  </div>
+                  {tlsSettings?.helper_installed === false && (
+                    <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">HTTPS helper is missing. Rerun <span className="font-mono">./install.sh</span> once on the server.</div>
+                  )}
+                </form>
                 <form onSubmit={handleSaveNotificationSettings} className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">
                   <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-4">
                     <div>
@@ -3055,7 +3251,7 @@ export default function App() {
                   </div>
                 </div>
                 <p className="mt-3 text-[11px] text-gray-500">
-                  Import restores runtime env, OCI config, rclone config, backup jobs, job history, and bundled key files. A pre-restore backup is created automatically.
+                  Import restores runtime env, OCI config, rclone config, backup jobs, job history, and bundled key files. Server-specific HTTPS settings are preserved. A pre-restore backup is created automatically.
                 </p>
               </div>
               <form onSubmit={handleSaveNetworkSettings} className="bg-white border border-gray-200 rounded-md shadow-sm p-4 text-left">

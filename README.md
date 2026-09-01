@@ -70,7 +70,7 @@ Open:
 http://<server-ip-or-dns>:8000
 ```
 
-The installer opens the local Ubuntu firewall for TCP `22` (SSH), `8000` (app/API), `445` (SMB), and `2049` (NFSv4) by default. Your OCI Security List or NSG must allow the same traffic from the networks that should reach the server.
+Use this HTTP address only for initial setup. Sign in, open `Settings` -> `HTTPS & Certificates`, and configure Let's Encrypt, a corporate certificate, or external TLS termination before production use. The installer opens the local Ubuntu firewall for TCP `22` (SSH), `80`/`443` (HTTPS), `8000` (setup/app API), `445` (SMB), and `2049` (NFSv4) by default. Your OCI Security List, NSG, or on-premises firewall must allow only the traffic required by the selected deployment.
 
 The installer stores a hashed admin password in `~/.oci-migrator.env`. If you do not pass or prompt for a password, the installer generates one and prints it once.
 
@@ -210,4 +210,4 @@ See [LICENSE](LICENSE) for the full terms.
 
 ## Security Note
 
-This is an admin tool. Run it behind a VPN or private management network, use TLS for browser and API access, and restrict the application port to approved management networks.
+This is an admin tool. HTTPS is required for production browser and API access. Run it behind a VPN or private management network and restrict the setup/API port to approved management networks.

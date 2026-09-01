@@ -20,7 +20,8 @@ This will:
 - create systemd services
 - create `~/.oci-migrator.env`
 - store a hashed admin password
-- open local Ubuntu firewall TCP `22`, `8000` or the chosen app/API port, `445`, and `2049`
+- install Caddy support for managed HTTPS
+- open local Ubuntu firewall TCP `22`, `80`, `443`, `8000` or the chosen setup/app API port, `445`, and `2049`
 - install a root-owned helper for optional SMB/NFS sharing from the UI
 - configure server timezone/NTP for reliable schedules and timestamps
 
@@ -57,8 +58,38 @@ cd OCI_migration_tool
 `--job-log-retention-days` controls how many daily rotated logs are kept. The default is `14`.
 `--timezone` defaults to `Europe/Stockholm`, so Swedish daylight saving time is handled by the OS.
 `--ntp-servers` defaults to the Swedish NTP pool and is written to `systemd-timesyncd`.
-`--no-open-firewall` skips opening local Ubuntu firewall ports during install. By default the installer opens TCP `22`, the app/API port, `445`, and `2049`.
+`--no-open-firewall` skips opening local Ubuntu firewall ports during install. By default the installer opens TCP `22`, `80`, `443`, the app/API port, `445`, and `2049`.
 After installation, timezone and NTP servers can also be changed from `Settings` -> `Time & NTP`.
+
+## HTTPS Setup
+
+The initial HTTP endpoint exists so a new server can be configured before its DNS record or certificate is ready. It is not a production endpoint. After the first login, open `Settings` -> `HTTPS & Certificates` and select one of these modes:
+
+### Let's Encrypt
+
+Use this for a publicly resolvable DNS hostname when the server can receive inbound traffic on TCP `80` and `443`.
+
+1. Create an A and/or AAAA record such as `migrator.example.com` that resolves to the server.
+2. Allow inbound TCP `80` and `443` through the on-premises firewall or OCI Security List/NSG.
+3. Select `Let's Encrypt`, enter the hostname and an optional ACME contact email, then apply.
+
+Caddy obtains the certificate, redirects HTTP to HTTPS, and renews it automatically. DNS must resolve correctly before applying the setting. Port `80` is required for normal HTTP validation and redirect traffic; port `443` serves the dashboard and API.
+
+### Corporate Certificate
+
+Use this when the customer PKI team issues the certificate.
+
+1. Place a PEM full-chain certificate and its matching unencrypted PEM private key on the server in a root-controlled directory.
+2. Select `Corporate Certificate` and enter the dashboard DNS hostname plus both absolute server paths.
+3. Apply the setting. OCI Migrator verifies the hostname, expiration, certificate/key match, and Caddy configuration before activating it.
+
+The validated files are copied into protected OCI Migrator TLS storage. Reapply the setting after the PKI team renews or replaces the certificate. Client devices must trust the corporate issuing CA.
+
+### External TLS
+
+Use this when an enterprise load balancer, ingress gateway, or existing reverse proxy owns the certificate. Enter the public DNS hostname and configure that external component to forward requests to the OCI Migrator app/API port. It must send `X-Forwarded-Proto: https`. Caddy is not started in this mode.
+
+The managed local Caddy service is isolated from `/etc/caddy/Caddyfile`; OCI Migrator uses `/etc/oci-migrator/Caddyfile` and its own `migrator-tls.service`. Failed Caddy activation restores the previous managed TLS files.
 
 ## DHCP and Static IPv4
 
@@ -127,11 +158,13 @@ cd /opt/oci-migrator
 ./install.sh --admin-password '<new-strong-password>'
 ```
 
-Then open and log in:
+For initial setup, open and log in:
 
 ```text
 http://<server-ip-or-dns>:8000
 ```
+
+Configure HTTPS immediately afterward and use `https://<dashboard-dns-name>` for normal operation.
 
 ## Verify
 

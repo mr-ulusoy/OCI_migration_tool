@@ -23,7 +23,7 @@ from threading import Lock
 import oci
 import uvicorn
 from fastapi import FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional
@@ -368,6 +368,23 @@ async def dynamic_cors_allowlist(request, call_next):
     """
     origin = request.headers.get("origin")
 
+    runtime_env = read_runtime_env()
+    tls_mode = runtime_env.get("OCI_MIGRATOR_TLS_MODE", "http").strip().lower()
+    tls_hostname = runtime_env.get("OCI_MIGRATOR_TLS_HOSTNAME", "").strip()
+    forwarded_proto = request.headers.get("x-forwarded-proto", "").split(",", 1)[0].strip().lower()
+    client_host = request.client.host if request.client else ""
+    if (
+        tls_mode in {"external", "letsencrypt", "custom"}
+        and tls_hostname
+        and forwarded_proto != "https"
+        and request.url.scheme != "https"
+        and client_host not in {"127.0.0.1", "::1"}
+        and request.url.path not in {"/health", "/metrics"}
+    ):
+        path = request.url.path or "/"
+        query = f"?{request.url.query}" if request.url.query else ""
+        return RedirectResponse(f"https://{tls_hostname}{path}{query}", status_code=307)
+
     if origin:
         config = get_runtime_config()
         allowed_origins = list(config.get("allowed_origins", []))
@@ -430,6 +447,7 @@ LOCAL_SHARE_HELPER = Path(os.getenv("OCI_MIGRATOR_LOCAL_SHARE_HELPER", "/usr/loc
 JOB_LOG_HELPER = Path(os.getenv("OCI_MIGRATOR_JOB_LOG_HELPER", "/usr/local/sbin/oci-migrator-job-log")).resolve()
 TIME_SYNC_HELPER = Path(os.getenv("OCI_MIGRATOR_TIME_SYNC_HELPER", "/usr/local/sbin/oci-migrator-time-sync")).resolve()
 NETWORK_HELPER = Path(os.getenv("OCI_MIGRATOR_NETWORK_HELPER", "/usr/local/sbin/oci-migrator-network")).resolve()
+TLS_HELPER = Path(os.getenv("OCI_MIGRATOR_TLS_HELPER", "/usr/local/sbin/oci-migrator-tls")).resolve()
 TIMESYNCD_CONF = Path(os.getenv("OCI_MIGRATOR_TIMESYNCD_CONF", "/etc/systemd/timesyncd.conf.d/oci-migrator.conf")).resolve()
 JOB_LOGROTATE_FILE = Path(os.getenv("OCI_MIGRATOR_JOB_LOGROTATE_FILE", "/etc/logrotate.d/migrator-job-logs"))
 UPGRADE_HELPER = Path(os.getenv("OCI_MIGRATOR_UPGRADE_HELPER", "/usr/local/sbin/oci-migrator-upgrade")).resolve()
@@ -452,6 +470,7 @@ except ValueError:
 JOB_LOG_SETTINGS_LOCK = Lock()
 TIME_SETTINGS_LOCK = Lock()
 NETWORK_SETTINGS_LOCK = Lock()
+TLS_SETTINGS_LOCK = Lock()
 UPGRADE_LOCK = Lock()
 
 # Säkerställ att mappar finns
@@ -638,6 +657,14 @@ class NetworkSettingsRequest(BaseModel):
     prefix_length: int = 24
     gateway: str = ""
     dns_servers: str = ""
+
+
+class TlsSettingsRequest(BaseModel):
+    mode: str = "http"
+    hostname: str = ""
+    email: str = ""
+    cert_path: str = ""
+    key_path: str = ""
 
 
 class RcloneDefaultSettingsRequest(BaseModel):
@@ -1211,6 +1238,42 @@ def normalize_network_settings(settings: NetworkSettingsRequest) -> dict:
         "address": f"{address}/{prefix_length}",
         "gateway": str(gateway),
         "dns_servers": " ".join(normalized_dns),
+    }
+
+
+def normalize_tls_settings(settings: TlsSettingsRequest) -> dict:
+    mode = str(settings.mode or "").strip().lower()
+    if mode not in {"http", "external", "letsencrypt", "custom"}:
+        raise HTTPException(status_code=400, detail="HTTPS mode must be HTTP setup, External TLS, Let's Encrypt, or Corporate Certificate.")
+
+    hostname = str(settings.hostname or "").strip().lower().rstrip(".")
+    if mode != "http":
+        labels = hostname.split(".")
+        if (
+            len(hostname) > 253
+            or len(labels) < 2
+            or any(len(label) > 63 or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label) for label in labels)
+        ):
+            raise HTTPException(status_code=400, detail="Enter a fully qualified DNS hostname without a scheme, path, or port.")
+
+    email = str(settings.email or "").strip()
+    if mode == "letsencrypt" and email and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+        raise HTTPException(status_code=400, detail="Enter a valid ACME contact email address.")
+
+    cert_path = str(settings.cert_path or "").strip()
+    key_path = str(settings.key_path or "").strip()
+    if mode == "custom":
+        if not cert_path.startswith("/") or not key_path.startswith("/"):
+            raise HTTPException(status_code=400, detail="Corporate certificate and private key paths must be absolute server paths.")
+        if any("\n" in value or "\r" in value for value in (cert_path, key_path)):
+            raise HTTPException(status_code=400, detail="Certificate paths contain invalid characters.")
+
+    return {
+        "mode": mode,
+        "hostname": hostname,
+        "email": email if mode == "letsencrypt" else "",
+        "cert_path": cert_path if mode == "custom" else "",
+        "key_path": key_path if mode == "custom" else "",
     }
 
 
@@ -2122,6 +2185,61 @@ def network_helper_command() -> list[str]:
     return [sudo_path, "-n", str(NETWORK_HELPER)]
 
 
+def tls_helper_command() -> list[str]:
+    if not TLS_HELPER.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail="HTTPS settings helper is not installed. Rerun ./install.sh and try again.",
+        )
+    if os.geteuid() == 0:
+        return [str(TLS_HELPER)]
+    sudo_path = shutil.which("sudo")
+    if not sudo_path:
+        raise HTTPException(status_code=503, detail="sudo is required for HTTPS settings.")
+    return [sudo_path, "-n", str(TLS_HELPER)]
+
+
+def run_tls_helper(args: list[str], timeout: int = 90) -> dict:
+    try:
+        result = subprocess.run(tls_helper_command() + args, capture_output=True, text=True, timeout=timeout)
+        if result.returncode != 0:
+            raise RuntimeError(truncate_text(result.stderr or result.stdout or f"helper exited with code {result.returncode}"))
+        try:
+            payload = json.loads(result.stdout.strip().splitlines()[-1]) if result.stdout.strip() else {}
+        except (json.JSONDecodeError, IndexError) as exc:
+            raise RuntimeError(f"HTTPS helper returned invalid JSON: {truncate_text(result.stdout, 600)}") from exc
+        payload["helper_installed"] = True
+        return payload
+    except subprocess.TimeoutExpired as exc:
+        raise_operation_error(504, "Update HTTPS settings", exc, "Certificate issuance or Caddy startup took too long. Check DNS and ports 80/443.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise_operation_error(500, "Update HTTPS settings", exc, "Check Caddy, the certificate files, DNS, and the installed TLS helper.")
+
+
+def current_tls_settings() -> dict:
+    if TLS_HELPER.is_file():
+        return run_tls_helper(["status"], timeout=15)
+    runtime_env = read_runtime_env()
+    mode = runtime_env.get("OCI_MIGRATOR_TLS_MODE", "http")
+    hostname = runtime_env.get("OCI_MIGRATOR_TLS_HOSTNAME", "")
+    return {
+        "supported": False,
+        "helper_installed": False,
+        "caddy_installed": bool(shutil.which("caddy")),
+        "mode": mode,
+        "hostname": hostname,
+        "email": runtime_env.get("OCI_MIGRATOR_TLS_EMAIL", ""),
+        "certificate_source": runtime_env.get("OCI_MIGRATOR_TLS_CERT_SOURCE", ""),
+        "service_state": "unknown",
+        "https_url": f"https://{hostname}" if hostname and mode != "http" else "",
+        "secure": mode in {"external", "letsencrypt", "custom"},
+        "status": "warn",
+        "message": "HTTPS helper is not installed. Rerun install.sh on the server.",
+    }
+
+
 def run_network_helper(args: list[str], timeout: int = 30) -> dict:
     command = network_helper_command() + args
     try:
@@ -2524,6 +2642,35 @@ def validate_runtime_env_content(content: bytes, archive_name: str) -> None:
             raise HTTPException(status_code=400, detail=f"{archive_name}:{line_number} has an invalid env key.")
 
 
+def preserve_server_tls_env(imported_content: bytes) -> bytes:
+    """Keep host-specific TLS state during portable runtime config restore."""
+    current = read_runtime_env()
+    preserved_keys = {
+        "OCI_MIGRATOR_ALLOWED_ORIGINS",
+        "OCI_MIGRATOR_TLS_HELPER",
+        "OCI_MIGRATOR_TLS_MODE",
+        "OCI_MIGRATOR_TLS_HOSTNAME",
+        "OCI_MIGRATOR_TLS_EMAIL",
+        "OCI_MIGRATOR_TLS_CERT_SOURCE",
+    }
+    updates = {key: current[key] for key in preserved_keys if key in current}
+    if not updates:
+        return imported_content
+
+    text = validate_text_file(imported_content, "runtime/.oci-migrator.env")
+    output: list[str] = []
+    remaining = dict(updates)
+    for line in text.splitlines():
+        if line and not line.lstrip().startswith("#") and "=" in line:
+            key = line.split("=", 1)[0]
+            if key in remaining:
+                output.append(f"{key}={remaining.pop(key)}")
+                continue
+        output.append(line)
+    output.extend(f"{key}={value}" for key, value in remaining.items())
+    return ("\n".join(output).rstrip("\n") + "\n").encode("utf-8")
+
+
 def validate_ini_content(content: bytes, archive_name: str) -> None:
     text = validate_text_file(content, archive_name)
     parser = configparser.ConfigParser()
@@ -2724,6 +2871,8 @@ def restore_runtime_config_archive(payload: bytes) -> dict:
             content = config_files.get(archive_name)
             if content is None:
                 continue
+            if archive_name == "runtime/.oci-migrator.env":
+                content = preserve_server_tls_env(content)
             write_bytes_atomically(targets[archive_name], content)
             restored.append({"name": archive_name, "target": str(targets[archive_name])})
             if archive_name == "runtime/.oci-migrator.env":
@@ -2907,6 +3056,10 @@ def build_health_payload() -> dict:
     configured_timezone = timedatectl_value("Timezone")
     ntp_synchronized = timedatectl_value("NTPSynchronized")
     ntp_service_active = timedatectl_value("NTP")
+    try:
+        tls = current_tls_settings()
+    except Exception as exc:
+        tls = {"status": "error", "message": f"Unable to read HTTPS status: {truncate_text(str(exc), 300)}"}
 
     checks = {
         "admin_password": health_check_item(
@@ -2960,6 +3113,10 @@ def build_health_payload() -> dict:
         "ntp_service": health_check_item(
             "ok" if ntp_service_active == "yes" else "warn",
             "NTP service is enabled." if ntp_service_active == "yes" else "NTP service is not enabled according to timedatectl.",
+        ),
+        "https": health_check_item(
+            tls.get("status", "warn"),
+            tls.get("message", "HTTPS status is unavailable."),
         ),
     }
 
@@ -3246,6 +3403,11 @@ async def get_network_settings():
     return current_network_settings()
 
 
+@app.get("/tls-settings")
+async def get_tls_settings():
+    return current_tls_settings()
+
+
 @app.get("/rclone-default-settings")
 async def get_rclone_default_settings():
     return current_rclone_default_settings()
@@ -3341,6 +3503,26 @@ async def update_network_settings(settings: NetworkSettingsRequest):
         )
     with NETWORK_SETTINGS_LOCK:
         return run_network_helper(command, timeout=30)
+
+
+@app.put("/tls-settings")
+async def update_tls_settings(settings: TlsSettingsRequest):
+    normalized = normalize_tls_settings(settings)
+    command = [
+        "apply",
+        "--mode",
+        normalized["mode"],
+        "--hostname",
+        normalized["hostname"],
+        "--email",
+        normalized["email"],
+        "--cert-path",
+        normalized["cert_path"],
+        "--key-path",
+        normalized["key_path"],
+    ]
+    with TLS_SETTINGS_LOCK:
+        return run_tls_helper(command, timeout=120)
 
 
 @app.post("/network-settings/confirm")

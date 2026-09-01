@@ -121,6 +121,7 @@ units=(
   "$SERVICE_PREFIX-frontend.service"
   "$SERVICE_PREFIX-scheduler.timer"
   "$SERVICE_PREFIX-scheduler.service"
+  "$SERVICE_PREFIX-tls.service"
 )
 
 echo "Stopping and disabling OCI Migrator services with prefix: $SERVICE_PREFIX"
@@ -130,6 +131,13 @@ echo "Stopping and disabling OCI Migrator services with prefix: $SERVICE_PREFIX"
 for unit in "${units[@]}"; do
   "${SUDO[@]}" rm -f "/etc/systemd/system/$unit"
 done
+
+"${SUDO[@]}" rm -f \
+  "/etc/sudoers.d/$SERVICE_PREFIX-tls" \
+  /usr/local/sbin/oci-migrator-tls \
+  /etc/oci-migrator/tls.conf \
+  /etc/oci-migrator/Caddyfile
+"${SUDO[@]}" rm -rf /var/lib/oci-migrator/tls
 
 "${SUDO[@]}" systemctl daemon-reload
 "${SUDO[@]}" systemctl reset-failed >/dev/null 2>&1 || true
