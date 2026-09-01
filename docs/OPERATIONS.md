@@ -19,6 +19,38 @@ An OCI profile requires:
 - `Region`: OCI region identifier, for example `eu-stockholm-1`.
 - `API Key`: upload or paste the private API signing key associated with the IAM user.
 
+#### How to collect the OCI profile values
+
+The quickest method is to create or inspect an API signing key in the OCI Console. OCI then displays a `Configuration File Preview` containing the user OCID, fingerprint, tenancy OCID, and region together.
+
+1. Sign in to the [OCI Console](https://cloud.oracle.com/) and select the region that contains the resources you want to use. The current region appears in the Region menu at the top of the Console.
+2. Choose a `Profile Name` yourself. It is only the friendly name shown in OCI Migrator, for example `OCI-PRODUCTION` or `SOURCE-TENANT`.
+3. Find the compartment OCIDs:
+   - Open the navigation menu and select `Identity & Security` -> `Compartments`.
+   - Open or locate the compartment containing the compute instances and copy its OCID into `Compute Compartment`.
+   - Open or locate the compartment containing the Object Storage buckets and copy its OCID into `Storage Compartment`.
+   - If compute instances and buckets use the same compartment, enter the same compartment OCID in both fields.
+4. Open the OCI IAM user that OCI Migrator will use:
+   - For your own user, open the Profile menu and select `User settings`.
+   - For another service user, open `Identity & Security` -> `Users`, then select that user. Administrator permissions may be required.
+5. Under the user's resources, select `API Keys`, then select `Add API Key`.
+6. Select `Generate API Key Pair`, download the **private key**, and then select `Add`. Store the downloaded PEM file securely; OCI does not provide the private key again later.
+7. OCI displays the `Configuration File Preview`. Copy these values into OCI Migrator:
+
+| Configuration File Preview | OCI Migrator field |
+| --- | --- |
+| `tenancy=ocid1.tenancy...` | `Tenancy OCID` |
+| `user=ocid1.user...` | `User OCID` |
+| `fingerprint=aa:bb:...` | `Fingerprint` |
+| `region=eu-stockholm-1` | `Region` |
+| Downloaded private PEM file | `API Key` using Upload API Key, or paste its PEM contents |
+
+For an existing API key, open its Actions menu (three dots) and select `View configuration file` to display the same preview. This does not recover the private key. If the private key has been lost, create a new API key pair and remove the unusable old key after the new profile has been tested.
+
+The API signing key is not the SSH key used to log in to a compute instance. Upload only the private PEM key belonging to the fingerprint registered on the selected IAM user. Never upload the public key, an SSH private key, or a Console password.
+
+You can also find `Tenancy OCID` under Profile -> `Tenancy: <tenancy name>` and `User OCID` under `User settings`. See Oracle's documentation for [required keys and OCIDs](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/apisigningkey.htm) and [locating compartment OCIDs](https://docs.oracle.com/en-us/iaas/Content/GSG/Tasks/contactingsupport_topic-Locating_Oracle_Cloud_Infrastructure_IDs.htm).
+
 Use separate profiles when the source and destination belong to different OCI tenants. Grant the IAM user only the permissions required for the intended Object Storage or Compute operations.
 
 ### AWS S3 or S3-compatible storage
