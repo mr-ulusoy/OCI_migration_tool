@@ -2,6 +2,24 @@
 
 This guide documents the configuration available in the OCI Migrator Pro web dashboard. For service commands, health endpoints, monitoring integrations, runtime files, and command-line recovery procedures, see the [Server Runbook](RUNBOOK.md).
 
+## Quick Install
+
+On an Ubuntu server:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/mr-ulusoy/OCI_migration_tool/main/scripts/bootstrap.sh -o bootstrap.sh
+chmod +x bootstrap.sh
+./bootstrap.sh --public-host <server-ip-or-dns> --prompt-admin-password
+```
+
+Open the initial setup address:
+
+```text
+http://<server-ip-or-dns>:8000
+```
+
+Use HTTP only for initial setup. Configure a production HTTPS mode under `Settings` -> `HTTPS & Certificates`. See the [Installation Guide](INSTALL.md) for firewall, DNS, certificate, and advanced installation options.
+
 ## Credentials
 
 Open `Credentials` to add source and destination profiles. Profile and remote names must be unique.
