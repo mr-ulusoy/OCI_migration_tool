@@ -269,7 +269,7 @@ For the selected bucket, the dashboard shows the default tier, versioning state,
 
 - `Enable/Suspend Object Versioning`: controls whether OCI keeps previous versions after overwrite or deletion. Existing versions remain when versioning is suspended.
 - `Enable/Disable Auto-Tiering`: controls automatic movement to Infrequent Access.
-- `OCI Retention Rules (WORM)`: status only. Create and manage immutable retention rules in the OCI Console. Active WORM rules can prevent object updates, metadata changes, deletion, and bucket deletion. See [OCI retention rule documentation](https://docs.oracle.com/en-us/iaas/Content/Object/Tasks/usingretentionrules.htm).
+- `OCI Retention Rules (WORM)`: status only. Create and manage immutable retention rules in the OCI Console. While a time-bound rule protects an object, its data and metadata cannot be updated, overwritten, or deleted until that object's retention period expires; OCI calculates the period individually from the object's `Last Modified` timestamp. An indefinite rule protects objects until the rule is removed. Locking a retention rule is irreversible: the duration can only be increased, and neither a tenancy administrator nor Oracle Support can unlock or delete the rule separately. Because an accidental rule or lock can make customer data undeletable for the configured period, OCI Migrator deliberately does not create, change, or lock WORM rules. See [OCI retention rule documentation](https://docs.oracle.com/en-us/iaas/Content/Object/Tasks/usingretentionrules.htm).
 
 OCI does not allow Object Versioning to be enabled while active retention rules exist on the bucket. Auto-Tiering cannot be enabled while a lifecycle rule moves objects to Infrequent Access.
 
