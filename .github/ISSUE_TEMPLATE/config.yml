@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Configuration and operations guide
+    url: https://github.com/mr-ulusoy/OCI_migration_tool/blob/main/docs/OPERATIONS.md
+    about: Review the dashboard configuration guide before opening an issue.
+  - name: Report a security vulnerability privately
+    url: https://github.com/mr-ulusoy/OCI_migration_tool/security/advisories/new
+    about: Do not disclose vulnerabilities, credentials, or customer data in a public issue.
+

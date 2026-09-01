@@ -1,0 +1,67 @@
+name: Feature request
+description: Suggest an improvement for Cloud Migration Console.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the operational problem first, then the proposed feature. GitHub issues are public, so do not include customer data, credentials, private infrastructure details, or other sensitive information.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Product area
+      options:
+        - Installation or upgrade
+        - Authentication or settings
+        - Backup jobs and transfers
+        - Local storage, SMB, or NFS
+        - OCI Object Storage
+        - VM image migration
+        - Monitoring or notifications
+        - Web interface
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Explain the workflow, limitation, or operational risk that prompted this request.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior you would like to see.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Include existing workarounds or other approaches when relevant.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add sanitized examples or screenshots. Do not include customer or security-sensitive information.
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmation
+      options:
+        - label: I searched existing issues for a similar request.
+          required: true
+        - label: I removed customer data, credentials, and sensitive infrastructure details.
+          required: true
+

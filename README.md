@@ -243,6 +243,12 @@ Server local folders can optionally be shared from the UI with SMB, NFSv4, or bo
 - [Production Readiness](docs/RECOMMENDATIONS.md)
 - [Continuous Integration](.github/workflows/ci.yml)
 
+## Feedback and Support
+
+Use the structured [GitHub Issue forms](https://github.com/mr-ulusoy/OCI_migration_tool/issues/new/choose) to report reproducible bugs or propose features. Review [SUPPORT.md](SUPPORT.md) before submitting. Issues and attachments are public and must not contain credentials, customer data, runtime configuration archives, or sensitive infrastructure information.
+
+Report suspected vulnerabilities privately according to [SECURITY.md](SECURITY.md). Do not disclose security problems in a public issue.
+
 ## License
 
 Cloud Migration Console is source-available proprietary software owned by Cengiz Ulusoy (`mr-ulusoy`).

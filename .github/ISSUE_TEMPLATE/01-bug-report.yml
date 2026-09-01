@@ -1,0 +1,112 @@
+name: Bug report
+description: Report a reproducible problem in Cloud Migration Console.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a problem. GitHub issues are public.
+
+        Do not include passwords, API keys, session tokens, private keys, runtime configuration archives, customer data, or unredacted logs. Report security vulnerabilities privately through the repository Security page instead.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Installation or upgrade
+        - Authentication or settings
+        - Backup jobs and transfers
+        - Local storage, SMB, or NFS
+        - OCI Object Storage
+        - VM image migration
+        - Monitoring or notifications
+        - Web interface
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Installed version
+      description: Copy the installed commit shown under Settings > System Upgrade.
+      placeholder: "Example: f48070a"
+    validations:
+      required: true
+
+  - type: input
+    id: ubuntu
+    attributes:
+      label: Ubuntu version
+      placeholder: "Example: Ubuntu 24.04 LTS"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation method
+      options:
+        - Quick Install (bootstrap.sh)
+        - Manual Install (install.sh)
+        - Dashboard upgrade
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Problem description
+      description: Describe what happened and when it started.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest reliable sequence that triggers the problem.
+      placeholder: |
+        1. Open ...
+        2. Configure ...
+        3. Click ...
+        4. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics
+      description: Paste only the relevant, sanitized lines from Technical Log, job logs, or make doctor. Remove secrets, customer names, file paths, object names, OCIDs, IP addresses, and hostnames when they are not essential.
+      render: shell
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: Drag in screenshots after removing customer information and secrets.
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmation
+      options:
+        - label: I searched existing issues for the same problem.
+          required: true
+        - label: I removed credentials, tokens, private keys, customer data, and other sensitive information.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+
