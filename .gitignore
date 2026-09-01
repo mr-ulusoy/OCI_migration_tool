@@ -20,3 +20,6 @@ frontend/.env.*
 dist-packages/
 
 .DS_Store
+
+# Local coding-agent instructions; do not publish from this public repository.
+AGENTS.md
