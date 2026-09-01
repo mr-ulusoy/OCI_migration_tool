@@ -17,6 +17,8 @@
 
 [![CI](https://github.com/mr-ulusoy/OCI_migration_tool/actions/workflows/ci.yml/badge.svg)](https://github.com/mr-ulusoy/OCI_migration_tool/actions/workflows/ci.yml)
 
+Application updates are distributed as versioned GitHub Releases. Maintainers should use `scripts/prepare-release.sh patch|minor|major` and follow the [release checklist](docs/RELEASING.md); ordinary commits to `main`, including documentation-only changes, are not offered as dashboard updates.
+
 Self-hosted admin console for moving file and object data into Oracle Cloud Infrastructure (OCI) Object Storage, and for migrating OCI VM images between OCI tenants.
 
 Oracle and Oracle Cloud Infrastructure are trademarks of Oracle and/or its affiliates. Cloud Migration Console is independently developed and is not affiliated with, endorsed by, or sponsored by Oracle.
@@ -67,6 +69,8 @@ chmod +x bootstrap.sh
 ./bootstrap.sh --prompt-admin-password
 ```
 
+The bootstrap script installs the latest published GitHub Release. Use `--release vX.Y.Z` to install a specific published version. `--branch main` is a developer override and should not be used for production installations.
+
 The installer automatically detects the server's first local IP address and prints the initial setup URL. Open the address shown when installation completes, normally:
 
 ```text
@@ -111,7 +115,7 @@ The installer configures server time sync with `systemd-timesyncd`, `Europe/Stoc
 - `Credentials` manages OCI, cloud, S3-compatible, local folder, SMB, and NFS sources.
 - `OCI Object Storage` explores buckets and objects and manages supported bucket settings and lifecycle rules.
 - `VM Image Migration` scans OCI compute instances and migrates the boot image plus selected attached data volumes between OCI tenancies.
-- `Settings` contains managed HTTPS, a daily GitHub update check with controlled system upgrades, remote syslog notifications, runtime config backup/import, time and NTP, network, job defaults, local disk warnings, log rotation, admin password controls, and a protected uninstall workflow.
+- `Settings` contains managed HTTPS, a daily published-release check with controlled system upgrades, remote syslog notifications, runtime config backup/import, time and NTP, network, job defaults, local disk warnings, log rotation, admin password controls, and a protected uninstall workflow.
 
 ## Main Use Cases
 

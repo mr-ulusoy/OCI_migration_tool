@@ -16,7 +16,7 @@ Cloud Migration Console upgrade helper
 
 Usage:
   oci-migrator-upgrade start
-  oci-migrator-upgrade run
+  oci-migrator-upgrade run <release-tag>
 EOF
 }
 
@@ -40,6 +40,7 @@ load_config() {
   : "${UPGRADE_STATE_DIR:?Missing UPGRADE_STATE_DIR}"
   : "${UPGRADE_STATUS_FILE:?Missing UPGRADE_STATUS_FILE}"
   : "${UPGRADE_LOG_FILE:?Missing UPGRADE_LOG_FILE}"
+  UPGRADE_REQUEST_FILE="${UPGRADE_REQUEST_FILE:-$UPGRADE_STATE_DIR/request.json}"
 }
 
 validate_config() {
@@ -49,6 +50,7 @@ validate_config() {
   [[ "$UPGRADE_STATE_DIR" = /* ]] || fail "UPGRADE_STATE_DIR must be absolute."
   [[ "$UPGRADE_STATUS_FILE" = /* ]] || fail "UPGRADE_STATUS_FILE must be absolute."
   [[ "$UPGRADE_LOG_FILE" = /* ]] || fail "UPGRADE_LOG_FILE must be absolute."
+  [[ "$UPGRADE_REQUEST_FILE" = /* ]] || fail "UPGRADE_REQUEST_FILE must be absolute."
   [[ "$BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || fail "Invalid branch name."
   id "$RUN_USER" >/dev/null 2>&1 || fail "Run user does not exist: $RUN_USER"
   [ -d "$INSTALL_DIR/.git" ] || fail "Install directory is not a git checkout: $INSTALL_DIR"
@@ -73,6 +75,8 @@ write_status() {
   local current_commit="${3:-}"
   local target_commit="${4:-}"
   local phase="${5:-}"
+  local current_version="${6:-}"
+  local target_version="${7:-}"
 
   STATUS_FILE="$UPGRADE_STATUS_FILE" \
   STATE="$state" \
@@ -80,6 +84,8 @@ write_status() {
   CURRENT_COMMIT="$current_commit" \
   TARGET_COMMIT="$target_commit" \
   PHASE="$phase" \
+  CURRENT_VERSION="$current_version" \
+  TARGET_VERSION="$target_version" \
   LOG_FILE="$UPGRADE_LOG_FILE" \
   python3 - <<'PY'
 import json
@@ -111,6 +117,8 @@ data.update(
         "phase": os.environ.get("PHASE", ""),
         "current_commit": os.environ.get("CURRENT_COMMIT", ""),
         "target_commit": os.environ.get("TARGET_COMMIT", ""),
+        "current_version": os.environ.get("CURRENT_VERSION", ""),
+        "target_version": os.environ.get("TARGET_VERSION", ""),
         "updated_at": now,
         "log_file": os.environ["LOG_FILE"],
     }
@@ -147,6 +155,29 @@ git_value() {
   sudo -H -u "$RUN_USER" git -C "$INSTALL_DIR" "$@" 2>/dev/null || true
 }
 
+version_value() {
+  local version_file="$INSTALL_DIR/VERSION"
+  [ -f "$version_file" ] || return 0
+  tr -d '[:space:]' < "$version_file"
+}
+
+validate_release_tag() {
+  [[ "${1:-}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] \
+    || fail "Invalid release tag '${1:-}'. Expected vMAJOR.MINOR.PATCH."
+}
+
+requested_release_tag() {
+  [ -f "$UPGRADE_REQUEST_FILE" ] || fail "No release request was prepared by the API."
+  REQUEST_FILE="$UPGRADE_REQUEST_FILE" python3 - <<'PY'
+import json
+import os
+
+with open(os.environ["REQUEST_FILE"], "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+print(str(payload.get("tag", "")).strip())
+PY
+}
+
 upgrade_process_is_running() {
   local lock_dir="$UPGRADE_STATE_DIR/upgrade.lock"
   local pid_file="$lock_dir/pid"
@@ -177,7 +208,7 @@ finish_failed() {
   local exit_code=$?
   if [ "$exit_code" -ne 0 ]; then
     log "Upgrade failed with exit code $exit_code."
-    write_status "failed" "Upgrade failed. Open the technical log for details." "$(git_value rev-parse HEAD)" "$(git_value rev-parse "origin/$BRANCH")" "failed"
+    write_status "failed" "Upgrade failed. Open the technical log for details." "$(git_value rev-parse HEAD)" "${ACTIVE_TARGET_COMMIT:-}" "failed" "$(version_value)" "${ACTIVE_TARGET_VERSION:-}"
   fi
   rm -rf "$UPGRADE_STATE_DIR/upgrade.lock"
   exit "$exit_code"
@@ -189,13 +220,18 @@ schedule_upgrade() {
   validate_config
   prepare_paths
 
+  local target_tag target_version
+  target_tag="$(requested_release_tag)"
+  validate_release_tag "$target_tag"
+  target_version="${target_tag#v}"
+
   clear_stale_upgrade_lock || true
   if [ -d "$UPGRADE_STATE_DIR/upgrade.lock" ]; then
-    write_status "running" "Upgrade is already running." "$(git_value rev-parse HEAD)" "$(git_value rev-parse "origin/$BRANCH")" "queued"
+    write_status "running" "Upgrade is already running." "$(git_value rev-parse HEAD)" "" "queued" "$(version_value)" "$target_version"
     fail "Upgrade is already running."
   fi
 
-  write_status "running" "Upgrade queued." "$(git_value rev-parse HEAD)" "" "queued"
+  write_status "running" "Release $target_tag queued." "$(git_value rev-parse HEAD)" "" "queued" "$(version_value)" "$target_version"
 
   if command -v systemd-run >/dev/null 2>&1; then
     systemd-run \
@@ -203,13 +239,15 @@ schedule_upgrade() {
       --collect \
       --description="Cloud Migration Console self upgrade" \
       --setenv="OCI_MIGRATOR_UPGRADE_CONFIG=$CONFIG_FILE" \
-      "$UPGRADE_HELPER" run >>"$UPGRADE_LOG_FILE" 2>&1
+      "$UPGRADE_HELPER" run "$target_tag" >>"$UPGRADE_LOG_FILE" 2>&1
   else
-    nohup env OCI_MIGRATOR_UPGRADE_CONFIG="$CONFIG_FILE" "$UPGRADE_HELPER" run >>"$UPGRADE_LOG_FILE" 2>&1 &
+    nohup env OCI_MIGRATOR_UPGRADE_CONFIG="$CONFIG_FILE" "$UPGRADE_HELPER" run "$target_tag" >>"$UPGRADE_LOG_FILE" 2>&1 &
   fi
 }
 
 run_upgrade() {
+  local target_tag="${1:-}"
+  validate_release_tag "$target_tag"
   require_root
   load_config
   validate_config
@@ -217,7 +255,7 @@ run_upgrade() {
 
   clear_stale_upgrade_lock || true
   if ! mkdir "$UPGRADE_STATE_DIR/upgrade.lock" 2>/dev/null; then
-    write_status "running" "Upgrade is already running." "$(git_value rev-parse HEAD)" "$(git_value rev-parse "origin/$BRANCH")" "queued"
+    write_status "running" "Upgrade is already running." "$(git_value rev-parse HEAD)" "" "queued" "$(version_value)" "${target_tag#v}"
     fail "Upgrade is already running."
   fi
   printf '%s\n' "$$" > "$UPGRADE_STATE_DIR/upgrade.lock/pid"
@@ -228,29 +266,36 @@ run_upgrade() {
   chown "$RUN_USER:$RUN_USER" "$UPGRADE_LOG_FILE"
   chmod 640 "$UPGRADE_LOG_FILE"
 
-  local current_commit target_commit new_commit
+  local current_commit current_version target_commit target_version new_commit new_version
   current_commit="$(git_value rev-parse HEAD)"
-  write_status "running" "Checking GitHub for updates." "$current_commit" "" "checking"
-  log "Starting controlled upgrade for $INSTALL_DIR ($BRANCH)."
+  current_version="$(version_value)"
+  target_version="${target_tag#v}"
+  ACTIVE_TARGET_VERSION="$target_version"
+  write_status "running" "Checking published release $target_tag." "$current_commit" "" "checking" "$current_version" "$target_version"
+  log "Starting controlled upgrade for $INSTALL_DIR to release $target_tag."
 
   run_as_user git -C "$INSTALL_DIR" remote set-url origin "$REPO_URL"
-  run_as_user git -C "$INSTALL_DIR" fetch origin "$BRANCH"
-  target_commit="$(git_value rev-parse "origin/$BRANCH")"
+  run_as_user git -C "$INSTALL_DIR" fetch origin "refs/tags/$target_tag:refs/tags/$target_tag"
+  target_commit="$(git_value rev-list -n 1 "$target_tag")"
+  [ -n "$target_commit" ] || fail "Release tag $target_tag could not be resolved."
+  ACTIVE_TARGET_COMMIT="$target_commit"
 
-  if [ -n "$current_commit" ] && [ "$current_commit" = "$target_commit" ]; then
-    log "Already up to date at $current_commit."
-    write_status "success" "Already up to date." "$current_commit" "$target_commit" "complete"
+  if [ -n "$current_version" ] && [ "$current_version" = "$target_version" ]; then
+    log "Already on release $target_tag ($current_commit)."
+    write_status "success" "Already on release $target_tag." "$current_commit" "$target_commit" "complete" "$current_version" "$target_version"
     rm -rf "$UPGRADE_STATE_DIR/upgrade.lock"
     trap - EXIT
     exit 0
   fi
 
-  write_status "running" "Downloading latest version." "$current_commit" "$target_commit" "downloading"
-  run_as_user git -C "$INSTALL_DIR" checkout "$BRANCH"
-  run_as_user git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH"
+  write_status "running" "Downloading release $target_tag." "$current_commit" "$target_commit" "downloading" "$current_version" "$target_version"
+  run_as_user git -C "$INSTALL_DIR" checkout --detach "$target_tag"
   new_commit="$(git_value rev-parse HEAD)"
+  new_version="$(version_value)"
+  [ "$new_version" = "$target_version" ] \
+    || fail "Release tag $target_tag contains VERSION '$new_version'; expected '$target_version'."
 
-  write_status "running" "Installing dependencies and restarting services." "$new_commit" "$target_commit" "installing"
+  write_status "running" "Installing release $target_tag and restarting services." "$new_commit" "$target_commit" "installing" "$new_version" "$target_version"
   local install_cmd
   install_cmd=(
     ./install.sh
@@ -284,8 +329,8 @@ run_upgrade() {
   log "+ ${install_cmd[*]}"
   "${install_cmd[@]}" >>"$UPGRADE_LOG_FILE" 2>&1
 
-  write_status "success" "Upgrade complete." "$new_commit" "$target_commit" "complete"
-  log "Upgrade complete at $new_commit."
+  write_status "success" "Upgrade to $target_tag complete." "$new_commit" "$target_commit" "complete" "$new_version" "$target_version"
+  log "Upgrade to $target_tag complete at $new_commit."
   rm -rf "$UPGRADE_STATE_DIR/upgrade.lock"
   trap - EXIT
 }
@@ -296,7 +341,7 @@ main() {
       schedule_upgrade
       ;;
     run)
-      run_upgrade
+      run_upgrade "${2:-}"
       ;;
     -h|--help)
       usage

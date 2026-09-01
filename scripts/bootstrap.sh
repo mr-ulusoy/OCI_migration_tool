@@ -3,7 +3,8 @@
 set -euo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/mr-ulusoy/OCI_migration_tool.git}"
-BRANCH="${BRANCH:-main}"
+BRANCH="${BRANCH:-}"
+RELEASE_TAG="${RELEASE_TAG:-latest}"
 INSTALL_DIR="${INSTALL_DIR:-/opt/oci-migrator}"
 PUBLIC_HOST="${PUBLIC_HOST:-}"
 RUN_USER="${RUN_USER:-}"
@@ -32,7 +33,8 @@ Usage:
 
 Options:
   --repo URL                  Git repository URL. Default: $REPO_URL
-  --branch NAME               Git branch/tag. Default: $BRANCH
+  --release TAG              Published release tag. Default: latest
+  --branch NAME               Developer override; install a branch instead of a release.
   --install-dir PATH          Install directory. Default: $INSTALL_DIR
   --public-host HOST          Public IP/DNS passed to install.sh.
   --run-user USER             Linux user that owns files and runs services.
@@ -60,6 +62,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --branch)
       BRANCH="$2"
+      shift 2
+      ;;
+    --release)
+      RELEASE_TAG="$2"
       shift 2
       ;;
     --install-dir)
@@ -129,13 +135,53 @@ case "$INSTALL_DIR" in
     ;;
 esac
 
-if ! command -v git >/dev/null 2>&1; then
+if ! command -v git >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; then
   command -v apt-get >/dev/null 2>&1 || {
-    echo "git is required and apt-get was not found." >&2
+    echo "git, curl, and python3 are required and apt-get was not found." >&2
     exit 1
   }
   "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get update
-  "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y git
+  "${SUDO[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y git curl python3
+fi
+
+github_repository_from_url() {
+  local repository="$REPO_URL"
+  repository="${repository#https://github.com/}"
+  repository="${repository#http://github.com/}"
+  repository="${repository#git@github.com:}"
+  repository="${repository%.git}"
+  repository="${repository%/}"
+  [[ "$repository" =~ ^[^/]+/[^/]+$ ]] || return 1
+  printf '%s\n' "$repository"
+}
+
+latest_release_tag() {
+  local repository
+  repository="$(github_repository_from_url)" || {
+    echo "Automatic release discovery requires a github.com repository. Use --release <tag> or --branch <name>." >&2
+    return 1
+  }
+  curl -fsSL \
+    -H 'Accept: application/vnd.github+json' \
+    -H 'X-GitHub-Api-Version: 2022-11-28' \
+    -H 'User-Agent: cloud-migration-console-bootstrap' \
+    "https://api.github.com/repos/$repository/releases/latest" \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("tag_name", ""))'
+}
+
+CHECKOUT_REF="$BRANCH"
+CHECKOUT_MODE="branch"
+if [ -z "$CHECKOUT_REF" ]; then
+  CHECKOUT_MODE="release"
+  if [ "$RELEASE_TAG" = "latest" ]; then
+    CHECKOUT_REF="$(latest_release_tag)"
+  else
+    CHECKOUT_REF="$RELEASE_TAG"
+  fi
+  [[ "$CHECKOUT_REF" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+    echo "Invalid release tag '$CHECKOUT_REF'. Expected vMAJOR.MINOR.PATCH." >&2
+    exit 1
+  }
 fi
 
 "${SUDO[@]}" mkdir -p "$INSTALL_DIR"
@@ -143,16 +189,21 @@ fi
 
 if [ -d "$INSTALL_DIR/.git" ]; then
   echo "Updating existing checkout in $INSTALL_DIR"
-  "${SUDO[@]}" -H -u "$RUN_USER" git -C "$INSTALL_DIR" fetch origin "$BRANCH"
-  "${SUDO[@]}" -H -u "$RUN_USER" git -C "$INSTALL_DIR" checkout "$BRANCH"
-  "${SUDO[@]}" -H -u "$RUN_USER" git -C "$INSTALL_DIR" pull --ff-only origin "$BRANCH"
+  if [ "$CHECKOUT_MODE" = "release" ]; then
+    "${SUDO[@]}" -H -u "$RUN_USER" git -C "$INSTALL_DIR" fetch origin "refs/tags/$CHECKOUT_REF:refs/tags/$CHECKOUT_REF"
+    "${SUDO[@]}" -H -u "$RUN_USER" git -C "$INSTALL_DIR" checkout --detach "$CHECKOUT_REF"
+  else
+    "${SUDO[@]}" -H -u "$RUN_USER" git -C "$INSTALL_DIR" fetch origin "$CHECKOUT_REF"
+    "${SUDO[@]}" -H -u "$RUN_USER" git -C "$INSTALL_DIR" checkout "$CHECKOUT_REF"
+    "${SUDO[@]}" -H -u "$RUN_USER" git -C "$INSTALL_DIR" pull --ff-only origin "$CHECKOUT_REF"
+  fi
 else
   if [ -n "$(find "$INSTALL_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
     echo "$INSTALL_DIR exists and is not empty. Choose another --install-dir or clear it first." >&2
     exit 1
   fi
-  echo "Cloning $REPO_URL#$BRANCH into $INSTALL_DIR"
-  "${SUDO[@]}" -H -u "$RUN_USER" git clone --branch "$BRANCH" "$REPO_URL" "$INSTALL_DIR"
+  echo "Cloning $REPO_URL#$CHECKOUT_REF into $INSTALL_DIR"
+  "${SUDO[@]}" -H -u "$RUN_USER" git clone --branch "$CHECKOUT_REF" "$REPO_URL" "$INSTALL_DIR"
 fi
 
 cmd=(./install.sh --run-user "$RUN_USER")

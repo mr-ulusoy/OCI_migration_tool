@@ -14,6 +14,8 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.error
+import urllib.request
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -458,6 +460,9 @@ UPGRADE_STATUS_FILE = Path(
 ).resolve()
 UPGRADE_CHECK_FILE = Path(
     os.getenv("OCI_MIGRATOR_UPGRADE_CHECK_FILE", str(UPGRADE_STATUS_FILE.parent / "check.json"))
+).resolve()
+UPGRADE_REQUEST_FILE = Path(
+    os.getenv("OCI_MIGRATOR_UPGRADE_REQUEST_FILE", str(UPGRADE_STATUS_FILE.parent / "request.json"))
 ).resolve()
 UPGRADE_CHECK_INTERVAL_SECONDS = 24 * 60 * 60
 UPGRADE_LOG_FILE = Path(os.getenv("OCI_MIGRATOR_UPGRADE_LOG_FILE", "/var/log/oci-migrator/upgrade.log")).resolve()
@@ -2390,6 +2395,66 @@ def mask_remote_url(value: str) -> str:
     return re.sub(r"(https?://)([^/@]+)@", r"\1***@", value or "")
 
 
+SEMANTIC_VERSION_PATTERN = re.compile(r"^(?:v)?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+
+
+def normalize_release_version(value: str) -> str:
+    match = SEMANTIC_VERSION_PATTERN.fullmatch((value or "").strip())
+    if not match:
+        raise ValueError("Version must use MAJOR.MINOR.PATCH, for example 1.4.2.")
+    return ".".join(match.groups())
+
+
+def version_tuple(value: str) -> tuple[int, int, int]:
+    return tuple(int(part) for part in normalize_release_version(value).split("."))
+
+
+def read_app_version() -> str:
+    try:
+        return normalize_release_version((PROJECT_ROOT / "VERSION").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        logger.warning("Application VERSION is unavailable or invalid: %s", exc)
+        return ""
+
+
+def github_repository_from_remote(remote_url: str) -> str:
+    value = (remote_url or "").strip()
+    patterns = (
+        r"^https?://github\.com/([^/]+/[^/]+?)(?:\.git)?/?$",
+        r"^ssh://git@github\.com/([^/]+/[^/]+?)(?:\.git)?/?$",
+        r"^git@github\.com:([^/]+/[^/]+?)(?:\.git)?$",
+    )
+    for pattern in patterns:
+        match = re.match(pattern, value, flags=re.IGNORECASE)
+        if match:
+            return match.group(1)
+    return ""
+
+
+def fetch_latest_github_release(repository: str) -> dict:
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{repository}/releases/latest",
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "cloud-migration-console-updater",
+            "X-GitHub-Api-Version": "2022-11-28",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return {}
+        raise RuntimeError(f"GitHub Releases API returned HTTP {exc.code}.") from exc
+    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"GitHub Releases API request failed: {exc}") from exc
+
+    if not isinstance(payload, dict):
+        raise RuntimeError("GitHub Releases API returned an invalid response.")
+    return payload
+
+
 def git_command(args: list[str], timeout: int = 10) -> str:
     try:
         result = subprocess.run(
@@ -2423,42 +2488,85 @@ def current_git_info() -> dict:
         "branch": branch,
         "current_commit": commit,
         "current_short": commit[:7] if commit else "",
+        "current_version": read_app_version(),
         "remote_url": mask_remote_url(remote_url),
     }
 
 
-def latest_git_info() -> dict:
+def latest_release_info() -> dict:
     info = current_git_info()
-    branch = info.get("branch") or "main"
+    remote_url = safe_git_command(["config", "--get", "remote.origin.url"])
+    repository = (
+        os.getenv("OCI_MIGRATOR_RELEASE_REPOSITORY", "").strip()
+        or github_repository_from_remote(remote_url)
+    )
+    if not repository:
+        raise HTTPException(
+            status_code=502,
+            detail="Check for updates: origin is not a supported GitHub repository. Set OCI_MIGRATOR_RELEASE_REPOSITORY to owner/repository.",
+        )
+
     try:
-        raw_output = git_command(["ls-remote", "origin", branch], timeout=20)
-        first_line = raw_output.splitlines()[0] if raw_output else ""
-        latest_commit = first_line.split()[0] if first_line else ""
-        if not latest_commit:
-            raise RuntimeError(f"No commit found for origin/{branch}.")
+        release = fetch_latest_github_release(repository)
     except Exception as exc:
         raise_operation_error(
             502,
             "Check for updates",
             exc,
-            "Confirm that the server has outbound GitHub access and that origin points to the project repository.",
+            "Confirm that the server has outbound GitHub API access and that origin points to the project repository.",
         )
 
-    latest_title = safe_git_command(["show", "-s", "--format=%s", latest_commit])
-    if not latest_title:
-        try:
-            git_command(["fetch", "--quiet", "--no-tags", "origin", branch], timeout=30)
-            latest_title = safe_git_command(["show", "-s", "--format=%s", latest_commit])
-        except Exception as exc:
-            logger.info("Latest commit title is unavailable: %s", exc)
+    current_version = info.get("current_version", "")
+    if not release:
+        return {
+            **info,
+            "release_repository": repository,
+            "release_available": False,
+            "latest_tag": "",
+            "latest_version": "",
+            "latest_title": "",
+            "release_url": "",
+            "published_at": None,
+            "update_available": False,
+            "up_to_date": True,
+            "status_message": "No published GitHub release is available yet.",
+        }
+
+    latest_tag = str(release.get("tag_name", "")).strip()
+    try:
+        latest_version = normalize_release_version(latest_tag)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Check for updates: latest release tag '{latest_tag}' is invalid. Expected vMAJOR.MINOR.PATCH.",
+        ) from exc
+
+    if not current_version:
+        update_available = True
+        up_to_date = False
+        status_message = f"Release v{latest_version} is available; the installed version is unknown."
+    else:
+        update_available = version_tuple(latest_version) > version_tuple(current_version)
+        up_to_date = not update_available
+        if update_available:
+            status_message = f"Release v{latest_version} is available."
+        elif version_tuple(current_version) > version_tuple(latest_version):
+            status_message = f"Installed version v{current_version} is newer than the latest published release."
+        else:
+            status_message = "You are on the latest published release."
 
     return {
         **info,
-        "branch": branch,
-        "latest_commit": latest_commit,
-        "latest_short": latest_commit[:7],
-        "latest_title": truncate_text(latest_title, 160),
-        "up_to_date": bool(info.get("current_commit")) and info.get("current_commit") == latest_commit,
+        "release_repository": repository,
+        "release_available": True,
+        "latest_tag": latest_tag,
+        "latest_version": latest_version,
+        "latest_title": truncate_text(str(release.get("name") or latest_tag), 160),
+        "release_url": str(release.get("html_url") or ""),
+        "published_at": release.get("published_at"),
+        "update_available": update_available,
+        "up_to_date": up_to_date,
+        "status_message": status_message,
     }
 
 
@@ -2487,22 +2595,22 @@ def write_upgrade_check_file(payload: dict) -> None:
         logger.warning("Could not persist update check result: %s", exc)
 
 
-def cached_latest_git_info(force: bool = False) -> dict:
+def cached_latest_release_info(force: bool = False) -> dict:
     current = current_git_info()
     cached = read_upgrade_check_file()
     try:
         checked_at_epoch = datetime.fromisoformat(str(cached.get("checked_at", ""))).timestamp()
     except (TypeError, ValueError):
         checked_at_epoch = None
-    cache_matches_install = bool(current.get("current_commit")) and cached.get("current_commit") == current.get("current_commit")
+    cache_matches_install = bool(current.get("current_version")) and cached.get("current_version") == current.get("current_version")
     cache_is_fresh = (
         isinstance(checked_at_epoch, (int, float))
         and time.time() - float(checked_at_epoch) < UPGRADE_CHECK_INTERVAL_SECONDS
     )
-    if not force and cache_matches_install and cache_is_fresh and cached.get("latest_commit"):
+    if not force and cache_matches_install and cache_is_fresh and "release_available" in cached:
         return {**cached, "cached": True}
 
-    result = latest_git_info()
+    result = latest_release_info()
     checked_at_epoch = time.time()
     checked_at = datetime.fromtimestamp(checked_at_epoch, timezone.utc)
     payload = {
@@ -2544,6 +2652,29 @@ def upgrade_status_payload() -> dict:
     payload["helper_installed"] = UPGRADE_HELPER.is_file()
     payload["log_file"] = str(UPGRADE_LOG_FILE)
     return payload
+
+
+def write_upgrade_request(latest_release: dict) -> None:
+    latest_tag = str(latest_release.get("latest_tag", "")).strip()
+    normalize_release_version(latest_tag)
+    UPGRADE_REQUEST_FILE.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(dir=UPGRADE_REQUEST_FILE.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "tag": latest_tag,
+                    "version": latest_release.get("latest_version", ""),
+                    "requested_at": datetime.now(timezone.utc).isoformat(),
+                },
+                handle,
+                indent=2,
+            )
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, UPGRADE_REQUEST_FILE)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
 
 
 def upgrade_helper_command() -> list[str]:
@@ -3706,7 +3837,7 @@ async def upgrade_status():
 @app.post("/upgrade/check")
 async def check_for_upgrade(force: bool = Query(default=False)):
     with UPGRADE_LOCK:
-        return cached_latest_git_info(force=force)
+        return cached_latest_release_info(force=force)
 
 
 @app.post("/upgrade/start")
@@ -3716,6 +3847,15 @@ async def start_upgrade():
         if current_status.get("status") == "running" and upgrade_process_is_running():
             raise HTTPException(status_code=409, detail="Upgrade is already running.")
 
+        latest_release = cached_latest_release_info(force=True)
+        if not latest_release.get("release_available"):
+            raise HTTPException(status_code=409, detail="No published GitHub release is available yet.")
+        if not latest_release.get("update_available"):
+            raise HTTPException(
+                status_code=409,
+                detail=latest_release.get("status_message") or "Already up to date.",
+            )
+        write_upgrade_request(latest_release)
         command = upgrade_helper_command()
         try:
             UPGRADE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -3737,6 +3877,8 @@ async def start_upgrade():
 
     return {
         **upgrade_status_payload(),
+        "target_tag": latest_release.get("latest_tag"),
+        "target_version": latest_release.get("latest_version"),
         "status": "running",
         "phase": "queued",
         "message": "Upgrade started. The service may restart during installation.",

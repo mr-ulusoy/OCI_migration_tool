@@ -488,13 +488,13 @@ export default function App() {
   const [upgradeReconnecting, setUpgradeReconnecting] = useState(false);
   const isAuthenticated = Boolean(authState.token);
 
-  const latestUpgradeCommit = upgradeCheck?.latest_commit || upgradeStatus?.target_commit || '';
-  const latestUpgradeShort = upgradeCheck?.latest_short || latestUpgradeCommit.slice(0, 7);
+  const currentUpgradeVersion = upgradeCheck?.current_version || upgradeStatus?.current_version || '';
+  const latestUpgradeVersion = upgradeCheck?.latest_version || upgradeStatus?.target_version || '';
   const latestUpgradeTitle = upgradeCheck?.latest_title || '';
   const upgradeVersionsMatch = Boolean(
-    upgradeStatus?.current_commit
-      && latestUpgradeCommit
-      && upgradeStatus.current_commit === latestUpgradeCommit
+    currentUpgradeVersion
+      && latestUpgradeVersion
+      && currentUpgradeVersion === latestUpgradeVersion
   );
   const upgradeIsCurrent = upgradeCheck?.up_to_date === true || upgradeVersionsMatch;
   const upgradePhase = upgradeStatus?.phase || (upgradeStatus?.status === 'success' ? 'complete' : upgradeStatus?.status === 'failed' ? 'failed' : '');
@@ -870,7 +870,7 @@ export default function App() {
         ...(prev || {}),
         ...res.data,
         status: res.data.up_to_date ? 'success' : 'idle',
-        message: res.data.up_to_date ? 'You are on the latest version.' : 'A new version is available.'
+        message: res.data.status_message || (res.data.up_to_date ? 'You are on the latest published release.' : 'A new release is available.')
       }));
       return res.data;
     } catch (err) {
@@ -904,7 +904,7 @@ export default function App() {
     setConfirmDialog({
       icon: 'download',
       title: 'Install system update?',
-      message: 'Cloud Migration Console will download and install the latest version from GitHub.',
+      message: `Cloud Migration Console will download and install published release v${latestUpgradeVersion || 'latest'} from GitHub.`,
       detail: 'The dashboard and API may be briefly unavailable while services restart. Runtime configuration, credentials, and backup jobs are preserved.',
       confirmLabel: 'Start Upgrade',
       onConfirm: startUpgrade
@@ -1427,7 +1427,7 @@ export default function App() {
 
   useEffect(() => {
     if (!isAuthenticated || upgradeStatus?.status !== 'success' || !upgradeStatus?.finished_at) return;
-    if (upgradeCheck?.current_commit === upgradeStatus?.current_commit && upgradeCheck?.latest_commit) return;
+    if (upgradeCheck?.current_version === upgradeStatus?.current_version && upgradeCheck?.latest_version) return;
 
     const refreshCompletedUpgrade = async () => {
       await fetchUpgradeLog();
@@ -1446,7 +1446,7 @@ export default function App() {
 
     refreshCompletedUpgrade();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAuthenticated, upgradeStatus?.status, upgradeStatus?.finished_at, upgradeStatus?.current_commit, upgradeCheck?.current_commit, upgradeCheck?.latest_commit, api]);
+  }, [isAuthenticated, upgradeStatus?.status, upgradeStatus?.finished_at, upgradeStatus?.current_version, upgradeCheck?.current_version, upgradeCheck?.latest_version, api]);
 
   useEffect(() => {
     let interval;
@@ -2291,7 +2291,7 @@ export default function App() {
   const currentViewMeta = VIEW_META[view] || VIEW_META.datasync;
   const healthChecks = Object.values(health?.checks || {});
   const healthIssueCount = healthChecks.filter(check => check?.status !== 'ok').length;
-  const updateAvailable = upgradeCheck?.up_to_date === false;
+  const updateAvailable = upgradeCheck?.update_available === true;
   const upgradeRunning = upgradeStatus?.status === 'running';
   const navigationGroups = [
     {
@@ -2920,7 +2920,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={handleStartUpgrade}
-                      disabled={startingUpgrade || upgradeStatus?.status === 'running' || upgradeStatus?.helper_installed === false}
+                      disabled={startingUpgrade || upgradeStatus?.status === 'running' || upgradeStatus?.helper_installed === false || !updateAvailable}
                       className="px-3 py-2 bg-[#9c3029] text-white rounded-md font-semibold text-xs shadow-sm hover:bg-[#7a2520] disabled:opacity-60 flex items-center gap-2"
                     >
                       {startingUpgrade || upgradeStatus?.status === 'running' ? <Loader2 className="animate-spin" size={14} /> : <Download size={14} />}
@@ -2943,13 +2943,13 @@ export default function App() {
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   <div className="bg-gray-50 border border-gray-100 rounded-md p-3">
                     <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Installed</div>
-                    <div className="text-sm font-mono text-gray-800">{upgradeStatus?.current_short || 'unknown'}</div>
-                    <div className="text-[11px] text-gray-500 truncate mt-1">{upgradeStatus?.branch || 'main'}</div>
+                    <div className="text-sm font-mono text-gray-800">{currentUpgradeVersion ? `v${currentUpgradeVersion}` : 'unknown'}</div>
+                    <div className="text-[11px] text-gray-500 truncate mt-1">Published release channel</div>
                   </div>
                   <div className="bg-gray-50 border border-gray-100 rounded-md p-3">
-                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Latest GitHub</div>
-                    <div className="text-sm font-mono text-gray-800">{latestUpgradeShort || 'not checked'}</div>
-                    <div className="text-[11px] text-gray-500 truncate mt-1">{upgradeIsCurrent ? 'You are on the latest version.' : upgradeCheck?.up_to_date === false ? 'A new version is available.' : 'Waiting for automatic check'}</div>
+                    <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1">Latest Release</div>
+                    <div className="text-sm font-mono text-gray-800">{latestUpgradeVersion ? `v${latestUpgradeVersion}` : 'none published'}</div>
+                    <div className="text-[11px] text-gray-500 truncate mt-1">{upgradeCheck?.status_message || (upgradeIsCurrent ? 'You are on the latest published release.' : updateAvailable ? 'A new release is available.' : 'Waiting for automatic check')}</div>
                     {latestUpgradeTitle && <div className="mt-1 truncate text-[11px] font-medium text-gray-700" title={latestUpgradeTitle}>{latestUpgradeTitle}</div>}
                     <div className="mt-1 text-[10px] text-gray-400">
                       {upgradeCheck?.checked_at ? `Checked ${formatTimestamp(upgradeCheck.checked_at)}` : 'Checked automatically every 24 hours'}
@@ -3927,10 +3927,10 @@ export default function App() {
                       <div className="mt-1 text-xs leading-5 text-gray-500">
                         {upgradeRunning ? 'The latest version is being installed.' : updateAvailable ? (
                           <>
-                            <div>Version {latestUpgradeShort || 'latest'} is available in Settings.</div>
+                            <div>Release v{latestUpgradeVersion || 'latest'} is available in Settings.</div>
                             {latestUpgradeTitle && <div className="truncate font-medium text-gray-700" title={latestUpgradeTitle}>{latestUpgradeTitle}</div>}
                           </>
-                        ) : upgradeIsCurrent ? `You are on the latest version${upgradeStatus?.current_short ? ` (${upgradeStatus.current_short})` : ''}.` : checkingUpgrade ? 'Checking GitHub for updates...' : 'Update status is not available.'}
+                        ) : upgradeIsCurrent ? (upgradeCheck?.status_message || `You are on the latest published release${currentUpgradeVersion ? ` (v${currentUpgradeVersion})` : ''}.`) : checkingUpgrade ? 'Checking GitHub Releases for updates...' : 'Update status is not available.'}
                       </div>
                     </div>
                   </div>

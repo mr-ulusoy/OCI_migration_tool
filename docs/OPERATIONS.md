@@ -12,6 +12,8 @@ chmod +x bootstrap.sh
 ./bootstrap.sh --prompt-admin-password
 ```
 
+The bootstrap script installs the latest published GitHub Release. Use `--release vX.Y.Z` to install a specific version. The `--branch` option is intended for development and testing, not production installations.
+
 The installer automatically detects the server's first local IP address and prints the initial setup URL. Open the address shown when installation completes, normally:
 
 ```text
@@ -379,9 +381,11 @@ Also verify:
 
 ### System Upgrade
 
-Cloud Migration Console checks GitHub automatically when the dashboard is used and refreshes the result at most once every 24 hours. The last check time, available commit, and commit title are shown in the dashboard. `Check` bypasses the daily cache and performs a fresh comparison immediately.
+Cloud Migration Console checks the latest published GitHub Release automatically when the dashboard is used and refreshes the result at most once every 24 hours. The installed version, latest release version, release title, and last check time are shown in the dashboard. `Check` bypasses the daily cache and performs a fresh comparison immediately.
 
-`Upgrade` asks for confirmation before installing the latest version and reports the controlled workflow as Check, Download, Install, and Complete. The detailed package-manager and service output is hidden by default; open `Technical Log` only when troubleshooting is required. Runtime configuration is preserved by the managed upgrade process while the API and frontend restart.
+`Upgrade` asks for confirmation before installing the exact release tag and reports the controlled workflow as Check, Download, Install, and Complete. Commits on `main` do not trigger an upgrade, so documentation-only changes no longer reinstall the application. The detailed package-manager and service output is hidden by default; open `Technical Log` only when troubleshooting is required. Runtime configuration is preserved by the managed upgrade process while the API and frontend restart.
+
+Published release tags use `vMAJOR.MINOR.PATCH`, for example `v1.3.2`. The version inside the release is read from the repository root `VERSION` file. Release maintainers must keep those values identical and follow [RELEASING.md](RELEASING.md); CI rejects a release tag that does not match `VERSION`.
 
 ### HTTPS & Certificates
 

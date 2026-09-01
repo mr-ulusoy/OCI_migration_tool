@@ -26,6 +26,7 @@ UNINSTALL_HELPER="${OCI_MIGRATOR_UNINSTALL_HELPER:-/usr/local/sbin/oci-migrator-
 UNINSTALL_CONFIG="${OCI_MIGRATOR_UNINSTALL_CONFIG:-/etc/oci-migrator/uninstall.conf}"
 UPGRADE_STATE_DIR="${OCI_MIGRATOR_UPGRADE_STATE_DIR:-/var/lib/oci-migrator/upgrade}"
 UPGRADE_STATUS_FILE="${OCI_MIGRATOR_UPGRADE_STATUS_FILE:-$UPGRADE_STATE_DIR/status.json}"
+UPGRADE_REQUEST_FILE="${OCI_MIGRATOR_UPGRADE_REQUEST_FILE:-$UPGRADE_STATE_DIR/request.json}"
 UPGRADE_LOG_FILE="${OCI_MIGRATOR_UPGRADE_LOG_FILE:-/var/log/oci-migrator/upgrade.log}"
 SERVER_TIMEZONE="${OCI_MIGRATOR_TIMEZONE:-Europe/Stockholm}"
 NTP_SERVERS="${OCI_MIGRATOR_NTP_SERVERS:-0.se.pool.ntp.org 1.se.pool.ntp.org 2.se.pool.ntp.org 3.se.pool.ntp.org}"
@@ -683,6 +684,7 @@ ensure_env_file() {
       printf 'OCI_MIGRATOR_UPGRADE_HELPER=%s\n' "$UPGRADE_HELPER"
       printf 'OCI_MIGRATOR_UNINSTALL_HELPER=%s\n' "$UNINSTALL_HELPER"
       printf 'OCI_MIGRATOR_UPGRADE_STATUS_FILE=%s\n' "$UPGRADE_STATUS_FILE"
+      printf 'OCI_MIGRATOR_UPGRADE_REQUEST_FILE=%s\n' "$UPGRADE_REQUEST_FILE"
       printf 'OCI_MIGRATOR_UPGRADE_LOG_FILE=%s\n' "$UPGRADE_LOG_FILE"
       printf 'OCI_MIGRATOR_TIMEZONE=%s\n' "$SERVER_TIMEZONE"
       printf 'OCI_MIGRATOR_NTP_SERVERS=%s\n' "${NTP_SERVERS// /,}"
@@ -725,6 +727,7 @@ ensure_env_file() {
     grep -q '^OCI_MIGRATOR_UPGRADE_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_HELPER=%s\n' "$UPGRADE_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UNINSTALL_HELPER=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UNINSTALL_HELPER=%s\n' "$UNINSTALL_HELPER" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UPGRADE_STATUS_FILE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_STATUS_FILE=%s\n' "$UPGRADE_STATUS_FILE" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
+    grep -q '^OCI_MIGRATOR_UPGRADE_REQUEST_FILE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_REQUEST_FILE=%s\n' "$UPGRADE_REQUEST_FILE" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_UPGRADE_LOG_FILE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_UPGRADE_LOG_FILE=%s\n' "$UPGRADE_LOG_FILE" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_TIMEZONE=' "$ENV_FILE" || printf 'OCI_MIGRATOR_TIMEZONE=%s\n' "$SERVER_TIMEZONE" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
     grep -q '^OCI_MIGRATOR_NTP_SERVERS=' "$ENV_FILE" || printf 'OCI_MIGRATOR_NTP_SERVERS=%s\n' "${NTP_SERVERS// /,}" | "${SUDO[@]}" tee -a "$ENV_FILE" >/dev/null
@@ -1145,6 +1148,7 @@ install_upgrade_helper() {
     printf 'UNINSTALL_HELPER=%q\n' "$UNINSTALL_HELPER"
     printf 'UPGRADE_STATE_DIR=%q\n' "$UPGRADE_STATE_DIR"
     printf 'UPGRADE_STATUS_FILE=%q\n' "$UPGRADE_STATUS_FILE"
+    printf 'UPGRADE_REQUEST_FILE=%q\n' "$UPGRADE_REQUEST_FILE"
     printf 'UPGRADE_LOG_FILE=%q\n' "$UPGRADE_LOG_FILE"
     printf 'SERVER_TIMEZONE=%q\n' "$SERVER_TIMEZONE"
     printf 'NTP_SERVERS=%q\n' "$NTP_SERVERS"
