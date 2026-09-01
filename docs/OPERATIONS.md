@@ -381,7 +381,7 @@ Also verify:
 
 OCI Migrator checks GitHub automatically when the dashboard is used and refreshes the result at most once every 24 hours. The last check time, available commit, and commit title are shown in the dashboard. `Check` bypasses the daily cache and performs a fresh comparison immediately.
 
-`Upgrade` installs the latest version and reports the controlled workflow as Check, Download, Install, and Complete. The detailed package-manager and service output is hidden by default; open `Technical Log` only when troubleshooting is required. Runtime configuration is preserved by the managed upgrade process while the API and frontend restart.
+`Upgrade` asks for confirmation before installing the latest version and reports the controlled workflow as Check, Download, Install, and Complete. The detailed package-manager and service output is hidden by default; open `Technical Log` only when troubleshooting is required. Runtime configuration is preserved by the managed upgrade process while the API and frontend restart.
 
 ### HTTPS & Certificates
 
