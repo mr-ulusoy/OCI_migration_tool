@@ -422,6 +422,8 @@ function normalizeLifecyclePolicy(policy = {}) {
 
 export default function App() {
   const mainScrollRef = useRef(null);
+  const tlsCertificateInputRef = useRef(null);
+  const tlsPrivateKeyInputRef = useRef(null);
   const [authState, setAuthState] = useState(getInitialAuth);
   const [theme, setTheme] = useState(getInitialTheme);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -449,7 +451,7 @@ export default function App() {
   const [networkSettingsForm, setNetworkSettingsForm] = useState({ mode: 'dhcp', interface: '', address: '', prefixLength: 24, gateway: '', dnsServers: '' });
   const [savingNetworkSettings, setSavingNetworkSettings] = useState(false);
   const [tlsSettings, setTlsSettings] = useState(null);
-  const [tlsSettingsForm, setTlsSettingsForm] = useState({ mode: 'http', hostname: '', email: '', certPath: '', keyPath: '', acknowledgeHttp: false });
+  const [tlsSettingsForm, setTlsSettingsForm] = useState({ mode: 'http', hostname: '', email: '', certFile: null, keyFile: null, acknowledgeHttp: false });
   const [savingTlsSettings, setSavingTlsSettings] = useState(false);
   const [networkNow, setNetworkNow] = useState(Date.now());
   const [rcloneDefaultSettings, setRcloneDefaultSettings] = useState({ bwlimit: '', tpslimit: null });
@@ -759,14 +761,14 @@ export default function App() {
       const res = await api.get('/tls-settings');
       setTlsSettings(res.data);
       if (resetForm) {
-        setTlsSettingsForm(current => ({
+        setTlsSettingsForm({
           mode: res.data.mode || 'http',
           hostname: res.data.hostname || '',
           email: res.data.email || '',
-          certPath: res.data.mode === 'custom' ? (res.data.certificate_source || current.certPath || '') : '',
-          keyPath: current.keyPath || '',
+          certFile: null,
+          keyFile: null,
           acknowledgeHttp: Boolean(res.data.http_acknowledged)
-        }));
+        });
       }
       return res.data;
     } catch (err) {
@@ -1291,16 +1293,25 @@ export default function App() {
   const applyTlsSettings = async () => {
     setSavingTlsSettings(true);
     try {
-      const res = await api.put('/tls-settings', {
-        mode: tlsSettingsForm.mode,
-        hostname: tlsSettingsForm.hostname.trim(),
-        email: tlsSettingsForm.email.trim(),
-        cert_path: tlsSettingsForm.certPath.trim(),
-        key_path: tlsSettingsForm.keyPath.trim(),
-        acknowledge_http: tlsSettingsForm.mode === 'http' && tlsSettingsForm.acknowledgeHttp
-      });
+      let res;
+      if (tlsSettingsForm.mode === 'custom') {
+        const payload = new FormData();
+        payload.append('hostname', tlsSettingsForm.hostname.trim());
+        payload.append('certificate', tlsSettingsForm.certFile);
+        payload.append('private_key', tlsSettingsForm.keyFile);
+        res = await api.post('/tls-settings/corporate', payload);
+      } else {
+        res = await api.put('/tls-settings', {
+          mode: tlsSettingsForm.mode,
+          hostname: tlsSettingsForm.hostname.trim(),
+          email: tlsSettingsForm.email.trim(),
+          acknowledge_http: tlsSettingsForm.mode === 'http' && tlsSettingsForm.acknowledgeHttp
+        });
+      }
       setTlsSettings(res.data);
-      setTlsSettingsForm(current => ({ ...current, keyPath: '', acknowledgeHttp: Boolean(res.data.http_acknowledged) }));
+      setTlsSettingsForm(current => ({ ...current, certFile: null, keyFile: null, acknowledgeHttp: Boolean(res.data.http_acknowledged) }));
+      if (tlsCertificateInputRef.current) tlsCertificateInputRef.current.value = '';
+      if (tlsPrivateKeyInputRef.current) tlsPrivateKeyInputRef.current.value = '';
       await fetchHealth();
       showSuccess(res.data.mode === 'http' ? 'HTTP risk acknowledged.' : `HTTPS configured for ${res.data.hostname}.`);
     } catch (err) {
@@ -1316,8 +1327,8 @@ export default function App() {
       setNotice({ type: 'error', title: 'Hostname required', message: 'Enter the DNS hostname clients will use for OCI Migrator.' });
       return;
     }
-    if (mode === 'custom' && (!tlsSettingsForm.certPath.trim() || !tlsSettingsForm.keyPath.trim())) {
-      setNotice({ type: 'error', title: 'Certificate paths required', message: 'Enter absolute server paths for the full certificate chain and unencrypted private key.' });
+    if (mode === 'custom' && (!tlsSettingsForm.certFile || !tlsSettingsForm.keyFile)) {
+      setNotice({ type: 'error', title: 'Certificate files required', message: 'Upload the PEM certificate chain and matching unencrypted private key.' });
       return;
     }
     if (mode === 'http' && !tlsSettingsForm.acknowledgeHttp) {
@@ -1328,7 +1339,7 @@ export default function App() {
       http: 'This disables the managed HTTPS endpoint. Use HTTP only for initial setup or recovery.',
       external: 'The external load balancer or reverse proxy must already provide HTTPS and forward requests to this server.',
       letsencrypt: 'DNS must point to this server and inbound TCP 80 and 443 must be reachable.',
-      custom: 'The certificate will be validated, copied into protected storage, and served by Caddy.'
+      custom: 'The uploaded certificate and private key will be validated, copied into protected storage, and served by Caddy.'
     };
     setConfirmDialog({
       title: mode === 'http' ? 'Disable HTTPS?' : 'Apply HTTPS configuration?',
@@ -2968,6 +2979,8 @@ export default function App() {
                         onClick={() => setTlsSettingsForm({
                           ...tlsSettingsForm,
                           mode: option.id,
+                          certFile: option.id === 'custom' ? tlsSettingsForm.certFile : null,
+                          keyFile: option.id === 'custom' ? tlsSettingsForm.keyFile : null,
                           acknowledgeHttp: option.id === 'http'
                             ? Boolean(tlsSettings?.mode === 'http' && tlsSettings?.http_acknowledged)
                             : false
@@ -3011,23 +3024,23 @@ export default function App() {
                   {tlsSettingsForm.mode === 'custom' && (
                     <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
                       <div>
-                        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Full Chain PEM Path</label>
+                        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Full Chain PEM File</label>
                         <input
-                          value={tlsSettingsForm.certPath}
-                          onChange={event => setTlsSettingsForm({ ...tlsSettingsForm, certPath: event.target.value })}
-                          placeholder="/etc/company-certs/migrator-fullchain.pem"
-                          autoComplete="off"
-                          className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                          ref={tlsCertificateInputRef}
+                          type="file"
+                          accept=".pem,.crt,.cer,application/x-pem-file"
+                          onChange={event => setTlsSettingsForm({ ...tlsSettingsForm, certFile: event.target.files?.[0] || null })}
+                          className="w-full rounded-md border border-gray-200 bg-white p-1.5 text-xs text-gray-600 file:mr-3 file:rounded file:border-0 file:bg-gray-100 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-gray-700 hover:file:bg-gray-200 focus:outline-none focus:border-[#9c3029]"
                         />
                       </div>
                       <div>
-                        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Unencrypted Private Key Path</label>
+                        <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1 block">Unencrypted Private Key File</label>
                         <input
-                          value={tlsSettingsForm.keyPath}
-                          onChange={event => setTlsSettingsForm({ ...tlsSettingsForm, keyPath: event.target.value })}
-                          placeholder="/etc/company-certs/migrator-key.pem"
-                          autoComplete="off"
-                          className="w-full bg-white border border-gray-200 p-2 rounded-md text-sm font-mono focus:outline-none focus:border-[#9c3029]"
+                          ref={tlsPrivateKeyInputRef}
+                          type="file"
+                          accept=".pem,.key,application/x-pem-file"
+                          onChange={event => setTlsSettingsForm({ ...tlsSettingsForm, keyFile: event.target.files?.[0] || null })}
+                          className="w-full rounded-md border border-gray-200 bg-white p-1.5 text-xs text-gray-600 file:mr-3 file:rounded file:border-0 file:bg-gray-100 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-gray-700 hover:file:bg-gray-200 focus:outline-none focus:border-[#9c3029]"
                         />
                       </div>
                     </div>
@@ -3035,7 +3048,7 @@ export default function App() {
 
                   <div className={`mt-4 rounded-md border px-3 py-2 text-[11px] ${tlsSettingsForm.mode === 'http' && !tlsSettingsForm.acknowledgeHttp ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-gray-100 bg-gray-50 text-gray-600'}`}>
                     {tlsSettingsForm.mode === 'letsencrypt' && 'The DNS A/AAAA record must resolve to this server. Inbound TCP 80 and 443 must also be allowed by the network firewall, Security List, or NSG. Caddy obtains and renews the certificate automatically.'}
-                    {tlsSettingsForm.mode === 'custom' && 'Place the certificate files on the server first. OCI Migrator validates the hostname, expiration, and key match, then copies them into protected Caddy storage. Reapply after certificate renewal.'}
+                    {tlsSettingsForm.mode === 'custom' && 'Upload a PEM full chain and matching unencrypted PEM private key. OCI Migrator validates the hostname, expiration, and key match, copies them into protected Caddy storage, and removes the temporary uploads. Upload the renewed files and reapply after certificate renewal.'}
                     {tlsSettingsForm.mode === 'external' && 'Use this when a customer load balancer or reverse proxy owns the certificate. It must forward requests to this OCI Migrator API port and send X-Forwarded-Proto: https.'}
                     {tlsSettingsForm.mode === 'http' && (
                       <label className="flex cursor-pointer items-start gap-2">

@@ -362,7 +362,7 @@ Also verify:
 HTTPS is required for production use. The direct HTTP endpoint is retained for initial setup and recovery. Select one mode:
 
 - `Let's Encrypt`: Caddy obtains and automatically renews a public certificate. The DNS hostname must resolve to the server and inbound TCP `80` and `443` must be allowed.
-- `Corporate Certificate`: Caddy serves a customer-issued PEM full chain and matching unencrypted PEM private key. Enter absolute file paths on the server; the files are validated and copied into protected storage.
+- `Corporate Certificate`: upload a customer-issued PEM full chain and matching unencrypted PEM private key. The files are validated and copied into protected storage.
 - `External TLS`: an existing load balancer or reverse proxy owns the certificate and forwards requests to OCI Migrator with `X-Forwarded-Proto: https`.
 - `HTTP Setup`: recovery and initial configuration only. Credentials and session tokens are not encrypted in transit.
 
@@ -371,7 +371,7 @@ HTTPS is required for production use. The direct HTTP endpoint is retained for i
 | Mode | Required preparation | Certificate lifecycle |
 | --- | --- | --- |
 | `Let's Encrypt` | DNS A/AAAA record points to the server; inbound TCP `80` and `443` reach Caddy | Caddy obtains and renews the certificate automatically |
-| `Corporate Certificate` | PEM full chain and matching unencrypted PEM private key exist at absolute server paths; clients trust the issuing CA | Replace the files and reapply the setting when the certificate is renewed |
+| `Corporate Certificate` | PEM full chain and matching unencrypted PEM private key are ready to upload; clients trust the issuing CA | Upload the replacement files and reapply the setting when the certificate is renewed |
 | `External TLS` | External proxy forwards to the app/API port and sends `X-Forwarded-Proto: https` | Managed entirely by the external platform |
 | `HTTP Setup` | Access is restricted to a trusted setup or recovery network; the administrator acknowledges the unencrypted-traffic warning | No certificate |
 
@@ -379,7 +379,9 @@ For managed modes, OCI Migrator validates the generated Caddy configuration and 
 
 When `HTTP Setup` is deliberately retained, select the acknowledgement checkbox and apply the setting. The acknowledgement is stored in the server runtime configuration so the health overview does not repeatedly warn about an accepted deployment decision. The dashboard still labels the connection as HTTP and does not treat it as encrypted.
 
-`Open HTTPS` opens the configured dashboard hostname. The status line shows whether the managed Caddy service is active. Reapply `Corporate Certificate` after replacing renewed certificate files. Runtime Config Backup does not export the managed private-key copy, so configure TLS separately on a replacement server. See the [Installation Guide](INSTALL.md#https-setup) for DNS, firewall, and certificate preparation.
+Corporate certificate and private-key uploads are limited to 2 MiB each. They are written to private temporary files, validated by the managed TLS helper, copied into protected Caddy storage, and removed from temporary storage immediately afterward.
+
+`Open HTTPS` opens the configured dashboard hostname. The status line shows whether the managed Caddy service is active. Upload renewed files and reapply `Corporate Certificate` after certificate replacement. Runtime Config Backup does not export the managed private-key copy, so configure TLS separately on a replacement server. See the [Installation Guide](INSTALL.md#https-setup) for DNS, firewall, and certificate preparation.
 
 ### Notifications
 

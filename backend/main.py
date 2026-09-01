@@ -448,6 +448,7 @@ JOB_LOG_HELPER = Path(os.getenv("OCI_MIGRATOR_JOB_LOG_HELPER", "/usr/local/sbin/
 TIME_SYNC_HELPER = Path(os.getenv("OCI_MIGRATOR_TIME_SYNC_HELPER", "/usr/local/sbin/oci-migrator-time-sync")).resolve()
 NETWORK_HELPER = Path(os.getenv("OCI_MIGRATOR_NETWORK_HELPER", "/usr/local/sbin/oci-migrator-network")).resolve()
 TLS_HELPER = Path(os.getenv("OCI_MIGRATOR_TLS_HELPER", "/usr/local/sbin/oci-migrator-tls")).resolve()
+TLS_UPLOAD_MAX_BYTES = 2 * 1024 * 1024
 TIMESYNCD_CONF = Path(os.getenv("OCI_MIGRATOR_TIMESYNCD_CONF", "/etc/systemd/timesyncd.conf.d/oci-migrator.conf")).resolve()
 JOB_LOGROTATE_FILE = Path(os.getenv("OCI_MIGRATOR_JOB_LOGROTATE_FILE", "/etc/logrotate.d/migrator-job-logs"))
 UPGRADE_HELPER = Path(os.getenv("OCI_MIGRATOR_UPGRADE_HELPER", "/usr/local/sbin/oci-migrator-upgrade")).resolve()
@@ -663,8 +664,6 @@ class TlsSettingsRequest(BaseModel):
     mode: str = "http"
     hostname: str = ""
     email: str = ""
-    cert_path: str = ""
-    key_path: str = ""
     acknowledge_http: bool = False
 
 
@@ -1261,26 +1260,16 @@ def normalize_tls_settings(settings: TlsSettingsRequest) -> dict:
     if mode == "letsencrypt" and email and not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
         raise HTTPException(status_code=400, detail="Enter a valid ACME contact email address.")
 
-    cert_path = str(settings.cert_path or "").strip()
-    key_path = str(settings.key_path or "").strip()
     acknowledge_http = bool(settings.acknowledge_http) if mode == "http" else False
     if mode == "http" and not acknowledge_http:
         raise HTTPException(
             status_code=400,
             detail="Confirm that you understand HTTP traffic is not encrypted.",
         )
-    if mode == "custom":
-        if not cert_path.startswith("/") or not key_path.startswith("/"):
-            raise HTTPException(status_code=400, detail="Corporate certificate and private key paths must be absolute server paths.")
-        if any("\n" in value or "\r" in value for value in (cert_path, key_path)):
-            raise HTTPException(status_code=400, detail="Certificate paths contain invalid characters.")
-
     return {
         "mode": mode,
         "hostname": hostname,
         "email": email if mode == "letsencrypt" else "",
-        "cert_path": cert_path if mode == "custom" else "",
-        "key_path": key_path if mode == "custom" else "",
         "acknowledge_http": acknowledge_http,
     }
 
@@ -2224,6 +2213,25 @@ def run_tls_helper(args: list[str], timeout: int = 90) -> dict:
         raise
     except Exception as exc:
         raise_operation_error(500, "Update HTTPS settings", exc, "Check Caddy, the certificate files, DNS, and the installed TLS helper.")
+
+
+async def read_tls_upload(upload: UploadFile, label: str, required_marker: bytes) -> bytes:
+    content = await upload.read(TLS_UPLOAD_MAX_BYTES + 1)
+    if not content:
+        raise HTTPException(status_code=400, detail=f"{label} file is empty.")
+    if len(content) > TLS_UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=413, detail=f"{label} file exceeds the 2 MiB upload limit.")
+    if b"\x00" in content or required_marker not in content:
+        raise HTTPException(status_code=400, detail=f"{label} must be a PEM encoded file.")
+    return content
+
+
+def write_tls_temp_file(directory: Path, name: str, content: bytes) -> Path:
+    path = directory / name
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(content)
+    return path
 
 
 def current_tls_settings() -> dict:
@@ -3519,6 +3527,11 @@ async def update_network_settings(settings: NetworkSettingsRequest):
 @app.put("/tls-settings")
 async def update_tls_settings(settings: TlsSettingsRequest):
     normalized = normalize_tls_settings(settings)
+    if normalized["mode"] == "custom":
+        raise HTTPException(
+            status_code=400,
+            detail="Upload the corporate certificate and private key files from the HTTPS settings panel.",
+        )
     command = [
         "apply",
         "--mode",
@@ -3528,14 +3541,52 @@ async def update_tls_settings(settings: TlsSettingsRequest):
         "--email",
         normalized["email"],
         "--cert-path",
-        normalized["cert_path"],
+        "",
         "--key-path",
-        normalized["key_path"],
+        "",
         "--acknowledge-http",
         "true" if normalized["acknowledge_http"] else "false",
     ]
     with TLS_SETTINGS_LOCK:
         return run_tls_helper(command, timeout=120)
+
+
+@app.post("/tls-settings/corporate")
+async def update_corporate_tls_settings(
+    hostname: str = Form(...),
+    certificate: UploadFile = File(...),
+    private_key: UploadFile = File(...),
+):
+    try:
+        normalized = normalize_tls_settings(TlsSettingsRequest(mode="custom", hostname=hostname))
+        certificate_content = await read_tls_upload(certificate, "Certificate chain", b"-----BEGIN CERTIFICATE-----")
+        private_key_content = await read_tls_upload(private_key, "Private key", b"PRIVATE KEY-----")
+
+        with tempfile.TemporaryDirectory(prefix="oci-migrator-tls-") as temporary:
+            temporary_dir = Path(temporary)
+            os.chmod(temporary_dir, 0o700)
+            certificate_path = write_tls_temp_file(temporary_dir, "certificate-chain.pem", certificate_content)
+            private_key_path = write_tls_temp_file(temporary_dir, "private-key.pem", private_key_content)
+            command = [
+                "apply",
+                "--mode",
+                "custom",
+                "--hostname",
+                normalized["hostname"],
+                "--email",
+                "",
+                "--cert-path",
+                str(certificate_path),
+                "--key-path",
+                str(private_key_path),
+                "--acknowledge-http",
+                "false",
+            ]
+            with TLS_SETTINGS_LOCK:
+                return run_tls_helper(command, timeout=120)
+    finally:
+        await certificate.close()
+        await private_key.close()
 
 
 @app.post("/network-settings/confirm")

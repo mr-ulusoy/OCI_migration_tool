@@ -62,7 +62,7 @@ HTTPS is required for production use. Configure it from `Settings` -> `HTTPS & C
 | Mode | Use case | Local Caddy service |
 | --- | --- | --- |
 | `Let's Encrypt` | Publicly resolvable DNS name with inbound TCP `80` and `443` | Enabled; certificate issuance and renewal are automatic |
-| `Corporate Certificate` | Customer-issued PEM full chain and matching unencrypted private key | Enabled; files are validated and copied to protected storage |
+| `Corporate Certificate` | Customer-issued PEM full chain and matching unencrypted private key uploaded in Settings | Enabled; files are validated and copied to protected storage |
 | `External TLS` | Existing load balancer, ingress gateway, or reverse proxy | Disabled; the external service owns the certificate |
 | `HTTP Setup` | Initial setup or recovery only; requires explicit acknowledgement of unencrypted traffic | Disabled |
 

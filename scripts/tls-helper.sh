@@ -387,7 +387,7 @@ apply_mode() {
       fi
       start_caddy_or_rollback "$custom_backup" "$hostname" "$custom_previous_active" "$custom_previous_enabled"
       rm -rf "$custom_backup"
-      set_env_values "$mode" "$hostname" "" "$cert_path" "false"
+      set_env_values "$mode" "$hostname" "" "uploaded" "false"
       open_https_firewall
       ;;
     *)

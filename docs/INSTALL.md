@@ -79,11 +79,11 @@ Caddy obtains the certificate, redirects HTTP to HTTPS, and renews it automatica
 
 Use this when the customer PKI team issues the certificate.
 
-1. Place a PEM full-chain certificate and its matching unencrypted PEM private key on the server in a root-controlled directory.
-2. Select `Corporate Certificate` and enter the dashboard DNS hostname plus both absolute server paths.
+1. Select `Corporate Certificate` and enter the dashboard DNS hostname.
+2. Upload the PEM full-chain certificate and its matching unencrypted PEM private key.
 3. Apply the setting. OCI Migrator verifies the hostname, expiration, certificate/key match, and Caddy configuration before activating it.
 
-The validated files are copied into protected OCI Migrator TLS storage. Reapply the setting after the PKI team renews or replaces the certificate. Client devices must trust the corporate issuing CA.
+Each upload is limited to 2 MiB. The validated files are copied into protected OCI Migrator TLS storage and the temporary uploads are removed. Upload the renewed files and reapply the setting after the PKI team replaces the certificate. Client devices must trust the corporate issuing CA.
 
 ### External TLS
 
