@@ -11,6 +11,8 @@
 
 # OCI Migrator Pro
 
+[![CI](https://github.com/mr-ulusoy/OCI_migration_tool/actions/workflows/ci.yml/badge.svg)](https://github.com/mr-ulusoy/OCI_migration_tool/actions/workflows/ci.yml)
+
 Self-hosted admin console for moving file and object data into Oracle Cloud Infrastructure (OCI) Object Storage, and for migrating OCI VM images between OCI tenants.
 
 - React/Vite frontend
@@ -195,8 +197,8 @@ Server local folders can optionally be shared from the UI with SMB, NFSv4, or bo
 - [Dashboard Configuration](docs/OPERATIONS.md)
 - [Server Runbook](docs/RUNBOOK.md)
 - [Development](docs/DEVELOPMENT.md)
-- [Recommendations](docs/RECOMMENDATIONS.md)
-- [GitHub Actions CI template](docs/ci/github-actions.yml)
+- [Production Readiness](docs/RECOMMENDATIONS.md)
+- [Continuous Integration](.github/workflows/ci.yml)
 
 ## License
 
@@ -208,4 +210,4 @@ See [LICENSE](LICENSE) for the full terms.
 
 ## Security Note
 
-This is an admin tool. Run it behind VPN or a private network when possible. If it ever becomes internet-facing, add HTTPS and restrict inbound access.
+This is an admin tool. Run it behind a VPN or private management network, use TLS for browser and API access, and restrict the application port to approved management networks.

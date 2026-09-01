@@ -1,66 +1,43 @@
-# Recommendations
+# Production Readiness
 
-These are the main things worth improving before treating OCI Migrator as a broadly shared production tool.
+OCI Migrator Pro is intended to run as a self-hosted administrative service. The installation, dashboard configuration, backup operations, monitoring, recovery, and runtime backup procedures are documented in the [Dashboard Configuration](OPERATIONS.md) and [Server Runbook](RUNBOOK.md). This page tracks only the remaining controls that matter before wider production use.
 
-## 1. Add HTTPS If Inbound Access Is Needed
+## 1. Protect Administrative Traffic With TLS
 
-The app now runs on a single app/API port, typically `8000`. It has admin login, but if it ever gets direct inbound access from user networks, add HTTPS or place it behind VPN/private access controls.
+Use TLS for all browser and API access, including access from internal corporate networks. The application currently serves HTTP on its configured app/API port, typically `8000`.
 
-Options:
+Terminate TLS with infrastructure that fits the target environment, for example:
 
-- Caddy or Nginx reverse proxy
-- TLS certificate
-- IP allowlist or VPN
-- expose only `443` when internet-facing
+- a corporate load balancer or ingress gateway
+- an existing reverse proxy
+- a VPN or private access gateway that provides encrypted application access
 
-## 2. Move Sessions To HttpOnly Cookies Later
+Restrict the application port to approved management networks. A dedicated Caddy or Nginx installation is optional when existing infrastructure already provides TLS and access control.
 
-The frontend stores the admin session token in browser localStorage. That is acceptable for a private admin tool, but HttpOnly secure cookies are better for broader access.
+## 2. Harden Browser Sessions
 
-Better options:
+The dashboard currently stores a signed, expiring admin bearer token in browser `localStorage`. Before allowing broader browser access, migrate authentication to an `HttpOnly`, `Secure`, and appropriate `SameSite` session cookie and add CSRF protection for state-changing requests.
 
-- reverse proxy authentication in front of the app
-- HttpOnly secure session cookies
-- per-user audit logging
+For a small deployment operated through one controlled administrator account, the current model can be used only behind tightly restricted private access. When several administrators use the service, add:
 
-## 3. Frontend Serving
+- individual identities through the organization's SSO/OIDC provider
+- role-based access where responsibilities differ
+- an audit trail that records who changed settings, credentials, jobs, or migration state
 
-Done: production install no longer runs `npm run preview`. FastAPI serves the built `frontend/dist` files directly from the backend service.
+## 3. Keep Continuous Integration Required
 
-Future options if needed:
+The active workflow at [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) runs on pushes to `main` and on pull requests. It validates shell syntax, compiles the backend, runs the backend unit tests, audits production frontend dependencies, lints the frontend, and creates a production build.
 
-- serve `frontend/dist` with Caddy/Nginx
-- proxy to FastAPI
-- keep FastAPI bound to `127.0.0.1`
+For a shared repository, protect `main` and require both CI jobs before merge. Keep end-to-end installation, upgrade, backup, restore, SMB/NFS, and OCI integration tests in a disposable test environment because they require operating-system services and cloud resources that unit tests do not provide.
 
-## 4. Runtime Config Backups
+## 4. Make Backend Dependencies Reproducible
 
-Done: the UI can export a runtime backup zip containing the env file, OCI config, job definitions/history, rclone config, and referenced key files when present.
+The frontend dependency tree is locked by `package-lock.json`, but `backend/requirements.txt` currently contains unpinned package names. Create and review a tested lock file before using unattended production upgrades so a new upstream release cannot silently change an installation or CI run.
 
-The application writes important runtime state to:
+Use an automated dependency update process that opens reviewed pull requests and lets CI validate each update before merge. Avoid upgrading production dependencies directly from an unreviewed moving dependency set.
 
-```text
-~/.oci
-~/.config/rclone
-~/.oci-migrator.env
-```
+## 5. Match Identity Controls To The Deployment
 
-Keep exported backups encrypted or otherwise access-controlled, because they may contain cloud credentials.
+SSO, role-based access, and per-user auditing are recommended when the service is shared across teams or subject to compliance requirements. They are not required for a single-purpose appliance with one accountable administrator, private network access, and controlled host access.
 
-## 5. Job History, Health, And Errors
-
-Done:
-
-- job run history is persisted in `~/.oci/job_history.json`
-- `/health` reports API readiness and dependency checks
-- OCI/rclone failures return structured messages and hints for the UI
-
-## 6. Enable CI And Add Real Tests
-
-A GitHub Actions template is included at `docs/ci/github-actions.yml`. Copy it to `.github/workflows/ci.yml` when the GitHub token/repo permissions allow workflow updates. After that, add real backend and frontend tests around critical migration behavior.
-
-```bash
-bash -n install.sh scripts/*.sh
-python3 -m py_compile backend/main.py backend/worker.py backend/run_backups.py backend/job_store.py
-cd frontend && npm ci && npm audit --omit=dev && npm run build
-```
+Review this decision whenever the number of administrators, network exposure, or compliance scope changes.
