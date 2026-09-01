@@ -194,7 +194,6 @@ Server local folders can optionally be shared from the UI with SMB, NFSv4, or bo
 - [Installation](docs/INSTALL.md)
 - [Dashboard Configuration](docs/OPERATIONS.md)
 - [Server Runbook](docs/RUNBOOK.md)
-- [Test Plan](docs/TEST_PLAN.md)
 - [Development](docs/DEVELOPMENT.md)
 - [Recommendations](docs/RECOMMENDATIONS.md)
 - [GitHub Actions CI template](docs/ci/github-actions.yml)
