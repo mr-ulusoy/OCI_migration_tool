@@ -5008,7 +5008,19 @@ async def get_migration_status(task_id: str):
     elif history_run:
         response["status"] = history_status_for_api(history_run)
         response["details"] = history_run.get("details") or history_run.get("error") or response["status"]
-        
+
+    if history_run:
+        response["migration"] = {
+            "vm_id": history_run.get("vm_id", ""),
+            "source_profile": history_run.get("source_profile", ""),
+            "dest_profile": history_run.get("dest_profile", ""),
+            "dest_bucket": history_run.get("dest_bucket", ""),
+            "data_volume_ids": history_run.get("data_volume_ids", []),
+            "data_volume_method": history_run.get("data_volume_method", "none"),
+            "destination_availability_domain": history_run.get("destination_availability_domain", ""),
+            "data_volume_results": history_run.get("data_volume_results", []),
+        }
+
     return response
 
 

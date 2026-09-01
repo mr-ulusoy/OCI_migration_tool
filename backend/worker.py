@@ -99,6 +99,7 @@ def begin_data_volume_migrations(
             "source_volume_name": volume_name,
             "size_gb": getattr(source_volume, "size_in_gbs", None),
             "method": method,
+            "target_volume_name": target_name,
             "target_volume_id": "",
             "backup_id": "",
             "status": "capturing",

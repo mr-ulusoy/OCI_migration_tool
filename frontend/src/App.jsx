@@ -1499,7 +1499,12 @@ export default function App() {
             const res = await api.get(`/migration-status/${taskId}`);
             setVmTasks(prev => ({
               ...prev,
-              [taskId]: { ...prev[taskId], status: res.data.status, details: res.data.details || res.data.status }
+              [taskId]: {
+                ...prev[taskId],
+                status: res.data.status,
+                details: res.data.details || res.data.status,
+                migration: res.data.migration || prev[taskId].migration
+              }
             }));
           } catch (err) {
             console.error(err);
@@ -2274,6 +2279,9 @@ export default function App() {
     if (status === 'PROGRESS') return 'text-blue-500';
     return 'text-orange-500';
   };
+  const dataVolumeMethodLabel = (method) => (
+    method === 'restore' ? 'Backup and Restore' : 'Cross-tenancy Clone'
+  );
   const autoTieringBlockedByLifecycle = Boolean(
     bucketProtection
     && !bucketProtection.auto_tiering_enabled
@@ -4645,16 +4653,37 @@ export default function App() {
 	                          return;
 	                        }
 	                        try {
-	                          const res = await api.post(`/start-bulk-migration`, {
+	                          const selectedVolumeSnapshot = Object.fromEntries(
+	                            selectedVms.map(vmId => [vmId, [...(selectedDataVolumes[vmId] || [])]])
+	                          );
+	                          const migrationRequest = {
 	                            vm_ids: selectedVms,
 	                            source_profile: activeSourceProfile,
 	                            dest_profile: vmMigrationConfig.destProfile,
 	                            bucket_name: vmMigrationConfig.destBucket,
-	                            data_volume_ids: Object.fromEntries(selectedVms.map(vmId => [vmId, selectedDataVolumes[vmId] || []])),
+	                            data_volume_ids: selectedVolumeSnapshot,
 	                            data_volume_method: vmMigrationConfig.dataVolumeMethod,
 	                            destination_availability_domain: vmMigrationConfig.destinationAvailabilityDomain
+	                          };
+	                          const res = await api.post(`/start-bulk-migration`, migrationRequest);
+	                          const newTasks = {};
+	                          res.data.tasks.forEach(t => {
+	                            newTasks[t.task_id] = {
+	                              vm_id: t.vm_id,
+	                              status: 'PENDING',
+	                              details: 'Starting...',
+	                              migration: {
+	                                vm_id: t.vm_id,
+	                                source_profile: activeSourceProfile,
+	                                dest_profile: vmMigrationConfig.destProfile,
+	                                dest_bucket: vmMigrationConfig.destBucket,
+	                                data_volume_ids: selectedVolumeSnapshot[t.vm_id] || [],
+	                                data_volume_method: vmMigrationConfig.dataVolumeMethod,
+	                                destination_availability_domain: vmMigrationConfig.destinationAvailabilityDomain,
+	                                data_volume_results: []
+	                              }
+	                            };
 	                          });
-	                          const newTasks = {}; res.data.tasks.forEach(t => { newTasks[t.task_id] = { vm_id: t.vm_id, status: 'PENDING', details: 'Starting...' }; });
 	                          setVmTasks(prev => ({ ...prev, ...newTasks }));
 	                          setSelectedVms([]);
 	                          setSelectedDataVolumes({});
@@ -4680,11 +4709,14 @@ export default function App() {
                       </div>
                       <div className="divide-y divide-gray-100">
                         {filteredVms.map(vm => {
-                          const taskData = Object.values(vmTasks).find(t => t.vm_id === vm.id);
-                          const isMigrating = !!taskData && taskData.status !== 'SUCCESS' && taskData.status !== 'FAILURE';
-                          const isSelected = selectedVms.includes(vm.id);
-                          const dataVolumes = Array.isArray(vm.data_volumes) ? vm.data_volumes : [];
-                          const selectedVolumeIds = selectedDataVolumes[vm.id] || [];
+	                          const taskData = [...Object.values(vmTasks)].reverse().find(t => t.vm_id === vm.id);
+	                          const isMigrating = !!taskData && taskData.status !== 'SUCCESS' && taskData.status !== 'FAILURE';
+	                          const isSelected = selectedVms.includes(vm.id);
+	                          const dataVolumes = Array.isArray(vm.data_volumes) ? vm.data_volumes : [];
+	                          const interactiveSelectedVolumeIds = selectedDataVolumes[vm.id] || [];
+	                          const taskSelectedVolumeIds = taskData?.migration?.data_volume_ids || [];
+	                          const selectedVolumeIds = isMigrating ? taskSelectedVolumeIds : interactiveSelectedVolumeIds;
+	                          const taskVolumeResults = taskData?.migration?.data_volume_results || [];
                           const stateClass = vm.state === 'RUNNING'
                             ? 'bg-green-50 text-green-700 border-green-200'
                             : vm.state === 'STOPPED'
@@ -4716,34 +4748,78 @@ export default function App() {
                                       <span className="font-bold uppercase text-gray-400">Data volumes:</span>
                                       {dataVolumes.length ? (
                                         <div className="mt-1.5 space-y-1.5">
-                                          {dataVolumes.map(volume => (
-                                            <label
-                                              key={volume.id}
-                                              onClick={event => event.stopPropagation()}
-                                              className={`flex items-start gap-2 rounded border px-2 py-1.5 ${selectedVolumeIds.includes(volume.id) ? 'border-red-200 bg-white' : 'border-gray-100 bg-gray-50'}`}
-                                              title={volume.id}
-                                            >
-                                              <input
-                                                type="checkbox"
-                                                checked={selectedVolumeIds.includes(volume.id)}
-                                                disabled={isMigrating}
-                                                onChange={event => toggleVmDataVolume(event, vm, volume.id)}
-                                                className="mt-0.5 accent-[#9c3029]"
-                                              />
-                                              <span className="min-w-0">
-                                                <span className="block break-words font-semibold text-gray-700">{volume.name}</span>
-                                                <span className="block break-words text-[9px] text-gray-400">
-                                                  {[
-                                                    volume.size_gb ? `${volume.size_gb} GB` : '',
-                                                    volume.device || '',
-                                                    volume.attachment_type || '',
-                                                    volume.availability_domain || '',
-                                                    volume.is_read_only ? 'read-only' : ''
-                                                  ].filter(Boolean).join(' | ') || 'Attached volume'}
-                                                </span>
-                                              </span>
-                                            </label>
-                                          ))}
+	                                          {dataVolumes.map(volume => {
+	                                            const isChecked = selectedVolumeIds.includes(volume.id);
+	                                            const wasSelectedForTask = taskSelectedVolumeIds.includes(volume.id);
+	                                            const volumeResult = taskVolumeResults.find(result => result.source_volume_id === volume.id);
+	                                            const isReadyToAttach = volumeResult?.status === 'available';
+	                                            const migrationFailed = taskData?.status === 'FAILURE' && !isReadyToAttach;
+	                                            const methodLabel = dataVolumeMethodLabel(taskData?.migration?.data_volume_method);
+	                                            return (
+	                                              <label
+	                                                key={volume.id}
+	                                                onClick={event => event.stopPropagation()}
+	                                                className={`flex items-start gap-2 rounded border px-2 py-1.5 ${
+	                                                  isReadyToAttach
+	                                                    ? 'border-green-200 bg-green-50'
+	                                                    : isChecked || (isMigrating && wasSelectedForTask)
+	                                                      ? 'border-red-200 bg-white'
+	                                                      : 'border-gray-100 bg-gray-50'
+	                                                }`}
+	                                                title={volume.id}
+	                                              >
+	                                                <input
+	                                                  type="checkbox"
+	                                                  checked={isChecked}
+	                                                  disabled={isMigrating}
+	                                                  onChange={event => toggleVmDataVolume(event, vm, volume.id)}
+	                                                  className="mt-0.5 accent-[#9c3029]"
+	                                                />
+	                                                <span className="min-w-0 flex-1">
+	                                                  <span className="block break-words font-semibold text-gray-700">{volume.name}</span>
+	                                                  <span className="block break-words text-[9px] text-gray-400">
+	                                                    {[
+	                                                      volume.size_gb ? `${volume.size_gb} GB` : '',
+	                                                      volume.device || '',
+	                                                      volume.attachment_type || '',
+	                                                      volume.availability_domain || '',
+	                                                      volume.is_read_only ? 'read-only' : ''
+	                                                    ].filter(Boolean).join(' | ') || 'Attached volume'}
+	                                                  </span>
+	                                                  {wasSelectedForTask && taskData && (
+	                                                    <span className={`mt-1.5 block rounded border px-2 py-1 ${
+	                                                      isReadyToAttach
+	                                                        ? 'border-green-200 bg-white text-green-700'
+	                                                        : migrationFailed
+	                                                          ? 'border-red-200 bg-red-50 text-red-700'
+	                                                          : 'border-blue-100 bg-blue-50 text-blue-700'
+	                                                    }`}>
+	                                                      <span className="flex items-center gap-1 font-semibold">
+	                                                        {isReadyToAttach
+	                                                          ? <CheckCircle size={11} />
+	                                                          : migrationFailed
+	                                                            ? <AlertCircle size={11} />
+	                                                            : <Loader2 size={11} className="animate-spin" />}
+	                                                        {isReadyToAttach
+	                                                          ? 'Ready to attach'
+	                                                          : migrationFailed
+	                                                            ? 'Migration failed'
+	                                                            : `Selected for migration - ${methodLabel}`}
+	                                                      </span>
+	                                                      {isReadyToAttach && (
+	                                                        <span className="mt-1 block text-[9px] leading-snug text-green-700">
+	                                                          <span className="block break-words font-semibold">Target: {volumeResult.target_volume_name || volume.name}</span>
+	                                                          <span className="block break-all font-mono" title={volumeResult.target_volume_id || ''}>
+	                                                            OCID: {volumeResult.target_volume_id || 'Available in target tenancy'}
+	                                                          </span>
+	                                                        </span>
+	                                                      )}
+	                                                    </span>
+	                                                  )}
+	                                                </span>
+	                                              </label>
+	                                            );
+	                                          })}
                                         </div>
                                       ) : (
                                         <span className="ml-1">

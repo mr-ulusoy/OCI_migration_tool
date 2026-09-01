@@ -126,6 +126,7 @@ class DataVolumeMigrationTests(unittest.TestCase):
         self.assertEqual(details.compartment_id, "target-compartment")
         self.assertEqual(details.source_details.id, "source-volume")
         self.assertEqual(pending[0]["target_volume_id"], "target-volume")
+        self.assertTrue(pending[0]["target_volume_name"].startswith("MIGR-server-1-Application Data-"))
         source_block.create_volume_backup.assert_not_called()
 
     def test_restore_creates_full_backup_then_target_volume_in_selected_ad(self):
@@ -171,7 +172,47 @@ class DataVolumeMigrationTests(unittest.TestCase):
         self.assertEqual(details.availability_domain, "target-ad-1")
         self.assertEqual(details.source_details.id, "source-backup")
         self.assertEqual(completed[0]["target_volume_id"], "target-volume")
+        self.assertTrue(completed[0]["target_volume_name"].startswith("MIGR-server-1-Database Data-"))
         self.assertEqual(completed[0]["status"], "available")
+
+
+class VmMigrationStatusTests(unittest.IsolatedAsyncioTestCase):
+    async def test_exposes_selected_and_created_data_volumes(self):
+        task = SimpleNamespace(
+            status="PROGRESS",
+            state="PROGRESS",
+            info={"step": "Migrating data volume 1/1: Database Data..."},
+        )
+        history_run = {
+            "vm_id": "vm-1",
+            "source_profile": "SOURCE",
+            "dest_profile": "TARGET",
+            "dest_bucket": "images",
+            "data_volume_ids": ["source-volume"],
+            "data_volume_method": "restore",
+            "destination_availability_domain": "target-ad-1",
+            "data_volume_results": [
+                {
+                    "source_volume_id": "source-volume",
+                    "source_volume_name": "Database Data",
+                    "target_volume_name": "MIGR-server-1-Database Data-run12345",
+                    "target_volume_id": "target-volume",
+                    "status": "available",
+                }
+            ],
+        }
+
+        with patch.object(main, "AsyncResult", return_value=task), \
+                patch.object(main, "get_job_run", return_value=history_run):
+            result = await main.get_migration_status("run-1")
+
+        self.assertEqual(result["status"], "PROGRESS")
+        self.assertEqual(result["migration"]["data_volume_ids"], ["source-volume"])
+        self.assertEqual(result["migration"]["data_volume_method"], "restore")
+        self.assertEqual(
+            result["migration"]["data_volume_results"][0]["target_volume_id"],
+            "target-volume",
+        )
 
 
 if __name__ == "__main__":
