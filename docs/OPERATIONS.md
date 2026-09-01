@@ -40,14 +40,14 @@ An OCI profile requires:
 - `Tenancy OCID`: OCID of the OCI tenancy.
 - `User OCID`: OCID of the OCI IAM user.
 - `Fingerprint`: fingerprint of the uploaded API signing key.
-- `Region`: OCI region identifier, for example `eu-stockholm-1`.
+- `Region`: the OCI **Region Identifier**, for example `eu-stockholm-1`. Find the required value in Oracle's [Regions and Availability Domains](https://docs.oracle.com/en-us/iaas/Content/General/Concepts/regions.htm) table and use the value shown under **Region Identifier**.
 - `API Key`: upload or paste the private API signing key associated with the IAM user.
 
 #### How to collect the OCI profile values
 
 The quickest method is to create or inspect an API signing key in the OCI Console. OCI then displays a `Configuration File Preview` containing the user OCID, fingerprint, tenancy OCID, and region together.
 
-1. Sign in to the [OCI Console](https://cloud.oracle.com/) and select the region that contains the resources you want to use. The current region appears in the Region menu at the top of the Console.
+1. Sign in to the [OCI Console](https://cloud.oracle.com/) and select the region that contains the resources you want to use. The current region appears in the Region menu at the top of the Console. Open Oracle's [Regions and Availability Domains](https://docs.oracle.com/en-us/iaas/Content/General/Concepts/regions.htm) list and copy the matching **Region Identifier** into OCI Migrator, not the region name or region key.
 2. Choose a `Profile Name` yourself. It is only the friendly name shown in OCI Migrator, for example `OCI-PRODUCTION` or `SOURCE-TENANT`.
 3. Find the compartment OCIDs:
    - Open the navigation menu and select `Identity & Security` -> `Compartments`.
