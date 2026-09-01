@@ -2377,8 +2377,9 @@ export default function App() {
                 </button>
               </div>
             </form>
-            <a href={LICENSE_URL} target="_blank" rel="noreferrer" className="mt-6 text-center text-[10px] leading-4 text-gray-400 transition-colors hover:text-[#9c3029]">
-              © 2026 Cengiz Ulusoy (mr-ulusoy). All rights reserved.
+            <a href={LICENSE_URL} target="_blank" rel="noreferrer" className="mt-6 text-center text-[10px] leading-4 text-red-600 transition-colors hover:text-blue-600">
+              <span className="block">© 2026 Cengiz Ulusoy (mr-ulusoy).</span>
+              <span className="block">All rights reserved.</span>
             </a>
           </section>
           <aside className="login-hero relative hidden overflow-hidden bg-[#061b38] lg:block">
@@ -2584,8 +2585,9 @@ export default function App() {
             <LogOut size={17} />
             <span>Log out</span>
           </button>
-          <a href={LICENSE_URL} target="_blank" rel="noreferrer" className="mt-3 block border-t border-white/10 px-2 pt-3 text-[9px] leading-4 text-gray-600 transition-colors hover:text-gray-400">
-            © 2026 Cengiz Ulusoy (mr-ulusoy). All rights reserved.
+          <a href={LICENSE_URL} target="_blank" rel="noreferrer" className="mt-3 block border-t border-white/10 px-2 pt-3 text-[9px] leading-4 text-red-400 transition-colors hover:text-blue-400">
+            <span className="block">© 2026 Cengiz Ulusoy (mr-ulusoy).</span>
+            <span className="block">All rights reserved.</span>
           </a>
         </div>
       </nav>
