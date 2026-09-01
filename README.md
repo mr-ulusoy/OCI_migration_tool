@@ -31,7 +31,7 @@ Self-hosted admin console for moving file and object data into Oracle Cloud Infr
 - `Credentials` manages OCI, cloud, S3-compatible, local folder, SMB, and NFS sources.
 - `OCI Object Storage` explores buckets and objects and manages supported bucket settings and lifecycle rules.
 - `VM Image Migration` scans OCI compute instances and migrates the boot image plus selected attached data volumes between OCI tenancies.
-- `Settings` contains system upgrade, remote syslog notifications, runtime config backup/import, time and NTP, network, job defaults, local disk warnings, log rotation, admin password controls, and a protected uninstall workflow.
+- `Settings` contains managed HTTPS, system upgrade, remote syslog notifications, runtime config backup/import, time and NTP, network, job defaults, local disk warnings, log rotation, admin password controls, and a protected uninstall workflow.
 
 ## Main Use Cases
 
@@ -54,6 +54,32 @@ Self-hosted admin console for moving file and object data into Oracle Cloud Infr
 | Server local folder, SMB/NFS ingest folder, or mounted on-premises share | OCI Object Storage bucket |
 
 For VM image migration, the source is an OCI tenant/profile with compute instances and the destination is another OCI tenant/profile with an Object Storage bucket for the exported boot image. The scan shows attached data volumes and lets the operator choose which disks to migrate using OCI cross-tenancy clone or backup/restore. Created target data volumes are left available and ready to attach; OCI Migrator does not yet provision or attach them to a target VM.
+
+## HTTPS Modes
+
+HTTPS is required for production use. Configure it from `Settings` -> `HTTPS & Certificates` after the initial HTTP login:
+
+| Mode | Use case | Local Caddy service |
+| --- | --- | --- |
+| `Let's Encrypt` | Publicly resolvable DNS name with inbound TCP `80` and `443` | Enabled; certificate issuance and renewal are automatic |
+| `Corporate Certificate` | Customer-issued PEM full chain and matching unencrypted private key | Enabled; files are validated and copied to protected storage |
+| `External TLS` | Existing load balancer, ingress gateway, or reverse proxy | Disabled; the external service owns the certificate |
+| `HTTP Setup` | Initial setup or recovery only | Disabled |
+
+Managed TLS uses an isolated service named `migrator-tls.service` with the default service prefix and does not replace an existing `/etc/caddy/Caddyfile`. A failed managed TLS activation restores the previous Caddy files and service state. See [HTTPS & Certificates](docs/OPERATIONS.md#https--certificates) and the [HTTPS installation requirements](docs/INSTALL.md#https-setup).
+
+## VM Image And Data Volume Migration
+
+`VM Image Migration` scans each OCI instance and displays its boot volume and attached Block Volumes. The operator can migrate the boot image alone or keep selected data volumes checked.
+
+- The boot volume is captured as a custom image, exported through the destination Object Storage bucket, and imported as a custom image in the target tenancy.
+- `Cross-tenancy Clone` creates each selected target Block Volume directly from its source volume.
+- `Backup and Restore` creates a full OCI Block Volume backup and restores a new Block Volume in the selected target availability domain.
+- Source and destination profiles must use the same OCI region when data volumes are selected.
+- A running source VM is soft-stopped during capture and restarted afterward. A source VM that was already stopped remains stopped.
+- Created data volumes are left in `AVAILABLE` state in the target tenancy. Create the target VM from the imported boot image, attach the volumes, and validate Linux mounts or Windows drive assignments separately.
+
+The destination Object Storage bucket is used by the boot-image workflow. Selected data volumes remain OCI Block Volume resources and are not converted into ordinary objects. Cross-tenancy IAM policies must be configured before execution. See [VM Image Migration](docs/OPERATIONS.md#vm-image-migration) for preparation, method selection, and post-migration steps.
 
 ## Quick Install
 
@@ -109,8 +135,10 @@ make package
 Health endpoint:
 
 ```text
-http://<server-ip-or-dns>:8000/health
+https://<dashboard-dns-name>/health
 ```
+
+The direct setup/recovery endpoint remains available at `http://<server-ip-or-dns>:8000/health` when network policy permits it.
 
 Monitoring endpoints for same-network pull monitoring:
 
@@ -162,7 +190,13 @@ The built frontend is served by the backend, so each install only needs one app/
 - `migrator-api.service`
 - `migrator-worker.service`
 - `migrator-scheduler.timer`
+- `migrator-tls.service` for managed HTTPS
 - `~/.oci-migrator.env`
+- Caddy for managed Let's Encrypt or corporate certificates
+- `/usr/local/sbin/oci-migrator-tls`
+- `/etc/oci-migrator/tls.conf`
+- `/etc/oci-migrator/Caddyfile`
+- `/var/lib/oci-migrator/tls/`
 - `/usr/local/sbin/oci-migrator-local-share`
 - `venv/`
 - `frontend/dist/`

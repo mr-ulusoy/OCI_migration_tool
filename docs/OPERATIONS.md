@@ -269,6 +269,16 @@ No filter means the rule applies to the entire bucket. Keep each action in its o
 
 ## VM Image Migration
 
+VM image migration supports the boot volume plus individually selected attached OCI Block Volumes. It is an OCI-to-OCI workflow; it does not migrate VMs from AWS, Azure, or Google Cloud.
+
+### Before starting
+
+1. Create separate OCI profiles for the source and target tenancies under `Credentials`.
+2. Confirm that both profiles use the same OCI region when data volumes will be migrated.
+3. Create or select an Object Storage bucket in the target profile for the boot-image export.
+4. Configure the required cross-tenancy IAM policies for Block Volume clone or backup/restore.
+5. Confirm that the source VM can be stopped safely and that application services can tolerate a controlled shutdown.
+
 Open `VM Image Migration` and configure:
 
 - `Source`: OCI profile used to scan compute instances.
@@ -278,6 +288,17 @@ Open `VM Image Migration` and configure:
 - `Storage Bucket`: destination Object Storage bucket.
 - `Data Volume Method`: `Cross-tenancy Clone` creates a target volume directly from the source volume; `Backup and Restore` first creates a full source volume backup and restores it in the target tenancy.
 - `Target Availability Domain`: required for backup/restore. OCI infers the matching physical availability domain for cross-tenancy clone.
+
+Selecting a VM selects all discovered attached data volumes by default. Clear any volume that should not be copied. A maximum of 32 data volumes can be selected for one VM migration request.
+
+### Choosing a data-volume method
+
+| Method | What OCI Migrator requests | When to use it |
+| --- | --- | --- |
+| `Cross-tenancy Clone` | Creates a target Block Volume directly from the source volume OCID | Preferred when the source and target tenancy policies allow cross-tenancy volume cloning and the matching availability domain is available |
+| `Backup and Restore` | Creates a full source Block Volume backup, waits for it to become available, and restores a target Block Volume from that backup | Use when the backup-based workflow is required or when the target volume must be restored into an explicitly selected availability domain |
+
+The destination Object Storage bucket is used only for the boot-image export/import bridge. Data-volume clone and backup/restore remain OCI Block Volume operations; data disks are not downloaded to the OCI Migrator server and are not uploaded as ordinary Object Storage files.
 
 The source and destination profiles must use the same OCI region for data-volume migration. OCI cross-tenancy policies must be configured before execution. The target IAM group needs local permission to manage volumes in the destination compartment, an `Endorse` policy in the target tenancy, and matching `Admit` policies in the source tenancy. The source profile also needs local permission to create a volume backup when `Backup and Restore` is selected. See [OCI cross-tenancy volume migration](https://docs.oracle.com/en/solutions/migrate-data-across-tenancies/volume-data-migration-process1.html).
 
@@ -303,9 +324,32 @@ Endorse group <target-group-name> to inspect volumes in tenancy SourceTenancy
 Allow group <target-group-name> to manage volume-family in compartment <target-compartment-name>
 ```
 
-During execution, a running source VM is soft-stopped while the boot image and selected data-volume copies are requested. It is restarted after capture. A VM that was already stopped remains stopped. The boot volume becomes a custom image in the target tenancy. Each selected data volume becomes an available Block Volume in the target tenancy, and the run history stores its target volume OCID and any intermediate backup OCID.
+### Execution and results
+
+During execution, a running source VM is soft-stopped while the boot image and selected data-volume copies are requested. It is restarted after capture. A VM that was already stopped remains stopped.
+
+The worker then:
+
+1. Creates a source custom image from the boot volume.
+2. Starts a cross-tenancy clone or full backup for every selected data volume.
+3. Restarts the source VM when its original state was `RUNNING`.
+4. Exports the boot image through a 48-hour pre-authenticated request into the selected target Object Storage bucket.
+5. Imports the exported object as a custom image in the target tenancy.
+6. Waits for every target data volume to reach `AVAILABLE`.
+
+The migration run history records the target image OCID, target volume OCIDs, and intermediate backup OCIDs when backup/restore is used. A failed migration attempts to restart a source VM that OCI Migrator stopped.
+
+### After migration
 
 OCI Migrator does not currently provision the target VM or attach the created data volumes. After creating the target VM from the imported image, attach each available target volume in the OCI Console or through OCI automation and preserve the intended device mapping. Validate application mounts and Windows drive assignments before placing the migrated VM in service.
+
+Also verify:
+
+- filesystem consistency and application data on every attached volume
+- Linux `/etc/fstab`, filesystem UUIDs, LVM, and mount points
+- Windows disk state, drive letters, mount points, and application service dependencies
+- target VM networking, security rules, boot behavior, and application startup
+- whether temporary source images, exported `.oci` objects, pre-authenticated requests, or intermediate volume backups should be retained or removed
 
 ## Settings
 
@@ -315,14 +359,25 @@ OCI Migrator does not currently provision the target VM or attach the created da
 
 ### HTTPS & Certificates
 
-HTTPS is required for production use. Select one mode:
+HTTPS is required for production use. The direct HTTP endpoint is retained for initial setup and recovery. Select one mode:
 
 - `Let's Encrypt`: Caddy obtains and automatically renews a public certificate. The DNS hostname must resolve to the server and inbound TCP `80` and `443` must be allowed.
 - `Corporate Certificate`: Caddy serves a customer-issued PEM full chain and matching unencrypted PEM private key. Enter absolute file paths on the server; the files are validated and copied into protected storage.
 - `External TLS`: an existing load balancer or reverse proxy owns the certificate and forwards requests to OCI Migrator with `X-Forwarded-Proto: https`.
 - `HTTP Setup`: recovery and initial configuration only. Credentials and session tokens are not encrypted in transit.
 
-`Open HTTPS` opens the configured dashboard hostname. The status line shows whether the managed Caddy service is active. Reapply `Corporate Certificate` after replacing renewed certificate files. See the [Installation Guide](INSTALL.md#https-setup) for DNS, firewall, and certificate preparation.
+#### Mode requirements
+
+| Mode | Required preparation | Certificate lifecycle |
+| --- | --- | --- |
+| `Let's Encrypt` | DNS A/AAAA record points to the server; inbound TCP `80` and `443` reach Caddy | Caddy obtains and renews the certificate automatically |
+| `Corporate Certificate` | PEM full chain and matching unencrypted PEM private key exist at absolute server paths; clients trust the issuing CA | Replace the files and reapply the setting when the certificate is renewed |
+| `External TLS` | External proxy forwards to the app/API port and sends `X-Forwarded-Proto: https` | Managed entirely by the external platform |
+| `HTTP Setup` | Access is restricted to a trusted setup or recovery network | No certificate |
+
+For managed modes, OCI Migrator validates the generated Caddy configuration and checks the HTTPS health endpoint before accepting the change. If startup or the health check fails, the previous managed Caddy files and service state are restored. With the default service prefix, Caddy runs as the dedicated `migrator-tls.service`, proxies to `127.0.0.1:8000`, and keeps its state below `/var/lib/oci-migrator/tls`.
+
+`Open HTTPS` opens the configured dashboard hostname. The status line shows whether the managed Caddy service is active. Reapply `Corporate Certificate` after replacing renewed certificate files. Runtime Config Backup does not export the managed private-key copy, so configure TLS separately on a replacement server. See the [Installation Guide](INSTALL.md#https-setup) for DNS, firewall, and certificate preparation.
 
 ### Notifications
 
