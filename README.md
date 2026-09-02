@@ -9,6 +9,7 @@
 <img width="1430" height="738" alt="image" src="https://github.com/user-attachments/assets/398a2317-5ee1-4fa3-b74f-3e31f5f7bbd9" />
 
 **VM Image & Data Migration**
+<img width="1311" height="668" alt="image" src="https://github.com/user-attachments/assets/3e54be05-8263-4a7b-a679-54d215c9ad2a" />
 <img width="1236" height="632" alt="image" src="https://github.com/user-attachments/assets/ad7f508b-1d1b-43a0-97ac-12d266f7ab6f" />
 <img width="1311" height="670" alt="image" src="https://github.com/user-attachments/assets/3763ffb3-5bd5-43ba-ba17-356cd5629b7c" />
 
