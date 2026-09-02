@@ -1,3 +1,4 @@
+**Login Screen**
 <img width="1307" height="607" alt="image" src="https://github.com/user-attachments/assets/8e8432a2-2498-4571-9645-3e028483ccc2" />
 <img width="1225" height="571" alt="image" src="https://github.com/user-attachments/assets/53b53340-29fc-49d6-99f6-6fe3706babb3" />
 <img width="1442" height="746" alt="image" src="https://github.com/user-attachments/assets/9c451f5a-1558-4654-9ab7-cbd0a2e7d298" />
@@ -12,12 +13,10 @@
 <img width="1311" height="668" alt="image" src="https://github.com/user-attachments/assets/3e54be05-8263-4a7b-a679-54d215c9ad2a" />
 <img width="1236" height="632" alt="image" src="https://github.com/user-attachments/assets/ad7f508b-1d1b-43a0-97ac-12d266f7ab6f" />
 <img width="1311" height="670" alt="image" src="https://github.com/user-attachments/assets/3763ffb3-5bd5-43ba-ba17-356cd5629b7c" />
-
 <img width="1440" height="748" alt="image" src="https://github.com/user-attachments/assets/5e861ceb-4c51-4424-b3bd-91865eee983a" />
 
-<img width="1442" height="746" alt="image" src="https://github.com/user-attachments/assets/28521514-eedb-4ffe-bb63-a7d0f3ee3acf" />
-
-
+**Settings**
+<img width="1431" height="745" alt="image" src="https://github.com/user-attachments/assets/26fa61ce-7af9-4dd2-8c6a-be5a20ad0f92" />
 
 
 # Cloud Migration Console
