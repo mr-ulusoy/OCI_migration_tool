@@ -1,9 +1,18 @@
-**Login Screen**
 <img width="1307" height="607" alt="image" src="https://github.com/user-attachments/assets/8e8432a2-2498-4571-9645-3e028483ccc2" />
+
+**Login Screen**
 <img width="1225" height="571" alt="image" src="https://github.com/user-attachments/assets/53b53340-29fc-49d6-99f6-6fe3706babb3" />
+
+**Job Dashboard**
 <img width="1442" height="746" alt="image" src="https://github.com/user-attachments/assets/9c451f5a-1558-4654-9ab7-cbd0a2e7d298" />
+
+**New Backup Job**
 <img width="1429" height="735" alt="image" src="https://github.com/user-attachments/assets/8fa90421-f0c7-4e70-acf3-8f0b8ec51ffa" />
+
+**Credentials**
 <img width="1434" height="739" alt="image" src="https://github.com/user-attachments/assets/52be513e-d9b7-40ce-9a60-53cd49469991" />
+
+**OCI Object Storage**
 <img width="1424" height="738" alt="image" src="https://github.com/user-attachments/assets/a25766ce-31f6-4388-b1af-c02e6b8e0383" />
 <img width="1438" height="737" alt="image" src="https://github.com/user-attachments/assets/26d2c985-725a-4633-9411-f908f04258c3" />
 <img width="1427" height="743" alt="image" src="https://github.com/user-attachments/assets/03c7ab1f-fa90-44c5-9f4e-26c6bb7b7487" />
