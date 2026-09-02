@@ -17,7 +17,6 @@ const API_BASE = import.meta.env.VITE_API_BASE || (
 const SESSION_TOKEN_KEY = 'OCI_MIGRATOR_SESSION_TOKEN';
 const SESSION_USERNAME_KEY = 'OCI_MIGRATOR_SESSION_USERNAME';
 const THEME_KEY = 'OCI_MIGRATOR_THEME';
-const LICENSE_URL = 'https://github.com/mr-ulusoy/OCI_migration_tool/blob/main/LICENSE';
 const DEFAULT_REMOTE_CONFIG = {
   name: '',
   provider: 'oci',
@@ -2386,10 +2385,6 @@ export default function App() {
                 </button>
               </div>
             </form>
-            <a href={LICENSE_URL} target="_blank" rel="noreferrer" className="mt-6 text-center text-[10px] leading-4 text-red-600 transition-colors hover:text-blue-600">
-              <span className="block">© 2026 Cengiz Ulusoy (mr-ulusoy).</span>
-              <span className="block">All rights reserved.</span>
-            </a>
           </section>
           <aside className="login-hero relative hidden overflow-hidden bg-[#061b38] lg:block">
             <img src={loginHeroImage} alt="" aria-hidden="true" className="absolute inset-0 h-full w-full scale-110 object-cover opacity-35 blur-xl" />
@@ -2597,10 +2592,6 @@ export default function App() {
             <LogOut size={17} />
             <span>Log out</span>
           </button>
-          <a href={LICENSE_URL} target="_blank" rel="noreferrer" className="mt-3 block border-t border-white/10 px-2 pt-3 text-[9px] leading-4 text-red-400 transition-colors hover:text-blue-400">
-            <span className="block">© 2026 Cengiz Ulusoy (mr-ulusoy).</span>
-            <span className="block">All rights reserved.</span>
-          </a>
         </div>
       </nav>
 

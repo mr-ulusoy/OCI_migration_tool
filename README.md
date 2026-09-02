@@ -300,14 +300,6 @@ Use the structured [GitHub Issue forms](https://github.com/mr-ulusoy/OCI_migrati
 
 Report suspected vulnerabilities privately according to [SECURITY.md](SECURITY.md). Do not disclose security problems in a public issue.
 
-## License
-
-Cloud Migration Console is source-available proprietary software owned by Cengiz Ulusoy (`mr-ulusoy`).
-You may download, install, and run unmodified copies, but you may not modify, redistribute, publish, sublicense, sell, or provide modified versions without prior written permission.
-
-Attribution is required: `Cloud Migration Console by Cengiz Ulusoy (mr-ulusoy)`.
-See [LICENSE](LICENSE) for the full terms.
-
 ## Security Note
 
 This is an admin tool. HTTPS is required for production browser and API access. Run it behind a VPN or private management network and restrict the setup/API port to approved management networks. OCI profiles contain private API signing keys, so use dedicated non-administrator IAM users and separate backup-writer, bucket-administrator, and temporary VM-migration roles. Apply only the feature-specific, bucket- and compartment-scoped policies in [OCI IAM least privilege](docs/OPERATIONS.md#oci-iam-least-privilege).

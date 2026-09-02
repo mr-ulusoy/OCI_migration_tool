@@ -1,7 +1,5 @@
 # Support
 
-Cloud Migration Console is source-available software provided under the terms in [LICENSE](LICENSE).
-
 ## Documentation
 
 Review these documents before opening an issue:
@@ -21,4 +19,3 @@ Public Issues are not a customer support contract. Submission does not guarantee
 ## Security
 
 Do not open a public issue for a suspected vulnerability. Follow [SECURITY.md](SECURITY.md) and report it privately through GitHub Security Advisories.
-

@@ -10,11 +10,8 @@ Security vulnerabilities must be reported privately according to [SECURITY.md](S
 
 ## Code Contributions
 
-This repository is source-available and is not licensed as open source. The [LICENSE](LICENSE) does not grant permission to modify, redistribute, publish, sublicense, sell, or provide modified versions of the software.
-
-Do not submit a pull request unless the owner has given prior written permission for that contribution. Opening an issue does not grant permission to modify or redistribute the software.
+Code contributions and pull requests are not currently accepted. Use GitHub Issues for bug reports and feature proposals.
 
 ## Support Expectations
 
 Issues and feature requests are reviewed on a best-effort basis. No response time, implementation commitment, maintenance commitment, or service-level agreement is provided.
-
