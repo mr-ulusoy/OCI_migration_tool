@@ -80,6 +80,15 @@ def migration_resource_name(prefix, instance_name, volume_name, run_id):
     return raw_name[:255]
 
 
+def boot_image_export_par_details(image_name, run_id):
+    return oci.object_storage.models.CreatePreauthenticatedRequestDetails(
+        name=f"MigrWrite-{run_id[:8]}",
+        access_type="ObjectWrite",
+        object_name=f"{image_name}.oci",
+        time_expires=datetime.now(timezone.utc) + timedelta(hours=48),
+    )
+
+
 def should_restart_source_vm(source_was_running, restart_source_vm, source_restarted=False):
     return bool(source_was_running and restart_source_vm and not source_restarted)
 
@@ -290,21 +299,40 @@ def migrate_single_vm(
             update_job_run(run_id, data_volume_results=completed_data_volumes)
 
         set_progress('Building the cross-tenant Object Storage bridge...')
-        # Cross-tenant Export via PAR
+        # Cross-tenant export via a short-lived, write-only PAR.
         os_dst = get_client("ObjectStorage", dst_p)
         ns_dst = os_dst.get_namespace().data
-        par = os_dst.create_preauthenticated_request(ns_dst, bucket, oci.object_storage.models.CreatePreauthenticatedRequestDetails(
-            name="MigrWrite", access_type="ObjectReadWrite", object_name=f"{img_name}.oci", 
-            time_expires=datetime.utcnow() + timedelta(hours=48))).data
-        
-        par_url = f"https://objectstorage.{os_dst.base_client.config['region']}.oraclecloud.com{par.access_uri}"
-        
-        set_progress('Exporting the boot image to the destination bucket...')
-        exp = c_src.export_image(img.id, {"destinationType": "objectStorageUri", "destinationUri": par_url, "exportFormat": "OCI"})
-        
-        oci.wait_until(oci.work_requests.WorkRequestClient(c_src.base_client.config), 
-                       oci.work_requests.WorkRequestClient(c_src.base_client.config).get_work_request(exp.headers["opc-work-request-id"]), 
-                       'status', 'SUCCEEDED', max_wait_seconds=7200)
+        par = os_dst.create_preauthenticated_request(
+            ns_dst,
+            bucket,
+            boot_image_export_par_details(img_name, run_id),
+        ).data
+        try:
+            par_url = f"https://objectstorage.{os_dst.base_client.config['region']}.oraclecloud.com{par.access_uri}"
+
+            set_progress('Exporting the boot image to the destination bucket...')
+            exp = c_src.export_image(
+                img.id,
+                {"destinationType": "objectStorageUri", "destinationUri": par_url, "exportFormat": "OCI"},
+            )
+
+            work_requests = oci.work_requests.WorkRequestClient(c_src.base_client.config)
+            oci.wait_until(
+                work_requests,
+                work_requests.get_work_request(exp.headers["opc-work-request-id"]),
+                'status',
+                'SUCCEEDED',
+                max_wait_seconds=7200,
+            )
+        finally:
+            try:
+                os_dst.delete_preauthenticated_request(ns_dst, bucket, par.id)
+            except Exception:
+                logger.warning(
+                    "Unable to revoke boot-image export PAR %s; it expires automatically within 48 hours.",
+                    getattr(par, "id", "unknown"),
+                    exc_info=True,
+                )
 
         set_progress('Importing the boot image into the destination tenancy...')
         c_dst = get_client("Compute", dst_p)

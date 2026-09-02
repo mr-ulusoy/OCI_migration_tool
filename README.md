@@ -310,4 +310,4 @@ See [LICENSE](LICENSE) for the full terms.
 
 ## Security Note
 
-This is an admin tool. HTTPS is required for production browser and API access. Run it behind a VPN or private management network and restrict the setup/API port to approved management networks.
+This is an admin tool. HTTPS is required for production browser and API access. Run it behind a VPN or private management network and restrict the setup/API port to approved management networks. OCI profiles contain private API signing keys, so use dedicated non-administrator IAM users and separate backup-writer, bucket-administrator, and temporary VM-migration roles. Apply only the feature-specific, bucket- and compartment-scoped policies in [OCI IAM least privilege](docs/OPERATIONS.md#oci-iam-least-privilege).

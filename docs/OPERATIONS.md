@@ -79,6 +79,75 @@ You can also find `Tenancy OCID` under Profile -> `Tenancy: <tenancy name>` and 
 
 Use separate profiles when the source and destination belong to different OCI tenants. Grant the IAM user only the permissions required for the intended Object Storage or Compute operations.
 
+### OCI IAM least privilege
+
+Cloud Migration Console stores the private API signing keys for its OCI profiles. If the server or an administrator session is compromised, an attacker can use every permission granted to those OCI users. OCI IAM is therefore the security boundary: do not add a Cloud Migration Console user to `Administrators`, do not grant `manage all-resources`, and do not reuse a human administrator's API key.
+
+Create separate dedicated IAM users and groups for these roles:
+
+| Role | Keep configured on the server? | Intended access |
+| --- | --- | --- |
+| Backup reader | Only when OCI is a source | Read selected source buckets and objects |
+| Backup writer | Yes, for scheduled jobs | Read/list and create or overwrite objects in selected destination buckets |
+| Bucket administrator | Only while bucket settings are being managed | Create/update buckets and lifecycle rules; never manage IAM or retention/WORM rules |
+| VM migration source | Only during migration windows | Inspect VMs and disks, stop/start selected VMs, create/export images, and optionally create volume backups |
+| VM migration target | Only during migration windows | Create imported images and destination volumes and access the dedicated migration bucket |
+
+Use a dedicated compartment and a dedicated bucket for each security boundary where practical. Replace every placeholder below with the real IAM group, compartment, and bucket name. Do not copy policy sets for features that will not be used.
+
+#### Read-only OCI backup source
+
+This policy can list the compartment's bucket names but can read objects only from the named source bucket:
+
+```text
+Allow group <backup-reader-group> to inspect buckets in compartment <storage-compartment-name>
+Allow group <backup-reader-group> to read buckets in compartment <storage-compartment-name> where target.bucket.name='<source-bucket-name>'
+Allow group <backup-reader-group> to read objects in compartment <storage-compartment-name> where target.bucket.name='<source-bucket-name>'
+```
+
+#### COPY destination without object deletion
+
+Use this policy for the recommended `COPY (Safe)` mode. It supports listing, comparison, new objects, changed-object overwrite, and multipart completion. It deliberately omits `OBJECT_DELETE`, `OBJECT_VERSION_DELETE`, bucket deletion, bucket updates, lifecycle management, and retention-rule management:
+
+```text
+Allow group <backup-writer-group> to inspect buckets in compartment <storage-compartment-name>
+Allow group <backup-writer-group> to read buckets in compartment <storage-compartment-name> where target.bucket.name='<destination-bucket-name>'
+Allow group <backup-writer-group> to manage objects in compartment <storage-compartment-name> where all {target.bucket.name='<destination-bucket-name>', any {request.permission='OBJECT_INSPECT', request.permission='OBJECT_READ', request.permission='OBJECT_CREATE', request.permission='OBJECT_OVERWRITE'}}
+```
+
+The writer can overwrite an existing object because changed files must be uploaded. Enable Object Versioning or separately managed OCI retention/WORM protection when previous content must survive a compromised writer. Do not give the backup writer `BUCKET_UPDATE`; otherwise the same compromised identity could suspend versioning or change bucket protection.
+
+Without `OBJECT_DELETE`, rclone cannot abort a failed multipart upload. Configure an OCI lifecycle rule that deletes uncommitted multipart uploads, using the separate bucket-administrator role, to clean up abandoned parts without giving scheduled jobs object-delete access.
+
+#### Optional SYNC deletion
+
+`SYNC (Mirror)` cannot remove destination objects without `OBJECT_DELETE`. Add this statement only for a dedicated sync group and only for the specific bucket that is intentionally mirrored:
+
+```text
+Allow group <sync-writer-group> to manage objects in compartment <storage-compartment-name> where all {target.bucket.name='<destination-bucket-name>', request.permission='OBJECT_DELETE'}
+```
+
+This permission lets a compromised sync identity delete every current object in that bucket. Do not grant `OBJECT_VERSION_DELETE`; with Object Versioning enabled, previous object versions remain outside the sync identity's delete capability.
+
+#### Bucket and lifecycle administrator
+
+The dashboard's bucket creation, versioning, Auto-Tiering, folder, object-delete, and lifecycle controls require stronger permissions. Keep this role separate from scheduled backup writers. The following set excludes `BUCKET_DELETE`, `OBJECT_VERSION_DELETE`, `RETENTION_RULE_MANAGE`, and `RETENTION_RULE_LOCK`:
+
+```text
+Allow group <bucket-admin-group> to manage buckets in compartment <storage-compartment-name> where any {request.permission='BUCKET_INSPECT', request.permission='BUCKET_READ', request.permission='BUCKET_CREATE', request.permission='BUCKET_UPDATE'}
+Allow group <bucket-admin-group> to manage objects in compartment <storage-compartment-name> where all {target.bucket.name='<managed-bucket-name>', any {request.permission='OBJECT_INSPECT', request.permission='OBJECT_READ', request.permission='OBJECT_CREATE', request.permission='OBJECT_OVERWRITE', request.permission='OBJECT_DELETE', request.permission='OBJECT_UPDATE_TIER'}}
+```
+
+OCI lifecycle execution also needs a regional Object Storage service policy. Add it only in compartments where lifecycle rules are used:
+
+```text
+Allow service objectstorage-<region-identifier> to manage object-family in compartment <storage-compartment-name> where any {request.permission='BUCKET_INSPECT', request.permission='BUCKET_READ', request.permission='OBJECT_INSPECT', request.permission='OBJECT_UPDATE_TIER', request.permission='OBJECT_DELETE', request.permission='OBJECT_VERSION_DELETE'}
+```
+
+That service statement lets OCI execute the configured lifecycle actions; it does not grant the Cloud Migration Console IAM user permission to delete object versions. Retention/WORM rules remain an OCI Console responsibility and must be administered by an identity that is not stored in Cloud Migration Console.
+
+Review API keys and group membership after deployment and after each migration window. Remove unused API keys and remove temporary VM migration users from their groups when the migration is complete.
+
 ### AWS S3 or S3-compatible storage
 
 Configure a remote name, access key ID, secret access key, and region. The credentials must be allowed to list and read the selected source buckets and objects.
@@ -326,29 +395,52 @@ Selecting a VM selects all discovered attached data volumes by default. Clear an
 
 The destination Object Storage bucket is used only for the boot-image export/import bridge. Data-volume clone and backup/restore remain OCI Block Volume operations; data disks are not downloaded to the Cloud Migration Console server and are not uploaded as ordinary Object Storage files.
 
-The source and destination profiles must use the same OCI region for data-volume migration. OCI cross-tenancy policies must be configured before execution. The target IAM group needs local permission to manage volumes in the destination compartment, an `Endorse` policy in the target tenancy, and matching `Admit` policies in the source tenancy. The source profile also needs local permission to create a volume backup when `Backup and Restore` is selected. See [OCI cross-tenancy volume migration](https://docs.oracle.com/en/solutions/migrate-data-across-tenancies/volume-data-migration-process1.html).
+The source and destination profiles must use the same OCI region for data-volume migration. OCI cross-tenancy policies must be configured before execution. Use separate dedicated source and target IAM groups, scope all local statements to the migration compartments, and remove the temporary group membership after the migration window. Oracle explicitly recommends granting cross-tenancy identities only on demand and removing them immediately after use. See [OCI cross-tenancy volume migration](https://docs.oracle.com/en/solutions/migrate-data-across-tenancies/volume-data-migration-process1.html).
 
 Example policy structure, with names and OCIDs replaced for the environment:
 
 ```text
+# Source tenancy: VM scan, controlled power actions, and boot-image capture/export
+Allow group <source-migration-group-name> to use instances in compartment <source-compartment-name> where any {request.permission='INSTANCE_INSPECT', request.permission='INSTANCE_READ', request.permission='INSTANCE_POWER_ACTIONS', request.permission='INSTANCE_CREATE_IMAGE'}
+Allow group <source-migration-group-name> to manage instance-images in compartment <source-compartment-name> where any {request.permission='INSTANCE_IMAGE_INSPECT', request.permission='INSTANCE_IMAGE_READ', request.permission='INSTANCE_IMAGE_CREATE', request.permission='COMPUTE_WORK_REQUEST_CREATE', request.permission='COMPUTE_WORK_REQUEST_INSPECT', request.permission='COMPUTE_WORK_REQUEST_READ'}
+Allow group <source-migration-group-name> to inspect vnics in compartment <source-compartment-name>
+Allow group <source-migration-group-name> to inspect vnic-attachments in compartment <source-compartment-name>
+Allow group <source-migration-group-name> to inspect volumes in compartment <source-compartment-name>
+Allow group <source-migration-group-name> to inspect volume-attachments in compartment <source-compartment-name>
+
+# Source tenancy: additional local permissions only for Backup and Restore
+Allow group <source-migration-group-name> to use volumes in compartment <source-compartment-name> where any {request.permission='VOLUME_INSPECT', request.permission='VOLUME_WRITE'}
+Allow group <source-migration-group-name> to manage volume-backups in compartment <source-compartment-name> where any {request.permission='VOLUME_BACKUP_CREATE', request.permission='VOLUME_BACKUP_INSPECT'}
+
 # Source tenancy: clone access
 Define tenancy TargetTenancy as <target-tenancy-ocid>
-Define group TargetVolumeAdmins as <target-group-ocid>
-Admit group TargetVolumeAdmins of tenancy TargetTenancy to use volumes in compartment <source-compartment-name> where ANY { request.operation='CreateVolume', request.operation='GetVolume' }
+Define group TargetMigrationGroup as <target-group-ocid>
+Admit group TargetMigrationGroup of tenancy TargetTenancy to use volumes in compartment <source-compartment-name> where ANY {request.operation='CreateVolume', request.operation='GetVolume'}
 
 # Source tenancy: restore access
-Admit group TargetVolumeAdmins of tenancy TargetTenancy to read volume-backups in compartment <source-compartment-name>
-Admit group TargetVolumeAdmins of tenancy TargetTenancy to inspect volumes in compartment <source-compartment-name>
+Admit group TargetMigrationGroup of tenancy TargetTenancy to read volume-backups in compartment <source-compartment-name>
+Admit group TargetMigrationGroup of tenancy TargetTenancy to inspect volumes in compartment <source-compartment-name>
 
-# Target tenancy: clone access
+# Target tenancy: create the imported boot image and destination data volumes
+Allow group <target-group-name> to use instances in compartment <target-compartment-name> where request.permission='INSTANCE_CREATE_IMAGE'
+Allow group <target-group-name> to manage instance-images in compartment <target-compartment-name> where any {request.permission='INSTANCE_IMAGE_INSPECT', request.permission='INSTANCE_IMAGE_READ', request.permission='INSTANCE_IMAGE_CREATE', request.permission='COMPUTE_WORK_REQUEST_CREATE', request.permission='COMPUTE_WORK_REQUEST_INSPECT', request.permission='COMPUTE_WORK_REQUEST_READ'}
+Allow group <target-group-name> to manage volumes in compartment <target-compartment-name> where any {request.permission='VOLUME_CREATE', request.permission='VOLUME_INSPECT'}
+
+# Target tenancy: dedicated boot-image migration bucket and short-lived write-only PAR
+Allow group <target-group-name> to inspect buckets in compartment <target-storage-compartment-name>
+Allow group <target-group-name> to manage buckets in compartment <target-storage-compartment-name> where all {target.bucket.name='<migration-bucket-name>', any {request.permission='BUCKET_READ', request.permission='PAR_MANAGE'}}
+Allow group <target-group-name> to manage objects in compartment <target-storage-compartment-name> where all {target.bucket.name='<migration-bucket-name>', target.object.name='MIGR-*', any {request.permission='OBJECT_INSPECT', request.permission='OBJECT_READ', request.permission='OBJECT_CREATE', request.permission='OBJECT_OVERWRITE'}}
+
+# Target tenancy: cross-tenancy clone access
 Define tenancy SourceTenancy as <source-tenancy-ocid>
-Endorse group <target-group-name> to use volumes in tenancy SourceTenancy where ANY { request.operation='CreateVolume', request.operation='GetVolume' }
+Endorse group <target-group-name> to use volumes in tenancy SourceTenancy where ANY {request.operation='CreateVolume', request.operation='GetVolume'}
 
-# Target tenancy: restore access and local target access
+# Target tenancy: cross-tenancy restore access
 Endorse group <target-group-name> to read volume-backups in tenancy SourceTenancy
 Endorse group <target-group-name> to inspect volumes in tenancy SourceTenancy
-Allow group <target-group-name> to manage volume-family in compartment <target-compartment-name>
 ```
+
+Do not replace the target `manage volumes` statement with `manage volume-family`. `volume-family` also includes volume attachments, backups, backup policies, assignments, groups, and their delete/move operations, none of which Cloud Migration Console needs in the target compartment. The policy above does not permit deleting source or target volumes, deleting backups, terminating instances, attaching volumes, changing IAM, or managing retention/WORM rules.
 
 ### Execution and results
 
@@ -359,7 +451,7 @@ The worker then:
 1. Creates a source custom image from the boot volume.
 2. Starts a cross-tenancy clone or full backup for every selected data volume.
 3. Restarts the source VM when its original state was `RUNNING`.
-4. Exports the boot image through a 48-hour pre-authenticated request into the selected target Object Storage bucket.
+4. Exports the boot image through a write-only pre-authenticated request into the selected target Object Storage bucket, then immediately revokes the request. Its 48-hour expiration is a fallback if the worker stops before revocation.
 5. Imports the exported object as a custom image in the target tenancy.
 6. Waits for every target data volume to reach `AVAILABLE`.
 

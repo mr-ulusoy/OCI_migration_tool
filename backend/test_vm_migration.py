@@ -150,6 +150,13 @@ class VmMigrationPowerPolicyTests(unittest.TestCase):
         self.assertFalse(worker.should_restart_source_vm(False, True))
         self.assertFalse(worker.should_restart_source_vm(True, True, source_restarted=True))
 
+    def test_boot_image_export_par_is_write_only(self):
+        details = worker.boot_image_export_par_details("MIGR-server-BOOT-run12345", "run12345678")
+
+        self.assertEqual(details.access_type, "ObjectWrite")
+        self.assertEqual(details.object_name, "MIGR-server-BOOT-run12345.oci")
+        self.assertEqual(details.name, "MigrWrite-run12345")
+
 
 class DataVolumeMigrationTests(unittest.TestCase):
     def test_clone_uses_source_volume_details_in_target_tenancy(self):
