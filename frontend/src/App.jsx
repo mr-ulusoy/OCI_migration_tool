@@ -2336,7 +2336,7 @@ export default function App() {
 
   if (!isAuthenticated) {
     return (
-      <div data-theme={theme} className="min-h-screen bg-[#f5f6f8] flex items-center justify-center p-5 sm:p-8 font-sans">
+      <div data-theme={theme} className="login-page min-h-screen bg-[#f5f6f8] flex items-center justify-center p-5 sm:p-8 font-sans">
         <div className="login-shell grid min-h-[560px] w-full max-w-7xl overflow-hidden rounded-2xl border border-gray-200 bg-white lg:grid-cols-[0.7fr_1.3fr]">
           <section className="login-form-panel flex min-h-[500px] flex-col items-center justify-center px-7 py-8 sm:px-12 lg:px-14">
             <form onSubmit={handleLogin} className="my-auto w-full max-w-sm text-left">

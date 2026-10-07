@@ -324,8 +324,13 @@ button[class*="rounded-lg"]:not(:disabled):active,
 }
 
 [data-theme="dark"].app-shell,
+[data-theme="dark"].login-page,
 [data-theme="dark"] .app-main {
   background: #0e1117;
+}
+
+[data-theme="dark"] .login-form-panel {
+  background: #151922;
 }
 
 [data-theme="dark"] .app-sidebar {
