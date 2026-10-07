@@ -2147,10 +2147,6 @@ export default function App() {
       if (!newFolderName || !selectedBucket) return;
       try { await api.post(`/create-folder`, { profile_name: storageProfile, bucket_name: selectedBucket, folder_name: newFolderName }); setNewFolderName(''); handleBucketClick(selectedBucket); showSuccess('Folder created.'); } catch (err) { showError('Failed to create folder', err); }
   };
-  const handleDeleteObject = async (objectName) => {
-      if (!window.confirm(`Delete: ${objectName}?`)) return;
-      try { await api.delete(`/delete-object/${storageProfile}/${selectedBucket}/${encodeURIComponent(objectName)}`); handleBucketClick(selectedBucket); showSuccess('Object deleted.'); } catch (err) { showError('Failed to delete object', err); }
-  };
 
   const handleLogin = async (event) => {
     event.preventDefault();
@@ -4993,19 +4989,16 @@ export default function App() {
                          <div className="flex-1 overflow-y-auto">
                              <table className="w-full text-left text-sm">
                                 <thead className="text-gray-500 text-[10px] uppercase font-bold sticky top-0 bg-white border-b border-gray-200">
-                                  <tr><th className="py-2.5 px-5">Name</th><th className="py-2.5 px-5 text-right">Size</th><th className="py-2.5 px-5 text-center w-16">Action</th></tr>
+                                  <tr><th className="py-2.5 px-5">Name</th><th className="py-2.5 px-5 text-right">Size</th></tr>
                                 </thead>
                                 <tbody className="divide-y divide-gray-100 text-sm text-gray-800">
                                   {storageObjects.map(obj => (
-                                    <tr key={obj.name} className="hover:bg-gray-50 group transition-colors">
+                                    <tr key={obj.name} className="hover:bg-gray-50 transition-colors">
                                       <td className="py-3 px-5 flex items-center gap-3 font-medium text-xs">
                                         {obj.name.endsWith('/') ? <Folder size={14} className="text-[#9c3029]"/> : <FileText size={14} className="text-gray-400"/>}
                                         {obj.name}
                                       </td>
                                       <td className="py-3 px-5 text-right text-gray-500 font-mono text-[11px]">{obj.name.endsWith('/') ? '--' : `${Math.round(obj.size/1024)} KB`}</td>
-                                      <td className="py-3 px-5 text-center">
-                                        <button onClick={() => handleDeleteObject(obj.name)} className="text-gray-400 hover:text-[#9c3029] transition-all opacity-0 group-hover:opacity-100"><Trash2 size={14} /></button>
-                                      </td>
                                     </tr>
                                   ))}
                                 </tbody>
