@@ -9,6 +9,9 @@ checklist template are retained alongside the original application.
 
 Console adaptations:
 
+- Only the OCI Storage checklist is bundled. OCVS is excluded; existing copies
+  on upgraded installations are hidden without deleting customer edits.
+
 - FastAPI serves the application and storage API; no separate server is started.
 - `js/console-bridge.js` supplies the existing console session to API requests.
 - Editor enablement uses that session instead of a separate editor password.

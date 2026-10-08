@@ -44,7 +44,7 @@ class HealthCheckIntegrationTests(unittest.TestCase):
     def test_editor_and_definitions(self):
         base = "/oci-healthcheck/"
         checks = self.client.get(base + "api/healthchecks", headers=self.headers).json()
-        self.assertGreaterEqual(len(checks), 2)
+        self.assertEqual([check["id"] for check in checks], ["OCI-storage"])
         self.assertEqual(self.client.post(base + "api/editor/verify", headers=self.headers).status_code, 204)
         check = self.client.get(base + checks[0]["file"], headers=self.headers).json()
         self.assertIsInstance(check["categories"], list)
@@ -79,6 +79,15 @@ class HealthCheckIntegrationTests(unittest.TestCase):
         self.assertEqual(entry["text"], "Review required")
         self.assertEqual(self.client.request("DELETE", path, headers=self.headers, json={"itemId": "item-1", "id": entry["id"]}).status_code, 204)
         self.assertEqual(self.client.get(path, headers=self.headers).json(), {})
+
+    def test_retired_ocvs_is_hidden_on_existing_installations(self):
+        healthcheck.prepare_store()
+        old_file = self.data_dir / "healthcheck" / "OCVS-Healthcheck.json"
+        old_file.write_text(json.dumps({"title": "Customer OCVS edits", "categories": []}))
+        checks = self.client.get("/oci-healthcheck/api/healthchecks", headers=self.headers).json()
+        self.assertNotIn("OCVS-Healthcheck", [check["id"] for check in checks])
+        self.assertTrue(old_file.exists())
+        self.assertEqual(self.client.get("/oci-healthcheck/healthcheck/OCVS-Healthcheck.json", headers=self.headers).status_code, 404)
 
     def test_payload_limit(self):
         response = self.client.post("/oci-healthcheck/api/checklist/custom", headers=self.headers, content=b"x" * (healthcheck.MAX_BODY_BYTES + 1))

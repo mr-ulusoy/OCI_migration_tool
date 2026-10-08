@@ -25,6 +25,7 @@ spec.loader.exec_module(upstream)
 STORE_LOCK = Lock()
 router = APIRouter(prefix="/oci-healthcheck")
 MAX_BODY_BYTES = 2 * 1024 * 1024
+RETIRED_CHECKS = {"OCVS-Healthcheck"}
 
 
 def prepare_store():
@@ -53,6 +54,8 @@ def prepare_store():
 
 
 def definition_path(check_id):
+    if check_id in RETIRED_CHECKS:
+        raise HTTPException(404, "Health check is no longer available")
     path = upstream.healthcheck_file(check_id)
     if path is None:
         raise HTTPException(404, "Invalid health check id")
@@ -83,7 +86,8 @@ def index():
 def list_checks():
     with STORE_LOCK:
         prepare_store()
-        return upstream.list_healthchecks()
+        # Older installations may retain customer edits; hide without deleting them.
+        return [check for check in upstream.list_healthchecks() if check["id"] not in RETIRED_CHECKS]
 
 
 @router.get("/healthcheck/{filename}")

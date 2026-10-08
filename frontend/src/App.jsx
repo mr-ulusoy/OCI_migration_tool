@@ -2642,9 +2642,6 @@ export default function App() {
             <section>
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <h2 className="flex items-center gap-2 text-xl font-bold text-gray-900"><HeartPulse size={22} className="text-[#9c3029]" /> OCI Health Check</h2>
-                <a className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-[#9c3029]" href="https://github.com/RichardORCL/OCI-Healthcheck" target="_blank" rel="noopener noreferrer">
-                  By Richard Garsthagen (RichardORCL) <ExternalLink size={14} />
-                </a>
               </div>
               <iframe
                 ref={healthCheckFrame}
