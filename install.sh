@@ -1498,6 +1498,8 @@ main() {
   install_upgrade_helper
   install_uninstall_helper
   install_backend
+  log "Preparing bundled OCI Health Check (RichardORCL)."
+  run_as_user_in_dir "$BACKEND_DIR" "$VENV_DIR/bin/python" -c 'from healthcheck_app import prepare_store; prepare_store()'
   install_frontend
   stop_services
   check_ports

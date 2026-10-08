@@ -111,6 +111,7 @@ const VIEW_META = {
   builder: { group: 'Operations', title: 'Backup Job' },
   explorer: { group: 'Infrastructure', title: 'VM Image Migration' },
   storage: { group: 'Infrastructure', title: 'OCI Object Storage' },
+  healthcheck: { group: 'Infrastructure', title: 'OCI Health Check' },
   settings: { group: 'System', title: 'Settings' }
 };
 
@@ -431,6 +432,21 @@ export default function App() {
   const tlsCertificateInputRef = useRef(null);
   const tlsPrivateKeyInputRef = useRef(null);
   const [authState, setAuthState] = useState(getInitialAuth);
+  const healthCheckFrame = useRef(null);
+  const healthCheckUrl = new URL(`${API_BASE.replace(/\/$/, '')}/oci-healthcheck/`, window.location.href);
+  useEffect(() => {
+    const receiveHealthCheckMessage = (event) => {
+      if (event.source !== healthCheckFrame.current?.contentWindow || event.origin !== new URL(API_BASE, window.location.href).origin) return;
+      if (event.data?.type === 'cmc-healthcheck-expired') {
+        localStorage.removeItem(SESSION_TOKEN_KEY);
+        localStorage.removeItem(SESSION_USERNAME_KEY);
+        localStorage.removeItem('OCI_MIGRATOR_API_TOKEN');
+        setAuthState({ token: '', mode: '', username: 'admin' });
+      }
+    };
+    window.addEventListener('message', receiveHealthCheckMessage);
+    return () => window.removeEventListener('message', receiveHealthCheckMessage);
+  }, []);
   const [theme, setTheme] = useState(getInitialTheme);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [loginForm, setLoginForm] = useState({ username: 'admin', password: '' });
@@ -2302,7 +2318,8 @@ export default function App() {
       items: [
         { id: 'keys', label: 'Credentials', icon: Key },
         { id: 'storage', label: 'OCI Object Storage', icon: Archive },
-        { id: 'explorer', label: 'VM Image Migration', icon: Database }
+        { id: 'explorer', label: 'VM Image Migration', icon: Database },
+        { id: 'healthcheck', label: 'OCI Health Check', icon: HeartPulse }
       ]
     },
     {
@@ -2621,6 +2638,26 @@ export default function App() {
         )}
 
         <div className="min-h-screen p-4 pb-32 sm:p-6 sm:pb-32 xl:p-8 xl:pb-40">
+          {view === 'healthcheck' && (
+            <section>
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <h2 className="flex items-center gap-2 text-xl font-bold text-gray-900"><HeartPulse size={22} className="text-[#9c3029]" /> OCI Health Check</h2>
+                <a className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-[#9c3029]" href="https://github.com/RichardORCL/OCI-Healthcheck" target="_blank" rel="noopener noreferrer">
+                  By Richard Garsthagen (RichardORCL) <ExternalLink size={14} />
+                </a>
+              </div>
+              <iframe
+                ref={healthCheckFrame}
+                title="OCI Health Check"
+                src={healthCheckUrl.href}
+                className="w-full rounded-md border border-gray-200 bg-white"
+                style={{ height: 'calc(100dvh - 200px)', minHeight: '640px' }}
+                onLoad={(event) => event.currentTarget.contentWindow?.postMessage({
+                  type: 'cmc-healthcheck-session', mode: authState.mode, token: authState.token
+                }, healthCheckUrl.origin)}
+              />
+            </section>
+          )}
           {/* VIEW: CREDENTIALS */}
           {view === 'keys' && (
              <div className="max-w-7xl animate-in fade-in">

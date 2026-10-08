@@ -44,6 +44,7 @@ Oracle and Oracle Cloud Infrastructure are trademarks of Oracle and/or its affil
 - rclone sync/copy jobs
 - OCI SDK VM and Object Storage operations
 - persistent job run history and runtime config export
+- bundled OCI Health Check checklists and report exports, created by [Richard Garsthagen (RichardORCL)](https://github.com/RichardORCL/OCI-Healthcheck)
 
 ## Recommended Server Size
 

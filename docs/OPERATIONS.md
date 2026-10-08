@@ -28,6 +28,27 @@ http://<detected-server-ip>:8000
 
 Use HTTP only for initial setup. Configure a production HTTPS mode under `Settings` -> `HTTPS & Certificates`. See the [Installation Guide](INSTALL.md) for firewall, DNS, certificate, and advanced installation options.
 
+## OCI Health Check
+
+Open `Infrastructure` -> `OCI Health Check` for the checklist tool created by
+[Richard Garsthagen (RichardORCL)](https://github.com/RichardORCL/OCI-Healthcheck).
+It is bundled with installation and uses your existing console administrator
+session. No additional service, port, editor password, or OCI permissions are needed.
+
+Choose a checklist, record item status and comments, and use its menu to export
+results, actions, or a Word report. This is a manual assessment tool; it does not
+scan your tenancy or change OCI resources. Results are saved in this browser's
+local storage. Export results as JSON before changing browser, clearing browser
+data, or moving to another console address; import that file to resume.
+
+`Enable editor` allows administrators to change checklist definitions. Definitions
+and feedback are stored on the server in `~/.oci/healthcheck` under the service
+account, outside the application checkout. Upgrades preserve edited and added
+checklists; untouched bundled definitions may be refreshed. Include this directory
+in server backups; it is not part of Runtime Config Backup. Uninstalling with
+configuration removal can remove this data along with the service account's OCI
+configuration.
+
 ## Credentials
 
 Open `Credentials` to add source and destination profiles. Profile and remote names must be unique.

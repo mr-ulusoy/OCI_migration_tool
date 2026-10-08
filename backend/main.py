@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional
+from healthcheck_app import router as healthcheck_router
 from job_logs import JOB_LOG_DIR, job_log_path, legacy_job_log_path, resolve_readable_log_path, tail_file
 from job_store import JOB_HISTORY_FILE, get_job_run, list_job_runs, locked_history_file, upsert_job_run
 from notifications import (
@@ -344,8 +345,13 @@ def require_api_token(x_api_token: Optional[str] = Header(default=None, alias="X
 
 
 app = FastAPI(title="OCI Migration & Sync Engine")
+app.include_router(healthcheck_router)
 
 PUBLIC_PATHS = {
+    "/oci-healthcheck/",
+    "/oci-healthcheck/css/styles.css",
+    "/oci-healthcheck/js/app.js",
+    "/oci-healthcheck/js/console-bridge.js",
     "/",
     "/health",
     "/index.html",
