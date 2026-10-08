@@ -5128,24 +5128,24 @@ export default function App() {
                            </div>
                          )}
 
-                         <div className="border border-gray-300 rounded-md overflow-hidden bg-gray-100 text-black">
-                           <div className="px-4 py-3 border-b border-gray-300 flex items-center justify-between gap-3">
+                         <div className="border border-gray-200 rounded-md overflow-hidden bg-gray-100 text-gray-800">
+                           <div className="px-4 py-3 border-b border-gray-200 flex flex-wrap items-center justify-between gap-3">
                              <div>
-                               <h4 className="text-sm font-bold text-black flex items-center gap-2"><Shield size={16}/> OCI Retention Rules (WORM)</h4>
-                               <p className="mt-1 text-[11px] text-black">Immutable/WORM retention rules are managed in the OCI Dashboard. Cloud Migration Console only shows the current WORM rule count here.</p>
+                               <h4 className="text-sm font-bold text-gray-800 flex items-center gap-2"><Shield size={16}/> OCI Retention Rules (WORM)</h4>
+                               <p className="mt-1 text-[11px] text-gray-600">Immutable/WORM retention rules are managed in the OCI Dashboard. Cloud Migration Console only shows the current WORM rule count here.</p>
                              </div>
                              <div className="flex items-center gap-2 shrink-0">
-                               <span className="px-2 py-1 rounded-full border border-gray-300 bg-white text-[10px] font-bold uppercase text-black">{bucketProtection?.retention_rule_count || 0} WORM</span>
+                               <span className="px-2 py-1 rounded-full border border-gray-200 bg-white text-[10px] font-bold uppercase text-gray-700">{bucketProtection?.retention_rule_count || 0} WORM</span>
                                <button
                                  type="button"
                                  disabled
-                                 className="px-2.5 py-1.5 bg-gray-100 border border-gray-300 rounded-md text-[11px] font-semibold text-black cursor-not-allowed flex items-center gap-1"
+                                 className="px-2.5 py-1.5 bg-gray-100 border border-gray-200 rounded-md text-[11px] font-semibold text-gray-600 cursor-not-allowed flex items-center gap-1"
                                >
                                  <Plus size={13} /> Create Rule in OCI Dashboard
                                </button>
                              </div>
                            </div>
-                           <div className="p-4 text-xs text-black leading-5">
+                           <div className="p-4 text-xs text-gray-600 leading-5">
                              <p>Enable or change retention rules from the OCI bucket page when immutable protection is required.</p>
                              <p className="mt-2">
                                If you have active retention rules, you cannot update, overwrite, or delete objects and their metadata, or delete buckets, until the retention duration expires, or the retention rule is deleted.{' '}
@@ -5153,7 +5153,7 @@ export default function App() {
                                  href="https://docs.oracle.com/en-us/iaas/Content/Object/Tasks/usingretentionrules.htm"
                                  target="_blank"
                                  rel="noreferrer"
-                                 className="font-semibold text-black underline underline-offset-2"
+                                 className="font-semibold text-gray-800 underline underline-offset-2"
                                >
                                  Learn more about data retention rules
                                </a>.
